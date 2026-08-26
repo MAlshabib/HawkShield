@@ -44,15 +44,18 @@ That split is the whole point: **the same checkout runs on both machines, with n
 laptop.** Use the project's own interpreter — `.venv/bin/python run.py`, or
 `.venv/Scripts/python.exe run.py` on Windows — and run it **from the repo root**.
 
-### At the conference — the laptop demo, two commands
+### Try it without hardware
+
+No Wi-Fi adapter, no database, no configuration:
 
 ```bash
-python backend/scripts/check_rag.py     # optional pre-flight: proves the /ask assistant will answer
 python run.py --demo                    # replay a sample attack capture, then serve the dashboard
+python backend/scripts/check_rag.py     # optional: verify the /ask assistant is configured
 ```
 
-Open the URL it prints. Nothing to install, configure, or start by hand — no database, no `.env`
-edit, no radio.
+Open the URL it prints. `--demo` replays one of the bundled `.pcapng` captures through the real
+two-stage pipeline and stores the results, so the dashboard, the reports and the assistant all have
+genuine data to work with.
 
 ```
   HawkShield
@@ -403,7 +406,7 @@ change it only for a proxy or a self-hosted OpenAI-compatible endpoint), and `OP
 > [Model status](#model-status--known-training-data-leakage). Changing `GEN_MODEL` does not make a
 > label more trustworthy.
 
-### Pre-flight check — run this before a demo
+### Pre-flight check
 
 ```bash
 python backend/scripts/check_rag.py
