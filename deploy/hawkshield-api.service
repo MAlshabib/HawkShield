@@ -1,0 +1,79 @@
+# =============================================================================
+# HawkShield — FastAPI/uvicorn service (unprivileged)
+# =============================================================================
+# Serves the REST API and the built Next.js static export at http://<pi>:8000/.
+#
+# TEMPLATE. Two placeholders are rewritten by deploy/install_pi.sh before the
+# file is copied to /etc/systemd/system/:
+#     /opt/hawkshield   -> the actual repo checkout path
+#     User/Group        -> the unprivileged account that owns the checkout
+# If you install by hand, edit those and keep every occurrence consistent.
+# =============================================================================
+
+[Unit]
+Description=HawkShield API (FastAPI/uvicorn)
+Documentation=file:///opt/hawkshield/deploy/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+
+[Service]
+Type=exec
+User=hawkshield
+Group=hawkshield
+WorkingDirectory=/opt/hawkshield
+
+# Repo-root .env — the same file the CLI reads. systemd parses this itself:
+# plain KEY=value lines, no `export`, no shell expansion.
+EnvironmentFile=/opt/hawkshield/.env
+
+# Run from the repo root so `backend.app` is importable, exactly as documented.
+ExecStart=/opt/hawkshield/.venv/bin/uvicorn backend.app.main:app --host 0.0.0.0 --port 8000
+
+# on-failure, not always: a clean shutdown (systemctl stop) must stay stopped.
+Restart=on-failure
+RestartSec=5
+# uvicorn treats SIGINT as "drain and exit"; SIGTERM kills workers harder.
+KillSignal=SIGINT
+TimeoutStopSec=20
+
+# --- Hardening ---------------------------------------------------------------
+# The API is a plain HTTP+PostgreSQL client. It needs no privileges at all, so
+# the capability bounding set is emptied outright.
+NoNewPrivileges=yes
+CapabilityBoundingSet=
+AmbientCapabilities=
+PrivateTmp=yes
+PrivateDevices=yes
+ProtectSystem=strict
+# read-only rather than yes: the checkout may legitimately live under /home.
+# ReadWritePaths below is applied afterwards and punches through for the repo.
+ProtectHome=read-only
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6
+SystemCallFilter=@system-service
+SystemCallErrorNumber=EPERM
+SystemCallArchitectures=native
+
+# ProtectSystem=strict makes the whole filesystem read-only; Python still needs
+# to write __pycache__ into the checkout, and any future runtime artefact lives
+# there too. This is the only writable path outside PrivateTmp.
+ReadWritePaths=/opt/hawkshield
+
+# --- Logging ------------------------------------------------------------------
+# journalctl -u hawkshield-api -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hawkshield-api
+
+[Install]
+WantedBy=multi-user.target

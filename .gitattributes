@@ -1,0 +1,29 @@
+# Normalise line endings so shell scripts and systemd units stay LF-only.
+# A CRLF shebang breaks `#!/usr/bin/env bash` on the Pi, and a stray \r inside an
+# EnvironmentFile value silently becomes part of the variable.
+* text=auto eol=lf
+
+*.sh        text eol=lf
+*.service   text eol=lf
+*.sql       text eol=lf
+*.py        text eol=lf
+*.md        text eol=lf
+*.json      text eol=lf
+*.yml       text eol=lf
+*.yaml      text eol=lf
+*.ts        text eol=lf
+*.tsx       text eol=lf
+*.css       text eol=lf
+
+*.bat       text eol=crlf
+*.ps1       text eol=crlf
+
+# Binary — never touch
+*.joblib    binary
+*.pcapng    binary
+*.pcap      binary
+*.png       binary
+*.jpg       binary
+*.ico       binary
+*.pdf       binary
+*.ipynb     -text

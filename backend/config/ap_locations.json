@@ -1,0 +1,20 @@
+[
+  {
+    "bssid": "AA:AA:AA:AA:AA:01",
+    "name": "AP-1",
+    "lat": 24.7136,
+    "lng": 46.6753
+  },
+  {
+    "bssid": "AA:AA:AA:AA:AA:02",
+    "name": "AP-2",
+    "lat": 24.7139,
+    "lng": 46.6758
+  },
+  {
+    "bssid": "AA:AA:AA:AA:AA:03",
+    "name": "AP-3",
+    "lat": 24.7142,
+    "lng": 46.6751
+  }
+]

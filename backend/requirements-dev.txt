@@ -1,0 +1,10 @@
+# HawkShield — development / test dependencies.
+# Installs the runtime set too, so one command is enough on a dev machine:
+#   pip install -r backend/requirements-dev.txt
+#
+# Not pinned as tightly as requirements.txt: these never run on the Pi in
+# production, only in CI / on a developer laptop.
+-r requirements.txt
+
+pytest>=8.0,<10.0
+httpx>=0.27,<1.0

@@ -1,0 +1,99 @@
+# =============================================================================
+# HawkShield — 802.11 capture + two-stage LightGBM detector
+# =============================================================================
+# Sniffs a monitor-mode interface with scapy, classifies every frame, and writes
+# only attack frames into PostgreSQL.
+#
+# TEMPLATE. deploy/install_pi.sh rewrites /opt/hawkshield to the real checkout
+# path before copying this to /etc/systemd/system/.
+#
+# PRIVILEGE MODEL — why root, and not an unprivileged user + AmbientCapabilities
+# -----------------------------------------------------------------------------
+# Both were on the table. This unit runs as root, with the capability bounding
+# set cut down to CAP_NET_RAW + CAP_NET_ADMIN, because:
+#
+#   * scapy opens an AF_PACKET raw socket (CAP_NET_RAW) and the capture loop may
+#     re-assert monitor mode / re-pin the channel over netlink (CAP_NET_ADMIN).
+#     Those two capabilities are genuinely required either way.
+#   * The unprivileged+ambient variant additionally needs the account to read
+#     /sys/class/net and to exec the iw/ip helpers, and any of the several
+#     Python C extensions in the path (scapy, lightgbm) failing a capability
+#     check produces an opaque EPERM deep inside a library. Debugging that on a
+#     headless Pi is a bad trade for a single-purpose appliance.
+#   * CapabilityBoundingSet= below means this "root" process cannot do the
+#     things root normally could — no CAP_SYS_ADMIN, no CAP_DAC_OVERRIDE, no
+#     module loading. It is root in uid only.
+#
+# If you prefer the unprivileged route: set User=/Group= to a service account,
+# add `AmbientCapabilities=CAP_NET_RAW CAP_NET_ADMIN`, keep the same bounding
+# set, and drop ProtectHome/PrivateDevices a notch if iw calls start failing.
+#
+# PREREQUISITE: CAPTURE_IFACE must already be in monitor mode. Do it once with
+#     sudo deploy/monitor_mode.sh wlan1 6
+# or uncomment the ExecStartPre below to have systemd do it on every start.
+# =============================================================================
+
+[Unit]
+Description=HawkShield Wi-Fi attack detector (monitor-mode capture + inference)
+Documentation=file:///opt/hawkshield/deploy/README.md
+After=network-online.target postgresql.service
+Wants=network-online.target postgresql.service
+# Never give up restarting: the adapter can flap during boot or when the driver
+# resets, and rate-limiting the detector into a dead state defeats the point.
+StartLimitIntervalSec=0
+
+[Service]
+Type=exec
+User=root
+Group=root
+WorkingDirectory=/opt/hawkshield
+EnvironmentFile=/opt/hawkshield/.env
+
+# Optional: force the adapter into monitor mode on every start. Left commented
+# because a failure here would block the service, and the mode usually survives.
+# ExecStartPre=/opt/hawkshield/deploy/monitor_mode.sh ${CAPTURE_IFACE} ${CAPTURE_CHANNEL}
+
+# ${VAR} is expanded by systemd from the EnvironmentFile above.
+ExecStart=/opt/hawkshield/.venv/bin/python -m backend.detector.cli --iface ${CAPTURE_IFACE} --channel ${CAPTURE_CHANNEL}
+
+# always, not on-failure: capture must come back even after a clean exit caused
+# by the adapter being yanked or the driver resetting.
+Restart=always
+RestartSec=10
+TimeoutStopSec=20
+
+# --- Hardening ---------------------------------------------------------------
+NoNewPrivileges=yes
+CapabilityBoundingSet=CAP_NET_RAW CAP_NET_ADMIN
+PrivateTmp=yes
+ProtectSystem=strict
+ProtectHome=read-only
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+LockPersonality=yes
+RemoveIPC=yes
+# AF_PACKET for the raw capture socket, AF_NETLINK for interface/channel control.
+RestrictAddressFamilies=AF_UNIX AF_INET AF_INET6 AF_NETLINK AF_PACKET
+SystemCallArchitectures=native
+# Deliberately NO SystemCallFilter= here: the packet-socket and netlink paths in
+# scapy are exactly the kind of thing @system-service trims, and a syscall
+# filter miss shows up as an unexplained EPERM. The bounding set above is the
+# meaningful restriction.
+# Deliberately NO PrivateDevices= / ProtectKernelTunables= either: both have
+# bitten monitor-mode drivers, and neither buys much once capabilities are cut.
+
+ReadWritePaths=/opt/hawkshield
+
+# --- Logging ------------------------------------------------------------------
+# journalctl -u hawkshield-detector -f
+StandardOutput=journal
+StandardError=journal
+SyslogIdentifier=hawkshield-detector
+
+[Install]
+WantedBy=multi-user.target

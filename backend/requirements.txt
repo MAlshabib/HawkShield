@@ -1,0 +1,42 @@
+# HawkShield — runtime dependencies
+# Target: Raspberry Pi 4 / Raspberry Pi OS Bookworm / Python 3.11
+#
+# These versions are the exact set that ran on the Pi (python 3.11.2). Pinned with ==
+# so a fresh `pip install -r backend/requirements.txt` reproduces that venv bit for bit.
+# aarch64 wheels for all of these exist on PyPI; lightgbm additionally needs the
+# system library `libgomp1` (apt) at runtime — deploy/install_pi.sh installs it.
+#
+#   pip install -r backend/requirements.txt
+#   pip install -r backend/requirements-dev.txt   # tests only
+
+# --- Web API -----------------------------------------------------------------
+fastapi==0.116.1
+uvicorn[standard]==0.35.0
+starlette==0.47.3
+
+# --- Config / settings -------------------------------------------------------
+pydantic==2.11.7
+pydantic-settings==2.10.1
+python-dotenv==1.1.1
+
+# --- Database ----------------------------------------------------------------
+SQLAlchemy==2.0.43
+psycopg2-binary==2.9.10
+psycopg[binary]==3.2.9
+
+# --- ML: two-stage LightGBM pipeline ----------------------------------------
+lightgbm==4.6.0
+scikit-learn==1.6.1
+numpy==2.3.2
+scipy==1.16.1
+pandas==2.3.2
+joblib==1.5.2
+
+# --- Capture -----------------------------------------------------------------
+scapy==2.6.1
+
+# --- Reporting ---------------------------------------------------------------
+reportlab==4.4.3
+
+# --- RAG / /ask (optional at runtime: no OPENAI_API_KEY -> /ask returns 503) --
+openai==1.102.0

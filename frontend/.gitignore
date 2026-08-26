@@ -1,0 +1,18 @@
+node_modules/
+.next/
+dist/
+out/
+.turbo/
+.vercel/
+*.log
+.DS_Store
+
+# Local env files — never commit these. `.env.example` IS committed.
+.env
+.env.local
+.env.*.local
+.env*.local
+
+# TypeScript / Next build artefacts
+next-env.d.ts
+tsconfig.tsbuildinfo

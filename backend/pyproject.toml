@@ -1,0 +1,84 @@
+# HawkShield — project metadata.
+#
+# This is a deployable application, not a published library. The canonical
+# install path on the Pi is a plain virtualenv fed by backend/requirements.txt:
+#
+#     python3 -m venv .venv
+#     .venv/bin/pip install -r backend/requirements.txt
+#
+# This file exists so the repo is introspectable (name/version/python floor) and
+# so tooling (pytest, ruff) has one config home. Installing the project itself
+# (`pip install -e .` from the repo root) is optional and only adds the two
+# console entry points below.
+#
+# NOTE: the importable package is `backend` and it lives at the *repo root*, one
+# level above this file — everything is run from the repo root
+# (`python -m backend.detector.cli`, `uvicorn backend.app.main:app`). If you do
+# an editable install, run it from the repo root with `-f backend/pyproject.toml`
+# semantics in mind; the [tool.setuptools] section below points at `../backend`.
+
+[build-system]
+requires = ["setuptools>=68", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "hawkshield"
+version = "1.0.0"
+description = "Wi-Fi attack detection for Raspberry Pi: monitor-mode capture, two-stage LightGBM classification, FastAPI dashboard."
+requires-python = ">=3.11"
+license = { text = "Proprietary" }
+authors = [{ name = "HawkShield" }]
+keywords = ["wifi", "802.11", "ids", "lightgbm", "scapy", "raspberry-pi"]
+classifiers = [
+    "Private :: Do Not Upload",
+    "Programming Language :: Python :: 3.11",
+    "Operating System :: POSIX :: Linux",
+]
+
+# Kept in sync with backend/requirements.txt (that file is authoritative for
+# deployment; these are the same pins so `pip install .` behaves identically).
+dependencies = [
+    "fastapi==0.116.1",
+    "uvicorn[standard]==0.35.0",
+    "starlette==0.47.3",
+    "pydantic==2.11.7",
+    "pydantic-settings==2.10.1",
+    "python-dotenv==1.1.1",
+    "SQLAlchemy==2.0.43",
+    "psycopg2-binary==2.9.10",
+    "psycopg[binary]==3.2.9",
+    "lightgbm==4.6.0",
+    "scikit-learn==1.6.1",
+    "numpy==2.3.2",
+    "scipy==1.16.1",
+    "pandas==2.3.2",
+    "joblib==1.5.2",
+    "scapy==2.6.1",
+    "reportlab==4.4.3",
+    "openai==1.102.0",
+]
+
+[project.optional-dependencies]
+dev = [
+    "pytest>=8.0,<10.0",
+    "httpx>=0.27,<1.0",
+]
+
+[project.scripts]
+# Convenience wrapper. systemd deliberately does NOT use it — the units call
+# `python -m backend.detector.cli` / `uvicorn` directly so the invocation matches
+# the documented manual commands exactly.
+hawkshield-detect = "backend.detector.cli:main"
+
+[tool.setuptools]
+# `backend` is the package; this file sits inside it, so the root is one up.
+package-dir = { "" = ".." }
+
+[tool.setuptools.packages.find]
+where = [".."]
+include = ["backend*"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = [".."]
+addopts = "-q"

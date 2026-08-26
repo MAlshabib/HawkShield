@@ -1,0 +1,27 @@
+HawkShield — Proprietary Licence
+
+Copyright (c) 2025 Yasser, Mohammed, Haya, Ghala, Lena. All rights reserved.
+
+This software and its accompanying documentation, models, datasets and sample
+captures (the "Software") are proprietary and confidential.
+
+Unauthorised copying, modification, merging, publication, distribution,
+sublicensing, or use of the Software, in whole or in part, in any form or by any
+means, is strictly prohibited without the prior written permission of the
+copyright holders.
+
+No licence, right or interest in the Software is granted, whether by implication,
+estoppel or otherwise, except as expressly stated in a written agreement signed
+by the copyright holders.
+
+THE SOFTWARE IS PROVIDED "AS IS", WITHOUT WARRANTY OF ANY KIND, EXPRESS OR
+IMPLIED, INCLUDING BUT NOT LIMITED TO THE WARRANTIES OF MERCHANTABILITY, FITNESS
+FOR A PARTICULAR PURPOSE AND NONINFRINGEMENT. IN NO EVENT SHALL THE COPYRIGHT
+HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER LIABILITY, WHETHER IN AN ACTION
+OF CONTRACT, TORT OR OTHERWISE, ARISING FROM, OUT OF OR IN CONNECTION WITH THE
+SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
+
+HawkShield is an intrusion DETECTION system. It is provided for research and
+educational purposes. Capturing 802.11 traffic on networks you do not own or do
+not have written authorisation to test may be unlawful in your jurisdiction; you
+are solely responsible for compliance.

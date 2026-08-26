@@ -1,0 +1,246 @@
+@import "tailwindcss";
+@import "tw-animate-css";
+
+@custom-variant dark (&:is(.dark *));
+
+:root {
+  --background: oklch(0.145 0 0);
+  --foreground: oklch(0.985 0 0);
+  --card: oklch(0.145 0 0);
+  --card-foreground: oklch(0.985 0 0);
+  --popover: oklch(0.145 0 0);
+  --popover-foreground: oklch(0.985 0 0);
+  --primary: oklch(0.985 0 0);
+  --primary-foreground: oklch(0.205 0 0);
+  --secondary: oklch(0.269 0 0);
+  --secondary-foreground: oklch(0.985 0 0);
+  --muted: oklch(0.269 0 0);
+  --muted-foreground: oklch(0.708 0 0);
+  --accent: oklch(0.269 0 0);
+  --accent-foreground: oklch(0.985 0 0);
+  --destructive: oklch(0.396 0.141 25.723);
+  --destructive-foreground: oklch(0.637 0.237 25.331);
+  --border: oklch(0.269 0 0);
+  --input: oklch(0.269 0 0);
+  --ring: oklch(0.439 0 0);
+  --chart-1: oklch(0.488 0.243 264.376);
+  --chart-2: oklch(0.696 0.17 162.48);
+  --chart-3: oklch(0.769 0.188 70.08);
+  --chart-4: oklch(0.627 0.265 303.9);
+  --chart-5: oklch(0.645 0.246 16.439);
+  --radius: 0.625rem;
+  --sidebar: oklch(0.205 0 0);
+  --sidebar-foreground: oklch(0.985 0 0);
+  --sidebar-primary: oklch(0.488 0.243 264.376);
+  --sidebar-primary-foreground: oklch(0.985 0 0);
+  --sidebar-accent: oklch(0.269 0 0);
+  --sidebar-accent-foreground: oklch(0.985 0 0);
+  --sidebar-border: oklch(0.269 0 0);
+  --sidebar-ring: oklch(0.439 0 0);
+}
+
+@theme inline {
+  --font-family-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  --color-background: var(--background);
+  --color-foreground: var(--foreground);
+  --color-card: var(--card);
+  --color-card-foreground: var(--card-foreground);
+  --color-popover: var(--popover);
+  --color-popover-foreground: var(--popover-foreground);
+  --color-primary: var(--primary);
+  --color-primary-foreground: var(--primary-foreground);
+  --color-secondary: var(--secondary);
+  --color-secondary-foreground: var(--secondary-foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-destructive: var(--destructive);
+  --color-destructive-foreground: var(--destructive-foreground);
+  --color-border: var(--border);
+  --color-input: var(--input);
+  --color-ring: var(--ring);
+  --color-chart-1: var(--chart-1);
+  --color-chart-2: var(--chart-2);
+  --color-chart-3: var(--chart-3);
+  --color-chart-4: var(--chart-4);
+  --color-chart-5: var(--chart-5);
+  --radius-sm: calc(var(--radius) - 4px);
+  --radius-md: calc(var(--radius) - 2px);
+  --radius-lg: var(--radius);
+  --radius-xl: calc(var(--radius) + 4px);
+  --color-sidebar: var(--sidebar);
+  --color-sidebar-foreground: var(--sidebar-foreground);
+  --color-sidebar-primary: var(--sidebar-primary);
+  --color-sidebar-primary-foreground: var(--sidebar-primary-foreground);
+  --color-sidebar-accent: var(--sidebar-accent);
+  --color-sidebar-accent-foreground: var(--sidebar-accent-foreground);
+  --color-sidebar-border: var(--sidebar-border);
+  --color-sidebar-ring: var(--sidebar-ring);
+}
+
+@layer base {
+  * {
+    @apply border-border outline-ring/50;
+  }
+  body {
+    @apply bg-slate-900 text-foreground font-sans antialiased;
+    font-variant-numeric: tabular-nums;
+  }
+  
+  /* Apply tabular numbers to common numeric elements */
+  .tabular-nums,
+  [type="number"],
+  [data-numeric="true"],
+  .numeric,
+  time,
+  .timestamp,
+  .count,
+  .metric {
+    font-variant-numeric: tabular-nums;
+  }
+}
+
+/* Added cyber/neon theme styles and animations */
+@layer utilities {
+  .cyber-glow {
+    box-shadow: 0 0 20px rgba(34, 211, 238, 0.3);
+  }
+
+  .cyber-glow-blue {
+    box-shadow: 0 0 20px rgba(56, 189, 248, 0.3);
+  }
+
+  .glassmorphism {
+    background: rgba(15, 23, 42, 0.8);
+    backdrop-filter: blur(10px);
+    border: 1px solid rgba(34, 211, 238, 0.2);
+  }
+
+  .gradient-text {
+    background: linear-gradient(90deg, #22d3ee, #38bdf8, #7dd3fc);
+    background-size: 200% 100%;
+    -webkit-background-clip: text;
+    -webkit-text-fill-color: transparent;
+    background-clip: text;
+    animation: gradient-shift 3s ease-in-out infinite;
+  }
+
+  @keyframes gradient-shift {
+    0%,
+    100% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+  }
+
+  .wifi-wave {
+    position: relative;
+    overflow: hidden;
+  }
+
+  .wifi-wave::before {
+    content: "";
+    position: absolute;
+    top: 0;
+    left: -100%;
+    width: 200%;
+    height: 100%;
+    background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.1), transparent);
+    animation: wifi-sweep 4s linear infinite;
+  }
+
+  @keyframes wifi-sweep {
+    0% {
+      left: -100%;
+    }
+    100% {
+      left: 100%;
+    }
+  }
+
+  /* Added new animations for HawkShield enhancements */
+  .animated-gradient-text {
+    background: linear-gradient(90deg, #1e3a8a, #2563eb, #38bdf8, #22d3ee, #2563eb);
+    background-size: 300% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: hg-gradient-shift 18s ease-in-out infinite;
+  }
+
+  @keyframes hg-gradient-shift {
+    0% {
+      background-position: 0% 50%;
+    }
+    50% {
+      background-position: 100% 50%;
+    }
+    100% {
+      background-position: 0% 50%;
+    }
+  }
+
+  .logo-neon {
+    filter: drop-shadow(0 0 10px rgba(34, 211, 238, 0.65)) drop-shadow(0 0 24px rgba(56, 189, 248, 0.45));
+  }
+
+  @media (prefers-reduced-motion: no-preference) {
+    .logo-neon-pulse {
+      animation: neon-pulse 2.6s ease-in-out infinite;
+    }
+    .drop-in {
+      opacity: 0;
+      transform: translateY(-12px);
+      animation: hg-drop 700ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
+    }
+    .drop-in.delay-1 {
+      animation-delay: 120ms;
+    }
+    .drop-in.delay-2 {
+      animation-delay: 220ms;
+    }
+  }
+
+  @keyframes neon-pulse {
+    0%,
+    100% {
+      filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.45)) drop-shadow(0 0 22px rgba(56, 189, 248, 0.3));
+    }
+    50% {
+      filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.75)) drop-shadow(0 0 30px rgba(56, 189, 248, 0.55));
+    }
+  }
+
+  @keyframes hg-drop {
+    to {
+      opacity: 1;
+      transform: translateY(0);
+    }
+  }
+}
+
+/* Respect reduced motion preferences */
+@media (prefers-reduced-motion: reduce) {
+  .gradient-text,
+  .animated-gradient-text {
+    animation: none;
+    background-position: 0% 50%;
+  }
+
+  .wifi-wave::before {
+    animation: none;
+  }
+
+  .logo-neon-pulse {
+    animation: none;
+  }
+
+  .drop-in {
+    opacity: 1;
+    transform: translateY(0);
+    animation: none;
+  }
+}
