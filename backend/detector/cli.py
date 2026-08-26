@@ -22,7 +22,7 @@ if str(_REPO_ROOT) not in sys.path:  # allow `python backend/detector/cli.py` to
 
 from backend.detector._config import get_settings  # noqa: E402
 from backend.detector.capture import Detector  # noqa: E402
-from backend.detector.pipeline import TwoStagePipeline  # noqa: E402
+from backend.detector.pipeline import MODEL_VERSIONS, build_pipeline  # noqa: E402
 
 logger = logging.getLogger("hawkshield.detector")
 
@@ -45,6 +45,14 @@ def build_parser() -> argparse.ArgumentParser:
                     help="stage-2 confidence cutoff (default: %(default)s)")
     ap.add_argument("--model-dir", default=None,
                     help="override MODEL_DIR for this run")
+    ap.add_argument("--model-version", default=getattr(s, "MODEL_VERSION", "auto"),
+                    choices=list(MODEL_VERSIONS),
+                    help="auto = v2 (causal TCN) when its ONNX artefact is present and "
+                         "matches feature_spec, else the v1 LightGBM bundles; "
+                         "v2 refuses to start on a mismatch (default: %(default)s)")
+    ap.add_argument("--batch-frames", type=int, default=None,
+                    help="v2 only: frames scored per onnxruntime call "
+                         "(default: V2_BATCH_FRAMES, 32)")
     ap.add_argument("--dry-run", action="store_true",
                     help="classify and log, but never write to the database")
     ap.add_argument("--log-level", default=getattr(s, "LOG_LEVEL", "INFO"),
@@ -61,13 +69,15 @@ def main(argv: Optional[List[str]] = None) -> int:
     )
 
     try:
-        pipeline = TwoStagePipeline(
+        pipeline = build_pipeline(
+            model_version=args.model_version,
             model_dir=Path(args.model_dir) if args.model_dir else None,
             thr1=args.threshold1,
             thr2=args.threshold2,
+            batch_frames=args.batch_frames,
         )
     except Exception as e:
-        logger.error("could not load the model bundles: %s", e)
+        logger.error("could not load a model (--model-version %s): %s", args.model_version, e)
         return 2
 
     try:

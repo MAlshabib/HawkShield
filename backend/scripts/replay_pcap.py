@@ -1,9 +1,12 @@
 #!/usr/bin/env python3
 """Replay a capture file through the live detector path - no radio required.
 
-Uses the *same* ``backend.detector.features.packet_to_row`` and
-``backend.detector.pipeline.TwoStagePipeline`` the detector uses, so whatever this
-prints is what the Pi would have done with the same frames.
+Uses the *same* extractor and pipeline the detector uses, so whatever this prints
+is what the Pi would have done with the same frames.  That includes the model
+choice: ``--model-version auto`` (the default) replays through v2's
+``packet_to_features_v2`` + ring buffer when the ONNX artefact is present and
+matches ``feature_spec``, and through v1's ``packet_to_row`` + two-stage LightGBM
+otherwise.
 
     python -m backend.scripts.replay_pcap data/samples/deauth_raw_decrypted.pcapng
     python -m backend.scripts.replay_pcap data/samples/*.pcapng --limit 5000 --json
@@ -30,10 +33,19 @@ import numpy as np  # noqa: E402
 from backend.detector._config import get_settings  # noqa: E402
 from backend.detector.features import (  # noqa: E402
     FEATURE_ORDER,
+    FEATURE_ORDER_V2,
     ExtractState,
+    FrameState,
+    packet_to_features_v2,
     packet_to_row,
 )
-from backend.detector.pipeline import TwoStagePipeline, Verdict  # noqa: E402
+from backend.detector.pipeline import (  # noqa: E402
+    MODEL_VERSIONS,
+    TwoStagePipeline,
+    V2Pipeline,
+    Verdict,
+    build_pipeline,
+)
 
 logger = logging.getLogger("replay_pcap")
 
@@ -87,6 +99,108 @@ def _score_chunk(
 
 
 # ---------------------------------------------------------------------------
+def replay_file_v2(
+    path: Path,
+    pipe: "V2Pipeline",
+    iface: str,
+    limit: Optional[int],
+    sink: Any = None,
+    per_packet: bool = False,
+    null_features: Optional[List[str]] = None,
+) -> Dict[str, Any]:
+    """Replay through the v2 ring buffer, exactly as the capture loop does it.
+
+    One frame in, ``push``, drain whatever comes back - so the context each frame
+    sees here is the context it would have seen live, and the measured throughput
+    is the throughput the detector would get.  ``--per-packet`` forces the N=1
+    path for comparison.
+    """
+    state = FrameState()
+    pipe.reset()                                  # a file is a fresh stream
+    non_null = {k: 0 for k in FEATURE_ORDER_V2}
+    labels: Dict[str, int] = {}
+    considered_labels: Dict[str, int] = {}
+    n = 0
+    n_stage1_hot = 0
+    n_attacks = 0
+    first_ts: Optional[float] = None
+    last_ts: Optional[float] = None
+
+    pending: List[Dict[str, Any]] = []            # raw dicts awaiting their verdicts
+    pending_rows: List[Dict[str, Any]] = []
+    t_infer = 0.0                                 # seconds spent inside onnxruntime
+
+    def _account(verdicts: List[Verdict]) -> None:
+        nonlocal n_stage1_hot, n_attacks
+        if not verdicts:
+            return
+        for raw, row, v in zip(pending, pending_rows, verdicts):
+            if v.p1 is not None and v.p1 >= pipe.thr1:
+                n_stage1_hot += 1
+            if v.stage == 2 and v.label:
+                considered_labels[v.label] = considered_labels.get(v.label, 0) + 1
+            if v.is_attack and v.label:
+                n_attacks += 1
+                labels[v.label] = labels.get(v.label, 0) + 1
+                if sink is not None:
+                    sink.write(raw, row, v, iface)
+        pending.clear()
+        pending_rows.clear()
+
+    t0 = time.time()
+    for pkt in _iter_packets(path, limit):
+        row, raw = packet_to_features_v2(pkt, iface, state)
+        if null_features:
+            for f in null_features:
+                row[f] = float("nan")
+        n += 1
+        for k, val in row.items():
+            if val is not None and val == val:     # NaN means "absent" in v2
+                non_null[k] += 1
+        ts = getattr(pkt, "time", None)
+        if ts is not None:
+            ts = float(ts)
+            first_ts = ts if first_ts is None else first_ts
+            last_ts = ts
+        pending.append(raw)
+        pending_rows.append(row)
+        ti = time.perf_counter()
+        verdicts = [pipe.predict(row)] if per_packet else pipe.push(row)
+        t_infer += time.perf_counter() - ti
+        _account(verdicts)
+
+    ti = time.perf_counter()
+    tail = pipe.flush()
+    t_infer += time.perf_counter() - ti
+    _account(tail)
+
+    elapsed = time.time() - t0
+    coverage = {k: (100.0 * non_null[k] / n if n else 0.0) for k in FEATURE_ORDER_V2}
+    return {
+        "file": str(path),
+        "model_version": "v2",
+        "packets": n,
+        "seconds": round(elapsed, 2),
+        "pps": round(n / elapsed, 1) if elapsed > 0 else None,
+        "inference_calls": pipe.inferences,
+        "inference_seconds": round(t_infer, 3),
+        "inference_us_per_frame": round(t_infer / n * 1e6, 1) if n else None,
+        "inference_pct_of_wall": round(100.0 * t_infer / elapsed, 1) if elapsed > 0 else None,
+        "batch_frames": 1 if per_packet else pipe.batch_frames,
+        "inference_failures": pipe.failures,
+        "stage1_hot": n_stage1_hot,
+        "stage1_attack_rate_pct": round(100.0 * n_stage1_hot / n, 2) if n else 0.0,
+        "attacks_persisted": n_attacks,
+        "persist_rate_pct": round(100.0 * n_attacks / n, 2) if n else 0.0,
+        "labels_persisted": dict(sorted(labels.items(), key=lambda kv: -kv[1])),
+        "labels_stage2_argmax": dict(sorted(considered_labels.items(), key=lambda kv: -kv[1])),
+        "feature_coverage_pct": coverage,
+        "capture_span_s": round(last_ts - first_ts, 3)
+        if (first_ts is not None and last_ts is not None)
+        else None,
+    }
+
+
 def replay_file(
     path: Path,
     pipe: TwoStagePipeline,
@@ -145,6 +259,7 @@ def replay_file(
     coverage = {k: (100.0 * non_null[k] / n if n else 0.0) for k in FEATURE_ORDER}
     return {
         "file": str(path),
+        "model_version": "v1",
         "packets": n,
         "seconds": round(elapsed, 2),
         "pps": round(n / elapsed, 1) if elapsed > 0 else None,
@@ -163,14 +278,23 @@ def replay_file(
 
 # ---------------------------------------------------------------------------
 def _print_report(res: Dict[str, Any], thr1: float, thr2: float) -> None:
+    is_v2 = res.get("model_version") == "v2"
     print("=" * 78)
-    print(f"FILE  {res['file']}")
+    print(f"FILE  {res['file']}   [model {res.get('model_version', 'v1')}]")
     print(
         f"  packets read      : {res['packets']}   "
         f"({res['seconds']}s, {res['pps']} pkt/s, capture span {res['capture_span_s']}s)"
     )
+    if is_v2:
+        print(
+            f"  inference         : {res['inference_calls']} calls "
+            f"(batch {res['batch_frames']} frames), {res['inference_seconds']}s total "
+            f"= {res['inference_us_per_frame']} us/frame "
+            f"({res['inference_pct_of_wall']}% of wall time), "
+            f"{res['inference_failures']} failures"
+        )
     print(
-        f"  stage-1 >= {thr1:.2f}   : {res['stage1_hot']} "
+        f"  p1 >= {thr1:.2f}        : {res['stage1_hot']} "
         f"({res['stage1_attack_rate_pct']}%)"
     )
     print(
@@ -178,7 +302,7 @@ def _print_report(res: Dict[str, Any], thr1: float, thr2: float) -> None:
         f"({res['persist_rate_pct']}%)"
     )
 
-    print("  stage-2 label distribution (argmax over stage-1 hits):")
+    print("  label distribution (argmax attack class over p1 hits):")
     tot = sum(res["labels_stage2_argmax"].values()) or 1
     if not res["labels_stage2_argmax"]:
         print("    (none)")
@@ -186,9 +310,9 @@ def _print_report(res: Dict[str, Any], thr1: float, thr2: float) -> None:
         kept = res["labels_persisted"].get(lbl, 0)
         print(f"    {lbl:<12} {c:>7}  ({100.0*c/tot:5.1f}%)   persisted {kept}")
 
-    print("  feature coverage (% packets with a non-null value):")
+    print("  feature coverage (% packets with a value; v2 counts NaN as absent):")
     cov = res["feature_coverage_pct"]
-    for k in FEATURE_ORDER:
+    for k in (FEATURE_ORDER_V2 if is_v2 else FEATURE_ORDER):
         bar = "#" * int(round(cov[k] / 5.0))
         print(f"    {k:<30} {cov[k]:6.1f}%  {bar}")
 
@@ -197,7 +321,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     s = get_settings()
     ap = argparse.ArgumentParser(description="Replay a pcap/pcapng through the HawkShield detector")
     ap.add_argument("pcap", nargs="+", help="capture file(s)")
-    ap.add_argument("--model-dir", default=None, help="directory holding the two bundles")
+    ap.add_argument("--model-dir", default=None, help="directory holding the model artefacts")
+    ap.add_argument("--model-version", default=getattr(s, "MODEL_VERSION", "auto"),
+                    choices=list(MODEL_VERSIONS),
+                    help="auto = v2 when its ONNX artefact matches feature_spec, "
+                         "else v1 (default: %(default)s)")
+    ap.add_argument("--batch-frames", type=int, default=None,
+                    help="v2 only: frames scored per onnxruntime call (default 32)")
     ap.add_argument("--threshold1", type=float, default=None)
     ap.add_argument("--threshold2", type=float, default=None)
     ap.add_argument("--iface", default=getattr(s, "CAPTURE_IFACE", "wlan1"),
@@ -223,11 +353,6 @@ def main(argv: Optional[List[str]] = None) -> int:
         stream=sys.stderr,
     )
 
-    bad = [f for f in (args.null_feature or []) if f not in FEATURE_ORDER]
-    if bad:
-        print(f"ERROR: --null-feature {bad} not in the 31-feature space", file=sys.stderr)
-        return 2
-
     paths = [Path(p) for p in args.pcap]
     missing = [p for p in paths if not p.is_file()]
     if missing:
@@ -236,13 +361,24 @@ def main(argv: Optional[List[str]] = None) -> int:
         return 2
 
     try:
-        pipe = TwoStagePipeline(
+        pipe = build_pipeline(
+            model_version=args.model_version,
             model_dir=Path(args.model_dir) if args.model_dir else None,
             thr1=args.threshold1,
             thr2=args.threshold2,
+            batch_frames=args.batch_frames,
         )
     except Exception as e:
-        print(f"ERROR: could not load model bundles: {e}", file=sys.stderr)
+        print(f"ERROR: could not load a model (--model-version {args.model_version}): {e}",
+              file=sys.stderr)
+        return 2
+
+    is_v2 = getattr(pipe, "model_version", "v1") == "v2"
+    space = FEATURE_ORDER_V2 if is_v2 else FEATURE_ORDER
+    bad = [f for f in (args.null_feature or []) if f not in space]
+    if bad:
+        print(f"ERROR: --null-feature {bad} not in the {len(space)}-feature "
+              f"{'v2' if is_v2 else 'v1'} space", file=sys.stderr)
         return 2
 
     sink = None
@@ -258,10 +394,11 @@ def main(argv: Optional[List[str]] = None) -> int:
     results = []
     try:
         for p in paths:
+            fn = replay_file_v2 if is_v2 else replay_file
             results.append(
-                replay_file(p, pipe, args.iface, args.limit, sink=sink,
-                            per_packet=args.per_packet,
-                            null_features=args.null_feature)
+                fn(p, pipe, args.iface, args.limit, sink=sink,
+                   per_packet=args.per_packet,
+                   null_features=args.null_feature)
             )
     finally:
         if sink is not None:
@@ -269,7 +406,9 @@ def main(argv: Optional[List[str]] = None) -> int:
 
     if args.json:
         print(json.dumps(
-            {"thr1": pipe.thr1, "thr2": pipe.thr2, "to_db": bool(args.to_db),
+            {"model_version": getattr(pipe, "model_version", "v1"),
+             "spec_version": getattr(pipe, "spec_version", None),
+             "thr1": pipe.thr1, "thr2": pipe.thr2, "to_db": bool(args.to_db),
              "results": results},
             indent=2,
         ))

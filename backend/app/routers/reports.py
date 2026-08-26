@@ -13,6 +13,7 @@ from reportlab.pdfgen import canvas
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
+from backend.app.config import FRONT_TYPE_MAP, FRONT_TYPES as _FRONT_TYPES
 from backend.app.db import get_db
 from backend.app.models import Packet
 from backend.app.schemas import ReportExportPayload, ReportSummary
@@ -21,16 +22,13 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["reports"])
 
-# DB label -> frontend key.  Kept verbatim; the frontend depends on these names.
-TYPE_MAP_DB_TO_FRONT = {
-    "Deauth": "deauth",
-    "SSDP": "ssdp",
-    "Evil_Twin": "evil_twin",
-    "(Re)Assoc": "reassoc",
-    "RogueAP": "rogueap",
-    "Krack": "krack",
-}
-FRONT_TYPES = ["deauth", "ssdp", "evil_twin", "reassoc", "rogueap", "krack"]
+# DB label -> frontend key.  Derived in ``backend.app.config`` from
+# ``feature_spec.ATTACK_CLASSES`` so there is one class list in the repo, not two.
+# The six v1 keys are unchanged and keep their historical order; spec 2.1.0 appends
+# ``disas`` and ``kr00k``.  Punctuation is dropped rather than escaped, so
+# ``(Re)Assoc`` still becomes plain ``reassoc`` -- no key needs URL or JSON quoting.
+TYPE_MAP_DB_TO_FRONT: Dict[str, str] = dict(FRONT_TYPE_MAP)
+FRONT_TYPES: List[str] = list(_FRONT_TYPES)
 
 # Row order used by the PDF export.
 PDF_TYPE_ORDER: List[str] = FRONT_TYPES + ["other"]

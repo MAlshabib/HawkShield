@@ -38,9 +38,48 @@ def _as_int(v: Any) -> Optional[int]:
 
 def _as_float(v: Any) -> Optional[float]:
     try:
-        return None if v is None else float(v)
+        if v is None:
+            return None
+        f = float(v)
+        return None if f != f else f          # NaN means "absent", not 0.0
     except Exception:
         return None
+
+
+# The `packets` columns are named after the v1 tshark fields.  v2 rows carry the
+# same physical quantities under the ``feature_spec`` names, so the DB schema does
+# not change -- only the lookup does.  First key present wins.
+_COLUMN_ALIASES: Dict[str, tuple] = {
+    "frame_len":    ("frame.len",),
+    "channel_freq": ("radiotap.channel.freq", "radio.freq_mhz"),
+    "datarate":     ("radiotap.datarate", "radio.datarate"),
+    "signal_dbm":   ("wlan_radio.signal_dbm", "radio.signal_dbm"),
+    "wlan_ds":      ("wlan.fc.ds", "fc.ds"),
+    "wlan_retry":   ("wlan.fc.retry", "fc.retry"),
+    "wlan_type":    ("wlan.fc.type", "fc.type"),
+    "wlan_subtype": ("wlan.fc.subtype", "fc.subtype"),
+    "wlan_duration": ("wlan.duration",),
+}
+
+#: v2 encodes "this frame has no frame-control type/subtype" as -1, not NaN.
+_MINUS_ONE_IS_ABSENT = frozenset({"wlan_type", "wlan_subtype"})
+
+
+def _column(row: Dict[str, Any], column: str) -> Any:
+    """Read one `packets` column out of a v1 *or* v2 feature row."""
+    for key in _COLUMN_ALIASES[column]:
+        if key in row:
+            value = row[key]
+            if value is None:
+                continue
+            if column in _MINUS_ONE_IS_ABSENT:
+                try:
+                    if float(value) < 0:
+                        return None
+                except (TypeError, ValueError):
+                    pass
+            return value
+    return None
 
 
 class PacketSink:
@@ -96,15 +135,15 @@ class PacketSink:
             src_mac=raw.get("sa"),
             dst_mac=raw.get("da"),
             bssid=raw.get("bssid"),
-            frame_len=_as_int(row.get("frame.len")),
-            channel_freq=_as_int(row.get("radiotap.channel.freq")),
-            datarate=_as_float(row.get("radiotap.datarate")),
-            signal_dbm=_as_float(row.get("wlan_radio.signal_dbm")),
-            wlan_ds=_as_int(row.get("wlan.fc.ds")),
-            wlan_retry=_as_int(row.get("wlan.fc.retry")),
-            wlan_type=_as_int(row.get("wlan.fc.type")),
-            wlan_subtype=_as_int(row.get("wlan.fc.subtype")),
-            wlan_duration=_as_int(row.get("wlan.duration")),
+            frame_len=_as_int(_column(row, "frame_len")),
+            channel_freq=_as_int(_column(row, "channel_freq")),
+            datarate=_as_float(_column(row, "datarate")),
+            signal_dbm=_as_float(_column(row, "signal_dbm")),
+            wlan_ds=_as_int(_column(row, "wlan_ds")),
+            wlan_retry=_as_int(_column(row, "wlan_retry")),
+            wlan_type=_as_int(_column(row, "wlan_type")),
+            wlan_subtype=_as_int(_column(row, "wlan_subtype")),
+            wlan_duration=_as_int(_column(row, "wlan_duration")),
             proba_anomaly=_as_float(verdict.p1),
             proba_attack=_as_float(verdict.p2),
             predicted_label=verdict.label,

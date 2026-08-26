@@ -22,11 +22,14 @@ from sqlalchemy.pool import StaticPool
 os.environ.setdefault("OPENROUTER_API_KEY", "")
 
 from backend.app.db import Base, get_db  # noqa: E402
+from backend.app.config import ATTACK_CLASSES, FRONT_TYPES, SPEC_VERSION  # noqa: E402
 from backend.app.main import app  # noqa: E402
 from backend.app.models import Packet  # noqa: E402
 
 DAY_ORDER_SUN_FIRST = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"]
-KNOWN_LABELS = ["Deauth", "SSDP", "Evil_Twin", "(Re)Assoc", "RogueAP", "Krack"]
+# The endpoint derives its keys from feature_spec.ATTACK_CLASSES; so does this,
+# because a second hand-written list here would only pin the wrong answer.
+KNOWN_LABELS = list(ATTACK_CLASSES)
 
 
 @pytest.fixture(scope="module")
@@ -158,13 +161,20 @@ def test_health(client: TestClient) -> None:
         "packets",
         "latest_packet_ts",
         "models",
+        "model_version",
+        "spec_version",
+        "artefact_spec_version",
+        "model_problems",
         "version",
     }
     assert body["status"] in ("ok", "degraded")
     assert body["database"] is True
     assert body["packets"] == 5
     assert body["latest_packet_ts"] is not None
-    assert set(body["models"]) == {"stage1", "stage2"}
+    assert set(body["models"]) == {"stage1", "stage2", "v2"}
+    assert body["model_version"] in ("v1", "v2", "none")
+    assert body["spec_version"] == SPEC_VERSION
+    assert isinstance(body["model_problems"], list)
     assert isinstance(body["version"], str) and body["version"]
 
 
@@ -189,7 +199,7 @@ def test_attacks_listing_newest_first(client: TestClient) -> None:
     assert rows[-1]["raw"] == {"iface": "wlan1", "sa": "AA:BB:CC:DD:EE:01", "len": 128}
 
 
-def test_attacks_analysis_all_six_keys(client: TestClient) -> None:
+def test_attacks_analysis_every_attack_class(client: TestClient) -> None:
     r = client.get("/attacks/analysis")
     assert r.status_code == 200
     body = r.json()
@@ -247,15 +257,11 @@ def test_reports_summary(client: TestClient) -> None:
     body = r.json()
     assert set(body) == {"period", "totals", "summary"}
     assert body["period"] == "Last 30 day(s)"
-    assert set(body["totals"]) == {
-        "deauth",
-        "ssdp",
-        "evil_twin",
-        "reassoc",
-        "rogueap",
-        "krack",
-        "other",
-    }
+    # Derived from feature_spec.ATTACK_CLASSES plus the "other" bucket; eight
+    # attack keys as of spec 2.1.0, which added disas and kr00k.
+    assert set(body["totals"]) == set(FRONT_TYPES) | {"other"}
+    assert {"deauth", "ssdp", "evil_twin", "reassoc", "rogueap", "krack"} <= set(body["totals"])
+    assert {"disas", "kr00k"} <= set(body["totals"])
     assert body["totals"]["deauth"] == 2
     assert body["totals"]["evil_twin"] == 1
     assert body["totals"]["krack"] == 1

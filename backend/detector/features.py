@@ -17,11 +17,26 @@ import struct
 from dataclasses import dataclass
 from typing import Any, Dict, List, Optional, Tuple
 
-from scapy.layers.dot11 import Dot11, Dot11Elt, RadioTap
+from scapy.layers.dot11 import Dot11, Dot11Disas, Dot11Deauth, Dot11Elt, RadioTap
+from scapy.layers.eap import EAPOL
+
+from backend.detector.feature_spec import FEATURE_ORDER as FEATURE_ORDER_V2
+from backend.detector.feature_spec import FrameState, derive_frame_features
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["ExtractState", "packet_to_row", "FEATURE_ORDER", "freq_to_channel"]
+__all__ = [
+    "ExtractState",
+    "packet_to_row",
+    "FEATURE_ORDER",
+    "freq_to_channel",
+    "all_dbm_antsignal",
+    # v2
+    "FEATURE_ORDER_V2",
+    "FrameState",
+    "scapy_to_raw",
+    "packet_to_features_v2",
+]
 
 
 # ---------------------------------------------------------------------------
@@ -170,33 +185,47 @@ def _present_names(rt: Any) -> set:
         return set()
 
 
-def all_dbm_antsignal(pkt: Any) -> List[int]:
-    """Every ``dBm_AntSignal`` value in the radiotap header, in order.
+def _radiotap_masks(pkt: Any) -> Tuple[bytes, int, List[int], int]:
+    """``(raw bytes, radiotap header length, presence masks, offset past masks)``.
 
-    Scapy 2.6.1 decodes only the first namespace, leaving the per-antenna repeats
-    in ``notdecoded``. Multi-antenna adapters (the Pi's, and the ones the training
-    captures were taken with) emit one value per chain, so we walk the raw
-    presence masks ourselves. Returns ``[]`` when nothing can be parsed.
+    Scapy 2.6.1 decodes only the first presence namespace, so anything that needs
+    the extended masks (per-chain signal, the raw presence bitmap) has to walk the
+    header itself. Returns ``(b"", 0, [], 0)`` when the header cannot be parsed.
     """
     try:
         raw = bytes(pkt.original if getattr(pkt, "original", None) else bytes(pkt))
         if len(raw) < 8:
-            return []
+            return b"", 0, [], 0
         _ver, _pad, hdr_len = struct.unpack_from("<BBH", raw, 0)
         if hdr_len < 8 or hdr_len > len(raw):
-            return []
+            return b"", 0, [], 0
 
         masks: List[int] = []
         off = 4
         while True:
             if off + 4 > hdr_len:
-                return []
+                return b"", 0, [], 0
             (m,) = struct.unpack_from("<I", raw, off)
             masks.append(m)
             off += 4
             if not (m & (1 << 31)):
                 break
+        return raw, hdr_len, masks, off
+    except Exception:  # pragma: no cover - defensive; malformed radiotap
+        return b"", 0, [], 0
 
+
+def all_dbm_antsignal(pkt: Any) -> List[int]:
+    """Every ``dBm_AntSignal`` value in the radiotap header, in order.
+
+    Multi-antenna adapters (the Pi's, and the ones the training captures were
+    taken with) emit one value per chain. Returns ``[]`` when nothing can be
+    parsed.
+    """
+    raw, hdr_len, masks, off = _radiotap_masks(pkt)
+    if not masks:
+        return []
+    try:
         out: List[int] = []
         for mask in masks:
             if mask & (1 << _RT_BIT["VendorNS"]):
@@ -450,3 +479,541 @@ def packet_to_row(pkt: Any, iface: str, state: ExtractState) -> Tuple[Dict[str, 
         "ssid": _ssid_from_beacon_or_probe(pkt),
     }
     return row, raw_min
+
+
+# ===========================================================================
+# v2: scapy packet -> normalised tshark-like dict -> feature_spec derivation
+# ===========================================================================
+# The v1 failure was structural: training read tshark columns, inference built a
+# different dict in different code, and 16 of 29 features were silently NULL in
+# the field. v2 removes the possibility: both paths emit the *same* raw dict and
+# call the *same* ``derive_frame_features()``.
+#
+# Multi-value convention
+# ----------------------
+# AWID3's CSV export joins tshark's repeated fields with "-", not "," --
+# ``radiotap.dbm_antsignal='-29-32-29'``, ``wlan.tag.length='0-8-26-12'``,
+# ``radiotap.present.tsft='1-0-0'`` (one entry per radiotap presence word).
+# We reproduce that shape exactly rather than a cleaned-up single value, so that
+# whatever ``feature_spec`` does with a multi-value cell it does identically on
+# both sides. See the notes in ``backend/tests/test_features_v2.py``.
+
+#: separator AWID3 uses to join tshark's repeated field occurrences
+AWID3_MULTI_SEP = "-"
+
+# radiotap Flags bits
+_RTF_BADFCS = 0x40
+
+# 802.11 capability-info bits, as scapy's FlagsField numbers them
+_CAP_ESS = 0x0100
+_CAP_IBSS = 0x0200
+
+# information-element IDs
+_IE_SSID = 0
+_IE_COUNTRY = 7
+_IE_RSN = 48
+
+# EAPOL Key Information bits (IEEE 802.11-2016 12.7.2)
+_KI_INSTALL = 0x0040
+_KI_ACK = 0x0080
+_KI_MIC = 0x0100
+_KI_SECURE = 0x0200
+
+#: (bits/subcarrier, coding rate) per HT/VHT MCS index
+_MCS_MODULATION: Dict[int, Tuple[int, float]] = {
+    0: (1, 1 / 2), 1: (2, 1 / 2), 2: (2, 3 / 4), 3: (4, 1 / 2), 4: (4, 3 / 4),
+    5: (6, 2 / 3), 6: (6, 3 / 4), 7: (6, 5 / 6), 8: (8, 3 / 4), 9: (8, 5 / 6),
+    10: (10, 3 / 4), 11: (10, 5 / 6),
+}
+
+#: data subcarriers per channel width (MHz)
+_N_SUBCARRIERS: Dict[int, int] = {20: 52, 40: 108, 80: 234, 160: 468}
+
+
+def _mcs_rate_mbps(
+    mcs_index: int, nss: int, bw_mhz: int, short_gi: bool
+) -> Optional[float]:
+    """PHY rate in Mb/s for an HT/VHT MCS, as ``wlan_radio.data_rate`` reports it.
+
+    ``rate = N_SD * bits_per_subcarrier * coding_rate * N_SS / T_sym``, with
+    ``T_sym`` 4.0 us (long GI) or 3.6 us (short GI). Reproduces the published
+    tables exactly: HT MCS 21 at 20 MHz short-GI -> 173.333 Mb/s, which is one of
+    the values AWID3 actually contains.
+    """
+    mod = _MCS_MODULATION.get(mcs_index)
+    nsd = _N_SUBCARRIERS.get(bw_mhz)
+    if mod is None or nsd is None or nss < 1 or nss > 8:
+        return None
+    bits, coding = mod
+    t_sym = 3.6 if short_gi else 4.0
+    return round(nsd * bits * coding * nss / t_sym, 3)
+
+
+def _ht_rate(rt: Any) -> Optional[float]:
+    """``wlan_radio.data_rate`` from a radiotap MCS field."""
+    idx = _to_int(getattr(rt, "MCS_index", None))
+    if idx is None or idx >= 32:      # >=32 is the 40 MHz duplicate mode
+        return None
+    bw_code = _to_int(getattr(rt, "MCS_bandwidth", None)) or 0
+    short_gi = bool(_to_int(getattr(rt, "guard_interval", None)) or 0)
+    return _mcs_rate_mbps(idx % 8, idx // 8 + 1, 40 if bw_code == 1 else 20, short_gi)
+
+
+def _vht_rate(rt: Any) -> Optional[float]:
+    """``wlan_radio.data_rate`` from a radiotap VHT field (first user only)."""
+    try:
+        mcs_nss = getattr(rt, "mcs_nss", None)
+        if not mcs_nss:
+            return None
+        first = mcs_nss[0]
+        if hasattr(first, "mcs"):
+            mcs, nss = _to_int(first.mcs), _to_int(first.nss)
+        else:
+            v = _to_int(first) or 0
+            mcs, nss = (v >> 4) & 0x0F, v & 0x0F
+        if mcs is None or not nss:
+            return None
+        bw_code = _to_int(getattr(rt, "VHT_bandwidth", None)) or 0
+        bw = 20 if bw_code == 0 else 40 if bw_code <= 3 else 80 if bw_code <= 10 else 160
+        short_gi = bool((_to_int(getattr(rt, "PresentVHT", None)) or 0) & 0x04)
+        return _mcs_rate_mbps(mcs, nss, bw, short_gi)
+    except Exception:  # pragma: no cover - defensive; vendor-mangled VHT field
+        return None
+
+
+def _flags_int(v: Any) -> Optional[int]:
+    """Integer value of a scapy ``FlagsField``.
+
+    ``_to_int`` cannot be used: it goes through ``float()``, and ``float()`` of a
+    ``FlagValue`` raises, so every radiotap flags field would silently read as
+    ``None`` (which is how ``radiotap.channel.flags.cck/ofdm`` came out constant-0
+    on the first pass over the real captures).
+    """
+    if v is None:
+        return None
+    try:
+        return int(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _dot11_duration(d11: Any) -> Optional[int]:
+    """``wlan.duration`` in microseconds.
+
+    Scapy declares the Duration/ID field as a big-endian ``ShortField``, but the
+    802.11 MAC header is little-endian, so ``d11.ID`` comes back byte-swapped:
+    a 314 us duration reads as 14849, and 69 of 4000 frames in
+    ``disassoc_raw_decrypted.pcapng`` exceed the 32767 us the field can even hold.
+    Swap it back to what tshark reports.
+    """
+    raw = _to_int(getattr(d11, "ID", None))
+    if raw is None:
+        return None
+    return ((raw & 0xFF) << 8) | ((raw >> 8) & 0xFF)
+
+
+def _present_tsft_field(pkt: Any, present: set) -> Optional[str]:
+    """``radiotap.present.tsft`` in AWID3's shape: one 0/1 per presence word.
+
+    tshark emits the TSFT presence bit once per radiotap presence word, so a
+    header with two extension words reads ``"1-0-0"``. The value is a property of
+    the *bitmap*, not of the frame body, so ``"0"`` is a real observation and is
+    reported as such -- it is not an invented value.
+    """
+    _raw, _hdr, masks, _off = _radiotap_masks(pkt)
+    if not masks:
+        return "1" if "TSFT" in present else None
+    return AWID3_MULTI_SEP.join("1" if (m & 0x01) else "0" for m in masks)
+
+
+def _walk_ies(pkt: Any) -> List[Tuple[int, bytes, int]]:
+    """``(element id, body, declared length)`` for every 802.11 information element.
+
+    Walks the raw TLV bytes rather than scapy's per-IE dissectors: the specialised
+    classes (``Dot11EltCountry``, ``Dot11EltRSN``, ...) expose different attribute
+    names and some real-world IEs fail to dissect at all. Truncated elements are
+    returned with whatever body survived and terminate the walk.
+    """
+    try:
+        first = pkt.getlayer(Dot11Elt)
+        if first is None:
+            return []
+        blob = bytes(first)
+    except Exception:
+        return []
+
+    out: List[Tuple[int, bytes, int]] = []
+    off, n = 0, len(blob)
+    while off + 2 <= n and len(out) < 128:
+        eid, declared = blob[off], blob[off + 1]
+        body = blob[off + 2: off + 2 + declared]
+        out.append((eid, body, declared))
+        if len(body) < declared:            # truncated capture
+            break
+        off += 2 + declared
+    return out
+
+
+def _parse_rsn_ie(body: bytes) -> Dict[str, Any]:
+    """MFP-capable bit and PMKID presence from an RSN information element.
+
+    The RSN IE is variable-length and every section after the version is optional,
+    so each step is bounds-checked and a short IE simply yields fewer keys.
+    Layout: version(2) group-cipher(4) n_pairwise(2) suites(4n) n_akm(2)
+    suites(4n) capabilities(2) [n_pmkid(2) pmkids(16n)] [group-mgmt-cipher(4)].
+    """
+    out: Dict[str, Any] = {}
+    try:
+        off = 2 + 4                                 # past version + group cipher
+        for _ in range(2):                          # pairwise then AKM suite lists
+            if off + 2 > len(body):
+                return out
+            count = int.from_bytes(body[off:off + 2], "little")
+            off += 2
+            if count > 16:                          # implausible; refuse to guess
+                return out
+            off += 4 * count
+        if off + 2 > len(body):
+            return out
+        caps = int.from_bytes(body[off:off + 2], "little")
+        off += 2
+        out["mfpc"] = (caps >> 7) & 0x01
+        out["mfpr"] = (caps >> 6) & 0x01
+        if off + 2 <= len(body):
+            n_pmkid = int.from_bytes(body[off:off + 2], "little")
+            off += 2
+            if 0 < n_pmkid <= 16 and off + 16 <= len(body):
+                out["pmkid"] = body[off:off + 16].hex()
+    except Exception:  # pragma: no cover - defensive; malformed RSN IE
+        pass
+    return out
+
+
+def _eapol_msgnr(key_info: int, key_data_len: Optional[int]) -> Optional[int]:
+    """Which of the four 4-way-handshake messages this EAPOL-Key frame is.
+
+    Same rule the wlan_rsna_eapol dissector uses, off the Key Information bits:
+
+    ==== ==== ====== ======================================================
+    Ack  MIC  Secure message
+    ==== ==== ====== ======================================================
+    1    0    -      1  (AP -> STA, ANonce, no MIC yet)
+    0    1    0      2  (STA -> AP, SNonce + MIC, key data present)
+    1    1    -      3  (AP -> STA, GTK, MIC; the frame Krack replays)
+    0    1    1      4  (STA -> AP, MIC only, no key data)
+    ==== ==== ====== ======================================================
+    """
+    ack = bool(key_info & _KI_ACK)
+    mic = bool(key_info & _KI_MIC)
+    secure = bool(key_info & _KI_SECURE)
+    if ack:
+        return 3 if mic else 1
+    if mic:
+        if secure or (key_data_len is not None and key_data_len == 0):
+            return 4
+        return 2
+    return None
+
+
+def _eapol_key_body(pkt: Any) -> Dict[str, Any]:
+    """Key-descriptor fields of an EAPOL-Key frame.
+
+    Scapy's ``EAPOL_KEY`` is used when it dissected; otherwise the 802.1X key
+    frame is unpacked by hand from the EAPOL payload, because a truncated or
+    vendor-padded body is common on the air and losing the whole handshake to one
+    short frame would cost the Krack signal.
+    """
+    out: Dict[str, Any] = {}
+    eapol = pkt.getlayer(EAPOL)
+    if eapol is None:
+        return out
+
+    try:
+        from scapy.layers.eap import EAPOL_KEY   # optional in older scapy
+
+        key = pkt.getlayer(EAPOL_KEY)
+    except Exception:  # pragma: no cover - very old scapy
+        key = None
+
+    key_info: Optional[int] = None
+    key_len: Optional[int] = None
+    replay: Optional[int] = None
+    data_len: Optional[int] = None
+    nonce: Optional[bytes] = None
+
+    if key is not None:
+        key_info = 0
+        for attr, bit in (
+            ("install", _KI_INSTALL), ("key_ack", _KI_ACK),
+            ("has_key_mic", _KI_MIC), ("secure", _KI_SECURE),
+        ):
+            if _to_int(getattr(key, attr, 0)):
+                key_info |= bit
+        key_len = _to_int(getattr(key, "key_length", None))
+        replay = _to_int(getattr(key, "key_replay_counter", None))
+        data_len = _to_int(getattr(key, "key_data_length", None))
+        n = getattr(key, "key_nonce", None)
+        nonce = bytes(n) if n else None
+    else:
+        body = bytes(eapol.payload) if eapol.payload else b""
+        if len(body) >= 95:
+            #  0 descriptor-type, 1..2 key-info, 3..4 key-len, 5..12 replay,
+            # 13..44 nonce, 45..60 IV, 61..68 RSC, 69..76 reserved,
+            # 77..92 MIC, 93..94 key-data-len
+            key_info = int.from_bytes(body[1:3], "big")
+            key_len = int.from_bytes(body[3:5], "big")
+            replay = int.from_bytes(body[5:13], "big")
+            nonce = body[13:45]
+            data_len = int.from_bytes(body[93:95], "big")
+
+    if key_info is None:
+        return out
+    out["eapol.keydes.key_len"] = key_len
+    out["eapol.keydes.replay_counter"] = replay
+    out["wlan_rsna_eapol.keydes.data_len"] = data_len
+    out["wlan_rsna_eapol.keydes.key_info.key_mic"] = 1 if key_info & _KI_MIC else 0
+    if nonce:
+        out["wlan_rsna_eapol.keydes.nonce"] = nonce.hex()
+    out["wlan_rsna_eapol.keydes.msgnr"] = _eapol_msgnr(key_info, data_len)
+    return out
+
+
+def _ds_addresses(d11: Any) -> Dict[str, Optional[str]]:
+    """tshark's ``wlan.sa/da/bssid/ta/ra`` for one MAC header.
+
+    Which of addr1..addr4 is which depends on the DS bits, and getting it wrong
+    silently corrupts ``addr.sa_is_bssid``, ``addr.ta_eq_sa`` and
+    ``addr.same_bssid_as_prev``:
+
+    ====== ======== ====== ====== ====== ======
+    ToDS   FromDS   addr1  addr2  addr3  addr4
+    ====== ======== ====== ====== ====== ======
+    0      0        DA     SA     BSSID  -
+    1      0        BSSID  SA     DA     -
+    0      1        DA     BSSID  SA     -
+    1      1        RA     TA     DA     SA
+    ====== ======== ====== ====== ====== ======
+
+    Control frames (type 1) carry only RA and sometimes TA, so no SA/DA/BSSID is
+    reported for them -- exactly as tshark leaves those columns empty.
+    """
+    a1 = getattr(d11, "addr1", None)
+    a2 = getattr(d11, "addr2", None)
+    a3 = getattr(d11, "addr3", None)
+    a4 = getattr(d11, "addr4", None)
+    out: Dict[str, Optional[str]] = {
+        "wlan.ra": a1, "wlan.ta": a2,
+        "wlan.sa": None, "wlan.da": None, "wlan.bssid": None,
+    }
+    if _to_int(getattr(d11, "type", None)) == 1:
+        return out                                   # control frame: RA/TA only
+
+    try:
+        fc = int(getattr(d11, "FCfield", 0) or 0)
+    except Exception:
+        fc = 0
+    to_ds, from_ds = bool(fc & _FC_TO_DS), bool(fc & _FC_FROM_DS)
+    if to_ds and from_ds:
+        out.update({"wlan.da": a3, "wlan.sa": a4})   # WDS: no single BSSID
+    elif to_ds:
+        out.update({"wlan.bssid": a1, "wlan.sa": a2, "wlan.da": a3})
+    elif from_ds:
+        out.update({"wlan.da": a1, "wlan.bssid": a2, "wlan.sa": a3})
+    else:
+        out.update({"wlan.da": a1, "wlan.sa": a2, "wlan.bssid": a3})
+    return out
+
+
+def scapy_to_raw(pkt: Any, iface: str, state: FrameState) -> Dict[str, Any]:
+    """One scapy packet -> the tshark-named dict ``derive_frame_features`` eats.
+
+    Keys use tshark's own field names (see ``AWID3_SOURCE_COLUMNS``). **A field
+    the frame does not carry is absent**, never zero-filled: the spec turns
+    absence into NaN for a magnitude and 0 for a flag, and the model is trained on
+    that convention. ``state`` supplies the previous frame's timestamp so
+    ``frame.time_delta`` matches tshark's, and is advanced here.
+    """
+    raw: Dict[str, Any] = {}
+
+    def put(key: str, value: Any) -> None:
+        if value is not None:
+            raw[key] = value
+
+    # ---- frame ------------------------------------------------------------
+    try:
+        put("frame.len", len(pkt))
+    except Exception:
+        pass
+
+    ts = _to_float(getattr(pkt, "time", None))
+    if ts is not None:
+        prev = state.prev_epoch
+        put("frame.time_epoch", ts)
+        # tshark reports 0 for the first frame of a capture, not "unknown".
+        put("frame.time_delta", 0.0 if prev is None else max(0.0, ts - prev))
+        state.prev_epoch = ts
+
+    # ---- radiotap ---------------------------------------------------------
+    rt = pkt.getlayer(RadioTap) if hasattr(pkt, "getlayer") else None
+    present: set = set()
+    chan_flags: Optional[int] = None
+    freq: Optional[int] = None
+    legacy_rate: Optional[float] = None
+
+    if rt is not None:
+        present = _present_names(rt)
+        put("radiotap.length", _to_int(getattr(rt, "len", None)))
+        put("radiotap.present.tsft", _present_tsft_field(pkt, present))
+
+        if "TSFT" in present:
+            put("radiotap.mactime", _to_float(getattr(rt, "mac_timestamp", None)))
+
+        if "Rate" in present:
+            legacy_rate = _to_float(getattr(rt, "Rate", None))
+            put("radiotap.datarate", legacy_rate)
+
+        if "Channel" in present:
+            freq = _to_int(getattr(rt, "ChannelFrequency", None))
+            put("radiotap.channel.freq", freq)
+            chan_flags = _flags_int(getattr(rt, "ChannelFlags", None))
+            if chan_flags is not None:
+                put("radiotap.channel.flags.cck", 1 if chan_flags & _CH_CCK else 0)
+                put("radiotap.channel.flags.ofdm", 1 if chan_flags & _CH_OFDM else 0)
+
+        if "RXFlags" in present:
+            put("radiotap.rxflags", _flags_int(getattr(rt, "RXFlags", None)))
+
+        if "Flags" in present:
+            flags = _flags_int(getattr(rt, "Flags", None)) or 0
+            if flags & _RTF_BADFCS:
+                # only ever asserted, never denied: tshark leaves the column empty
+                # when the FCS was fine, and AWID3 has it empty on every row.
+                put("wlan.fcs.bad_checksum", 1)
+
+        if "dBm_AntSignal" in present:
+            chains = all_dbm_antsignal(pkt)
+            if not chains:
+                one = _to_int(getattr(rt, "dBm_AntSignal", None))
+                chains = [one] if one is not None else []
+            if chains:
+                put("radiotap.dbm_antsignal",
+                    AWID3_MULTI_SEP.join(str(c) for c in chains))
+                # wlan_radio.signal_dbm is the LAST dBm_AntSignal in the header,
+                # not the first, strongest or weakest. Verified against tshark
+                # 4.x on data/samples/deauth_raw_decrypted.pcapng: chains
+                # [-37,-37,-41] -> -41, [-34,-35,-34] -> -34. Taking the first
+                # chain disagreed with tshark on 97.6% of frames.
+                put("wlan_radio.signal_dbm", chains[-1])
+
+    # ---- 802.11 MAC header ------------------------------------------------
+    d11 = pkt.getlayer(Dot11) if hasattr(pkt, "getlayer") else None
+    ftype: Optional[int] = None
+    if d11 is not None:
+        ftype = _to_int(getattr(d11, "type", None))
+        put("wlan.fc.type", ftype)
+        put("wlan.fc.subtype", _to_int(getattr(d11, "subtype", None)))
+        try:
+            fc = int(getattr(d11, "FCfield", 0) or 0)
+        except Exception:
+            fc = 0
+        put("wlan.fc.ds", (1 if fc & _FC_TO_DS else 0) | (2 if fc & _FC_FROM_DS else 0))
+        put("wlan.fc.frag", 1 if fc & _FC_MORE_FRAG else 0)
+        put("wlan.fc.retry", 1 if fc & _FC_RETRY else 0)
+        put("wlan.fc.pwrmgt", 1 if fc & _FC_PWRMGT else 0)
+        put("wlan.fc.moredata", 1 if fc & _FC_MOREDATA else 0)
+        put("wlan.fc.protected", 1 if fc & _FC_PROTECTED else 0)
+        put("wlan.fc.order", 1 if fc & _FC_ORDER else 0)
+        put("wlan.duration", _dot11_duration(d11))
+
+        sc = _to_int(getattr(d11, "SC", None))
+        if sc is not None:
+            put("wlan.seq", sc >> 4)          # low 4 bits are the fragment number
+
+        for key, value in _ds_addresses(d11).items():
+            put(key, value)
+
+    # ---- management body (unencrypted, so always readable) ----------------
+    if d11 is not None and ftype == 0:
+        body = d11.payload
+
+        if isinstance(body, (Dot11Deauth, Dot11Disas)):
+            # The single most valuable v2 feature: carried by ~100% of
+            # Deauth/Disas/Kr00k attack frames and 0.3% of Normal.
+            put("wlan.fixed.reason_code", _to_int(getattr(body, "reason", None)))
+
+        put("wlan.fixed.beacon", _to_float(getattr(body, "beacon_interval", None)))
+
+        cap = getattr(body, "cap", None)
+        if cap is not None:
+            try:
+                ess = 1 if getattr(cap, "ESS") else 0
+                ibss = 1 if getattr(cap, "IBSS") else 0
+            except AttributeError:
+                cap_i = _to_int(cap) or 0
+                ess = 1 if cap_i & _CAP_ESS else 0
+                ibss = 1 if cap_i & _CAP_IBSS else 0
+            put("wlan.fixed.capabilities.ess", ess)
+            put("wlan.fixed.capabilities.ibss", ibss)
+
+        ies = _walk_ies(pkt)
+        if ies:
+            put("wlan.tag.length",
+                AWID3_MULTI_SEP.join(str(declared) for _id, _b, declared in ies))
+        for eid, ie_body, _declared in ies:
+            if eid == _IE_SSID and "wlan.ssid" not in raw:
+                # latin-1 so len(str) == len(bytes), matching AWID3's ISO-8859-1
+                # CSV encoding; the string itself never reaches the model.
+                put("wlan.ssid", ie_body.decode("latin-1"))
+            elif eid == _IE_COUNTRY and len(ie_body) >= 2:
+                put("wlan.country_info.code", ie_body[:2].decode("latin-1"))
+            elif eid == _IE_RSN:
+                rsn = _parse_rsn_ie(ie_body)
+                put("wlan.rsn.capabilities.mfpc", rsn.get("mfpc"))
+                put("wlan.rsn.ie.pmkid", rsn.get("pmkid"))
+
+    # ---- EAPOL (unencrypted; the Krack evidence) --------------------------
+    eapol = pkt.getlayer(EAPOL) if hasattr(pkt, "getlayer") else None
+    if eapol is not None:
+        put("eapol.type", _to_int(getattr(eapol, "type", None)))
+        put("eapol.len", _to_float(getattr(eapol, "len", None)))
+        for key, value in _eapol_key_body(pkt).items():
+            put(key, value)
+
+    # ---- wlan_radio.* (wireshark's synthesised radio summary) -------------
+    rate = legacy_rate
+    if rate is None and rt is not None:
+        if "MCS" in present:
+            rate = _ht_rate(rt)
+        elif "VHT" in present:
+            rate = _vht_rate(rt)
+    put("wlan_radio.data_rate", rate)
+    put("wlan_radio.phy", _derive_phy(present, chan_flags, freq))
+
+    return raw
+
+
+def packet_to_features_v2(
+    pkt: Any, iface: str, state: FrameState
+) -> Tuple[Dict[str, float], Dict[str, Any]]:
+    """``(47-feature vector, raw_min for the DB)`` for one scapy packet.
+
+    The whole point of v2: this function does no feature maths of its own. It
+    normalises the packet and hands it to the same ``derive_frame_features()``
+    the training pipeline calls, so parity is structural rather than reviewed.
+    """
+    raw = scapy_to_raw(pkt, iface, state)
+    features = derive_frame_features(raw, state)
+
+    raw_min: Dict[str, Any] = {
+        "iface": iface,
+        "sa": raw.get("wlan.sa"),
+        "da": raw.get("wlan.da"),
+        "bssid": raw.get("wlan.bssid"),
+        "len": raw.get("frame.len"),
+        "type": raw.get("wlan.fc.type"),
+        "subtype": raw.get("wlan.fc.subtype"),
+        "rate": raw.get("radiotap.datarate"),
+        "sig": raw.get("wlan_radio.signal_dbm"),
+        "ssid": _ssid_from_beacon_or_probe(pkt),
+    }
+    return features, raw_min

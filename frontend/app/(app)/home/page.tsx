@@ -5,7 +5,7 @@ import Link from "next/link"
 import { Button } from "@/components/ui/button"
 import { Badge } from "@/components/ui/badge"
 import { ArrowRight, CheckCircle } from "lucide-react"
-import { attackColors, attackLabels, type AttackType } from "@/lib/colors"
+import { attackColors, attackLabels, attackTypes } from "@/lib/colors"
 import { useToast } from "@/hooks/use-toast"
 import Logo from "@/components/Logo"
 
@@ -14,7 +14,6 @@ export default function HomePage() {
 
   useEffect(() => {
     const showRandomToast = () => {
-      const attackTypes: AttackType[] = ["ssdp", "evil_twin", "krack", "deauth", "reassoc", "rogueap", "other"]
       const channels = [1, 6, 11, 2, 7, 3, 8, 4, 9, 5, 10, 12, 13, 14]
 
       const randomType = attackTypes[Math.floor(Math.random() * attackTypes.length)]

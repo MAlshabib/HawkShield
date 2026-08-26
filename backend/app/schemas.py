@@ -95,12 +95,28 @@ class AskPayload(BaseModel):
 class ModelsPresent(BaseModel):
     stage1: bool
     stage2: bool
+    #: v2 ONNX artefact present *and* matching the running feature_spec.
+    v2: bool = False
 
 
 class HealthOut(BaseModel):
+    # ``model_version`` / ``model_problems`` collide with pydantic's protected
+    # ``model_`` namespace.  The names are the ones the contract publishes, so
+    # disable the guard for this response model rather than rename the fields.
+    model_config = ConfigDict(protected_namespaces=())
+
     status: str
     database: bool
     packets: int
     latest_packet_ts: Optional[datetime] = None
     models: ModelsPresent
+    #: Which pipeline the detector would load: "v2", "v1" or "none".
+    model_version: str = "none"
+    #: Feature-contract version this build of the code implements.
+    spec_version: Optional[str] = None
+    #: Version the on-disk v2 artefact claims; differs from ``spec_version``
+    #: exactly when the export is stale, which is why it is reported separately.
+    artefact_spec_version: Optional[str] = None
+    #: Why the v2 artefact was rejected, when it was present but unusable.
+    model_problems: List[str] = Field(default_factory=list)
     version: str

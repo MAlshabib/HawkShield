@@ -2,7 +2,9 @@ export const attackColors = {
   ssdp: "#60A5FA", // blue-400
   evil_twin: "#22D3EE", // cyan-300
   krack: "#3B82F6", // blue-500
+  kr00k: "#E879F9", // fuchsia-400 - magenta, the only warm-purple hue in the set
   deauth: "#38BDF8", // cyan-400
+  disas: "#FBBF24", // amber-400 - deliberately warm so it never reads as "deauth"
   reassoc: "#1D4ED8", // blue-700
   rogueap: "#0E7490", // cyan-700
   other: "#818CF8", // indigo-400
@@ -14,11 +16,16 @@ export const attackLabels: Record<AttackType, string> = {
   ssdp: "SSDP",
   evil_twin: "Evil Twin",
   krack: "KRACK",
+  kr00k: "Kr00k",
   deauth: "Deauth",
+  disas: "Disassociation",
   reassoc: "Re-Assoc",
   rogueap: "Rogue AP",
   other: "Other",
 } as const
+
+/** Canonical ordering for legends, filters and any other exhaustive listing. */
+export const attackTypes = Object.keys(attackColors) as AttackType[]
 
 // Theme colors for the cyber/neon aesthetic
 export const themeColors = {

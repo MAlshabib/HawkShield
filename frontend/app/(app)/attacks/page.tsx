@@ -5,7 +5,7 @@ import { AttacksTable } from "@/components/attacks/attacks-table"
 import { AttacksFiltersComponent } from "@/components/attacks/attacks-filters"
 import { AttackDetailDrawer } from "@/components/attacks/attack-detail-drawer"
 import { ReportModal } from "@/components/attacks/report-modal"
-import { attackColors, type AttackType } from "@/lib/colors"
+import { attackTypes, type AttackType } from "@/lib/colors"
 import { apiFetchJson } from "@/lib/api"
 
 /* ================== Config ================== */
@@ -52,43 +52,48 @@ const toDate = (ts: any): Date => {
 }
 
 const normKey = (s: string) => s.toLowerCase().replace(/[^a-z0-9]+/g, " ").replace(/\s+/g, " ").trim()
-const allowedTypes = Object.keys(attackColors) as AttackType[]
+const allowedTypes = attackTypes
 const normalizedAllowed = new Map(allowedTypes.map(k => [normKey(k), k]))
 
-// Normalise the backend attack label so it matches an attackColors key.
+// Backend DB labels (and historical spellings) -> canonical attackColors key.
+// NOTE: aliases resolve straight to a key. They used to resolve to a *display*
+// string that was then re-normalised, which silently failed for any label whose
+// display form did not normalise back onto a key -- "(Re)Assoc" normalises to
+// "re assoc", which is not the key "reassoc", so every (Re)Assoc row fell
+// through to the fallback and was rendered as the first key in the map (SSDP).
+// NOTE: deliberately no alias for "normal" here, so benign traffic is never mapped onto a real attack type.
+const attackTypeAliases: Record<string, AttackType> = {
+  "evil twin": "evil_twin",
+  eviltwin: "evil_twin",
+  "rogue ap": "rogueap",
+  "re assoc": "reassoc",
+  "reassoc": "reassoc",
+  assoc: "reassoc",
+  disassoc: "disas",
+  disassociation: "disas",
+  "disassoc flood": "disas",
+  krook: "kr00k",
+  kr00k: "kr00k",
+}
+
 const normalizeAttackType = (raw: any): AttackType => {
   const r = String(raw ?? "").trim()
-  if (!r) return allowedTypes[0]
+  if (!r) return "other"
   const n = normKey(r)
 
   const direct = normalizedAllowed.get(n)
   if (direct) return direct as AttackType
 
-  // NOTE: deliberately no alias for "normal" here, so benign traffic is never mapped onto a real attack type.
-  const alias: Record<string, string> = {
-    "evil twin": "Evil Twin",
-    eviltwin: "Evil Twin",
-    evil_twin: "Evil Twin",
-    "rogue ap": "Rogue AP",
-    rogueap: "Rogue AP",
-    "re assoc": "(Re)Assoc",
-    reassoc: "(Re)Assoc",
-    "re-assoc": "(Re)Assoc",
-    "re/assoc": "(Re)Assoc",
-    deauth: "Deauth",
-    ssdp: "SSDP",
-    krack: "Krack",
-  }
-
   const cleaned = r.toLowerCase().replace(/[^a-z0-9]+/g, "")
-  const candidate = alias[n] || alias[n.replace(/\s+/g, "")] || alias[cleaned]
-  if (candidate) {
-    const found = normalizedAllowed.get(normKey(candidate))
-    if (found) return found as AttackType
-  }
+  const aliased = attackTypeAliases[n] ?? attackTypeAliases[n.replace(/\s+/g, "")] ?? attackTypeAliases[cleaned]
+  if (aliased) return aliased
 
-  for (const k of allowedTypes) if (normKey(k) === n) return k
-  return allowedTypes[0]
+  // Last chance: the de-punctuated form may itself be a key ("(Re)Assoc" -> "reassoc").
+  const byCleaned = normalizedAllowed.get(normKey(cleaned))
+  if (byCleaned) return byCleaned as AttackType
+
+  // Unknown label: bucket it, rather than mislabelling it as a specific attack.
+  return "other"
 }
 
 // Convert a frequency (MHz) into a channel number (2.4 / 5 GHz).
@@ -124,8 +129,10 @@ const normalizeRssi = (v: any): number | null => {
 }
 
 // Derive a severity when the server does not send one (uses label / proba_attack when present).
-const HIGH_TYPES: AttackType[] = ["deauth"]
-const MEDIUM_TYPES: AttackType[] = ["krack"]
+// Disassociation floods are the same class of availability attack as deauth;
+// Kr00k, like KRACK, is a confidentiality flaw rather than an outage.
+const HIGH_TYPES: AttackType[] = ["deauth", "disas"]
+const MEDIUM_TYPES: AttackType[] = ["krack", "kr00k"]
 const deriveSeverity = (
   raw: any,
   attackType: AttackType,

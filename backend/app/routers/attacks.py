@@ -10,6 +10,7 @@ from fastapi import APIRouter, Depends, Query
 from sqlalchemy import func, text
 from sqlalchemy.orm import Session
 
+from backend.app.config import ATTACK_CLASSES
 from backend.app.db import get_db
 from backend.app.models import Packet
 
@@ -17,8 +18,11 @@ logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["attacks"])
 
-# DB labels the analysis endpoint always reports, zero-filled.
-KNOWN_LABELS: List[str] = ["Deauth", "SSDP", "Evil_Twin", "(Re)Assoc", "RogueAP", "Krack"]
+# DB labels the analysis endpoint always reports, zero-filled.  Derived from
+# ``feature_spec.ATTACK_CLASSES`` (via config) rather than re-listed: v1 hardcoded
+# six here, the spec now defines eight, and a second hand-maintained list is how
+# ``Disas`` and ``Kr00k`` would have silently gone missing from the dashboard.
+KNOWN_LABELS: List[str] = list(ATTACK_CLASSES)
 
 # Accumulation order is Mon-first (``datetime.weekday()``); the response is
 # re-ordered Sun-first because that is what the frontend heatmap expects.
@@ -73,7 +77,12 @@ def packets_count(db: Session = Depends(get_db)) -> Dict[str, int]:
 
 @router.get("/attacks/analysis")
 def read_attack_analysis(db: Session = Depends(get_db)) -> Dict[str, int]:
-    """Count by ``predicted_label``; all six known keys are always present."""
+    """Count by ``predicted_label``; every attack class in the spec is present.
+
+    Eight keys as of spec 2.1.0, zero-filled.  A label the DB holds but the spec
+    no longer defines (a v1 row after a v2 upgrade, say) is not invented into the
+    response -- the key set is the spec's, not the table's.
+    """
     rows = (
         db.query(Packet.predicted_label, func.count(Packet.id))
         .filter(Packet.predicted_label.isnot(None))

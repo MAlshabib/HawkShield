@@ -15,8 +15,8 @@ Everything runs **on the Pi**, as a single web process:
 Raspberry Pi 4                                  Laptop
 ┌──────────────────────────────────────────┐
 │ hawkshield-detector.service  (root)      │
-│   scapy monitor-mode capture → 2-stage   │
-│   LightGBM → INSERT into packets         │
+│   scapy monitor-mode capture → causal    │
+│   TCN (ONNX) → INSERT into packets       │
 │              ↓ PostgreSQL :5432          │   ┌─────────┐
 │ hawkshield-api.service       (unpriv)    │ ◀─│ browser │
 │   uvicorn :8000                          │   └─────────┘
@@ -54,9 +54,9 @@ Defined once in `backend/app/models.py`; nobody else declares an ORM model or a 
 | `wlan_type` | Integer, nullable | |
 | `wlan_subtype` | Integer, nullable | |
 | `wlan_duration` | Integer, nullable | |
-| `proba_anomaly` | Float, nullable | stage-1 probability |
-| `proba_attack` | Float, nullable | stage-2 confidence of the chosen class |
-| `predicted_label` | String(64), nullable | one of the six class names below |
+| `proba_anomaly` | Float, nullable | v1: stage-1 probability. v2: `1 − P(Normal)` |
+| `proba_attack` | Float, nullable | v1: stage-2 confidence. v2: `P(chosen attack class)` |
+| `predicted_label` | String(64), nullable | one of `feature_spec.ATTACK_CLASSES` (eight as of spec 2.1.0) |
 | `raw` | JSON, nullable | small dict: iface, sa, da, bssid, len, type, subtype, rate, sig, ssid |
 
 **Only attack packets are persisted.** Normal traffic is classified and dropped.
@@ -77,8 +77,13 @@ credentials, or thresholds anywhere in the codebase. `backend/detector/*` reads 
 | `MODEL_DIR` | `<repo>/models` | detector, scripts |
 | `STAGE1_MODEL` | `stage1_binary_bundle.joblib` | detector |
 | `STAGE2_MODEL` | `stage2_multiclass_bundle.joblib` | detector |
-| `STAGE1_THRESHOLD` | `0.40` | detector |
-| `STAGE2_THRESHOLD` | `0.80` | detector |
+| `STAGE1_THRESHOLD` | `0.40` | detector — v1 *and* v2 ("is it an attack") |
+| `STAGE2_THRESHOLD` | `0.80` | detector — v1 *and* v2 ("confident which class") |
+| `MODEL_VERSION` | `auto` | detector — `auto` \| `v1` \| `v2`; see §5 |
+| `V2_MODEL` | `hawkshield_v2.onnx` | detector |
+| `V2_META` | `hawkshield_v2_meta.json` | detector, `/health` |
+| `V2_BATCH_FRAMES` | `32` | detector — frames per onnxruntime call |
+| `V2_ORT_THREADS` | `2` | detector — onnxruntime intra-op threads (`0` = runtime default) |
 | `CAPTURE_IFACE` | `wlan1` | detector |
 | `CAPTURE_CHANNEL` | `6` | detector |
 | `TARGET_SSID` | *(empty = no filter)* | detector |
@@ -126,27 +131,40 @@ All routes are registered on the app **without** a prefix (the frontend calls `$
 |---|---|---|
 | GET | `/attacks?limit=5000&offset=0` | `[ {…full packets row…}, … ]`, newest first. `limit` 1–100000, `offset` ≥ 0 |
 | GET | `/packets/count` | `{"count": int}` |
-| GET | `/attacks/analysis` | `{"Deauth": int, "SSDP": int, "Evil_Twin": int, "(Re)Assoc": int, "RogueAP": int, "Krack": int}` — always all six keys, zero-filled |
+| GET | `/attacks/analysis` | `{"Deauth": int, "Disas": int, "(Re)Assoc": int, "RogueAP": int, "Krack": int, "Kr00k": int, "Evil_Twin": int, "SSDP": int}` — always all **eight** attack keys, zero-filled, in `feature_spec.ATTACK_CLASSES` order. `Normal` is never a key: only attacks are persisted |
 | GET | `/top-offenders` | `[{"wlan_sa": mac, "count": int}, …]` desc by count (key name is `wlan_sa`, kept for the frontend) |
 | GET | `/channel-usage` | `[{"channel_freq": int, "count": int}, …]` desc by count |
 | GET | `/heatmap-attack` | `[{"day": "Sun".."Sat", "hours": [{"hour": 0..23, "intensity": int} × 24]}, …]` — Sun-first order |
 | GET | `/map/ap-locations` | `[{"bssid": str, "name": str, "lat": float, "lng": float}, …]` from `AP_LOCATIONS_FILE` |
 | GET | `/map/source-rssi?sa=<mac>&minutes=10` | `{"sa": str, "points": [{"bssid": str, "avg_rssi": float, "n": int}, …]}` |
 | POST | `/map/estimate-origin` | body `{"sa","minutes","ap_locations":[…]}` → `{"sa","method":"weighted-centroid","used":int,"center":{"lat","lng"}|null}` |
-| GET | `/reports/summary?days=30` | `{"period": str, "totals": {deauth,ssdp,evil_twin,reassoc,rogueap,krack,other}, "summary": {"totalAttacks","mostFrequentType","peakHour","uniqueSources"}}` |
+| GET | `/reports/summary?days=30` | `{"period": str, "totals": {deauth,ssdp,evil_twin,reassoc,rogueap,krack,disas,kr00k,other}, "summary": {"totalAttacks","mostFrequentType","peakHour","uniqueSources"}}` |
 | POST | `/reports/export` | body `{"days": int}` → `application/pdf` stream, `Content-Disposition: attachment; filename="hawkshield_report_<days>d.pdf"` |
 | POST | `/ask` | body `{"question": str, "session_id": str?}` → `{"cached": bool, "mode": "SQL"\|"DOCS"\|"OOS"\|"ERROR", "sql": str, "answer": str, "cols": [str], "rows": [obj], "error": str?}`; **503** `{"detail": "..."}` when no `OPENROUTER_API_KEY` |
-| GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool}, "version": str}` |
+| GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool, "v2": bool}, "model_version": "v2"\|"v1"\|"none", "spec_version": str, "artefact_spec_version": str\|null, "model_problems": [str], "version": str}` |
 
-Label mapping used by `/reports/summary` (DB label → frontend key), keep verbatim:
+Label mapping used by `/reports/summary` (DB label → frontend key). **Derived, not hand-maintained** —
+`backend/app/config.py` builds it from `feature_spec.ATTACK_CLASSES` by lower-casing and dropping
+punctuation, so a class added to the spec appears in `/attacks/analysis` and `/reports/summary` with no
+further edit. The six v1 keys are unchanged and keep their historical positions; v2 appends two:
 
 ```python
 TYPE_MAP_DB_TO_FRONT = {
-    "Deauth": "deauth", "SSDP": "ssdp", "Evil_Twin": "evil_twin",
-    "(Re)Assoc": "reassoc", "RogueAP": "rogueap", "Krack": "krack",
+    "Deauth": "deauth", "Disas": "disas", "(Re)Assoc": "reassoc", "RogueAP": "rogueap",
+    "Krack": "krack", "Kr00k": "kr00k", "Evil_Twin": "evil_twin", "SSDP": "ssdp",
 }
-FRONT_TYPES = ["deauth", "ssdp", "evil_twin", "reassoc", "rogueap", "krack"]
+FRONT_TYPES = ["deauth", "ssdp", "evil_twin", "reassoc", "rogueap", "krack", "disas", "kr00k"]
 ```
+
+`(Re)Assoc` maps to plain `reassoc` — punctuation is dropped, not escaped, so no key ever needs
+URL- or JSON-quoting. `totals` still carries the extra `"other"` bucket for labels the spec does not
+define (v1 rows left in the table after a v2 upgrade land there).
+
+**`/health` model reporting.** `model_version` is what the *detector would load from the files on disk*,
+computed by the API process from `MODEL_DIR` without importing `backend.detector.pipeline`. It is
+advisory: the detector's own `ACTIVE MODEL: …` startup log is authoritative. `spec_version` is the
+contract this build of the code implements; `artefact_spec_version` is what the on-disk v2 artefact
+claims. When they differ, `models.v2` is `false` and `model_problems` says exactly why.
 
 `/ask` keeps the existing TTL cache (200 entries / 600 s, key = sha256 of `session_id||question`) and the
 5-turn per-session memory.
@@ -156,7 +174,85 @@ HTTP-controlled subprocess. Do not reintroduce them.
 
 ---
 
-## 5. Model bundles
+## 5. Models
+
+HawkShield ships **two generations**. `MODEL_VERSION` (or `--model-version`) selects between them:
+
+| value | behaviour |
+|---|---|
+| `auto` *(default)* | v2 when `models/hawkshield_v2.onnx` + its meta exist **and** the meta matches the running `feature_spec`; otherwise v1, with the reason logged at ERROR |
+| `v2` | v2 or nothing — a mismatch raises `SpecMismatchError` and the process exits `2`. Never a silent downgrade |
+| `v1` | the two-stage LightGBM bundles in §5.2 |
+
+Whichever loads, it logs one line — `ACTIVE MODEL: v2 (causal TCN, ONNX) spec=...` or
+`ACTIVE MODEL: v1 (two-stage LightGBM) ...` — and that line is the authoritative record of what is running.
+
+### 5.1 v2 — `models/hawkshield_v2.onnx` (current)
+
+One causal dilated TCN replacing both v1 stages. Contract:
+
+```
+input   "frames"  (batch, 46, T) float32   NaN = the frame does not carry that field
+output  "logits"  (batch,  9, T) float32   one prediction per frame; streaming reads the last position
+```
+
+46 = `feature_spec.FEATURE_ORDER`, in that exact order. 9 = `feature_spec.CLASSES`
+(`Normal` + the eight attack classes). Normalisation constants and the mask-channel indices live **inside
+the graph** as initialisers and are copied into `models/hawkshield_v2_meta.json`; the graph is the
+authority and the meta copy exists so the runtime can check it.
+
+**NaN is signal, never imputed.** The graph replaces NaN with a learned per-feature sentinel and raises a
+companion mask channel. Any code that fills a missing feature with a mean, a median or `0.0` before
+handing it to this model has reintroduced the v1 defect.
+
+**Load-time validation is mandatory.** `V2Pipeline` refuses to start unless the meta's `spec_version`,
+class list, feature list *and feature order*, `n_features` and normalisation vector lengths all match the
+running `backend/detector/feature_spec.py`, **and** the ONNX graph's own declared input/output channel
+dims match too. All faults are reported at once, naming the artefact and the fix. This is the v1
+post-mortem made executable: v1 shipped a model whose feature space was not the one the extractor
+produced, and nothing anywhere said so.
+
+**Streaming.** The net is causal, so the prediction for the newest frame is valid from past context only.
+The detector keeps a ring buffer of the last `context` (126) frames, appends new frames, and reads the
+predictions at the last positions — the same arithmetic as `ml.windows.inference_chunks`, so a frame
+scored offline and the same frame scored live see the same history. At the head of a stream the sequence
+is simply shorter; there is no synthetic padding.
+
+**Batching.** `V2_BATCH_FRAMES` (32) frames are scored per onnxruntime call, by feeding
+`context + N` positions and reading the last `N` outputs. Every scored frame still sees a full `context`,
+so batching is a cost decision and never a correctness one — pinned by
+`backend/tests/test_pipeline_v2.py::test_streaming_equivalence`. Measured over 5000 frames of
+`data/samples/deauth_raw_decrypted.pcapng` through the full capture path (`V2_ORT_THREADS=2`, dev CPU):
+
+| N | calls | per-frame inference | throughput | inference share of wall time |
+|---|---|---|---|---|
+| 1 | 5000 | 1347.5 µs | 292 frame/s | 39% |
+| **32** | **157** | **54.7 µs** | **723 frame/s** | **4%** |
+| 64 | 79 | 41.4 µs | 716 frame/s | 3% |
+
+N=32 costs at most 32 frames of added detection delay (~32 ms at 1000 frame/s). N=64 halves the
+remaining 4% and doubles the delay, which buys nothing measurable — the other 96% is scapy parsing and
+feature derivation. For reference, v1 on the same 5000 frames runs at 780 frame/s, so v2 costs ~7% of
+end-to-end throughput.
+
+`V2_ORT_THREADS` is **2, not 0**. Left at the onnxruntime default (one thread per core, spin-waiting
+between calls) the same replay ran at 302 frame/s and 166 µs/frame — 2.4x slower end to end. A capture
+loop calling a small graph every 32 frames is not a batch job.
+
+**Verdict mapping** (so `sink.py` and the `packets` schema are unchanged):
+
+```
+p1    = 1 - P(Normal)                        compared against STAGE1_THRESHOLD
+label = argmax over the eight attack classes (never "Normal")
+p2    = P(label)                             compared against STAGE2_THRESHOLD
+stage = 1 when p1 < thr1, else 2; 0 when inference failed
+```
+
+`packet_to_features_v2()` feeds v2; `packet_to_row()` feeds v1. The pipeline's `model_version` decides,
+in one place, which extractor the capture loop uses — pairing a v2 model with v1 rows must be impossible
+by construction, not by review.
+
+### 5.2 v1 — the two-stage LightGBM bundles (fallback)
 
 `models/stage1_binary_bundle.joblib` (md5 `d67bfee99f1188513eb46f9c3a83f1cb`, was `binary_classifier_final.joblib`)
 
@@ -212,8 +308,9 @@ backend/
     routers/      attacks.py reports.py maps.py ask.py health.py
     rag/          packet_qa.py + knowledge/attacks.md   (RAG agent)
   detector/     Capture + inference only.  MUST NOT import backend.app.routers.*
-    pipeline.py   Stage1, Stage2, TwoStagePipeline
-    features.py   packet_to_row()
+    pipeline.py   V2Pipeline (v2), Stage1/Stage2/TwoStagePipeline (v1), build_pipeline()
+    feature_spec.py  THE feature + class contract; stdlib-only, imported by app and ml alike
+    features.py   packet_to_row() (v1), packet_to_features_v2() (v2)
     capture.py    monitor mode, sniff loop, heartbeat
     sink.py       batched DB writer
     cli.py        argparse entrypoint
@@ -222,6 +319,15 @@ backend/
 ```
 
 Both packages may import `backend.app.config` and `backend.app.db` / `backend.app.models`.
+
+**One carve-out to `app MUST NOT import backend.detector.*`:** `backend/app/config.py` imports
+`backend.detector.feature_spec`, and only that module. `feature_spec` is a stdlib-only leaf — it imports
+`math`, `re` and `typing` and nothing else — so it brings neither scapy nor lightgbm into the web process,
+which is what the rule exists to prevent. In exchange, the class list, the feature list and the spec
+version have exactly one definition in the repository. The routers and `/health` read them from
+`config`, never from `backend.detector` directly, and never by re-listing them. Adding a class to
+`feature_spec.ATTACK_CLASSES` is sufficient to make it appear in `/attacks/analysis` and
+`/reports/summary`.
 Run everything from the repo root; `backend/` is a package (`backend/__init__.py`, `backend/app/__init__.py`, …).
 
 ### Shared signatures (do not change)
@@ -232,15 +338,35 @@ def packet_to_row(pkt, iface: str, state: "ExtractState") -> tuple[dict, dict]:
     """Returns (row_for_model, raw_min_for_db). row keys are the 31 feature names above.
     `state` carries prev-packet timestamp and capture-start time for the delta features."""
 
+# backend/detector/features.py  (v2)
+def packet_to_features_v2(pkt, iface: str, state: "FrameState") -> tuple[dict, dict]:
+    """Returns (features, raw_min_for_db). features keys are feature_spec.FEATURE_ORDER;
+    an absent field is NaN for a magnitude and 0.0 for a flag - never imputed."""
+
 # backend/detector/pipeline.py
-class TwoStagePipeline:
+def build_pipeline(model_version="auto", model_dir=None, thr1=None, thr2=None,
+                   batch_frames=None) -> "V2Pipeline | TwoStagePipeline":
+    """Selects per section 5 and logs ACTIVE MODEL. Both returns expose .model_version,
+    .thr1, .thr2 and .predict(row) -> Verdict."""
+
+class V2Pipeline:              # model_version == "v2"
+    def push(self, features: dict) -> list["Verdict"]:
+        """Buffer one frame; [] until the batch fills, then one verdict per buffered
+        frame, oldest first. The caller keeps the matching packets."""
+    def flush(self) -> list["Verdict"]: ...   # score a partial batch; call when idle
+    def reset(self) -> None: ...              # drop the ring buffer at a stream boundary
+    def predict(self, row: dict) -> "Verdict": ...   # single frame, forces a flush
+
+class TwoStagePipeline:        # model_version == "v1"
     def __init__(self, model_dir: Path, thr1: float, thr2: float) -> None: ...
     def predict(self, row: dict) -> "Verdict":
         """Verdict(is_attack: bool, label: str|None, p1: float|None, p2: float|None, stage: int)"""
 
 # backend/detector/sink.py
 class PacketSink:
-    def write(self, raw: dict, row: dict, verdict: Verdict, iface: str) -> None: ...
+    def write(self, raw: dict, row: dict, verdict: Verdict, iface: str) -> None:
+        """Accepts a v1 *or* a v2 feature row: the `packets` columns are looked up
+        through an alias table, so the schema did not change for v2."""
     def flush(self) -> None: ...
     def close(self) -> None: ...
 
@@ -316,11 +442,16 @@ The `SELECT`-only assertion and the `RAG_MAX_ROWS` cap sit above the split and a
 
 ### 8.4 Preflight, in order
 
-`.env` created from `.env.example` if absent → database chosen (§8.2) → both model bundles present in
+`.env` created from `.env.example` if absent → database chosen (§8.2) → **both v1 bundles** present in
 `MODEL_DIR` → `frontend/out/index.html` present (warn only) → `python -m backend.scripts.init_db` →
 port free → root, if the detector is wanted. Failures exit `2`. Losing root downgrades to dashboard-only with
 a `sudo` hint rather than failing. `SIGINT`/`SIGTERM` terminate children in reverse start order with an
 8-second grace period before `kill()`.
+
+**Known gap.** That third check still looks only for the two v1 `.joblib` bundles, so a checkout
+carrying a valid v2 artefact and no v1 bundles is refused by `run.py` even though the detector would
+run fine on v2. Harmless today (both bundles ship), but `run.py` should accept *either* generation —
+v2 ONNX + meta, or both v1 bundles. Owner of `run.py`, not of the detector.
 
 ### 8.5 Flags
 

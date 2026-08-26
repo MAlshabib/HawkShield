@@ -7,7 +7,7 @@ import { Badge } from "@/components/ui/badge"
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover"
 import { Checkbox } from "@/components/ui/checkbox"
 import { Search, Filter, X } from "lucide-react"
-import { attackColors, attackLabels, type AttackType } from "@/lib/colors"
+import { attackColors, attackLabels, attackTypes, type AttackType } from "@/lib/colors"
 import type { AttacksFilters as FiltersType, AttackEvent } from "@/app/(app)/attacks/page"
 
 interface AttacksFiltersProps {
@@ -16,7 +16,6 @@ interface AttacksFiltersProps {
 }
 
 export function AttacksFiltersComponent({ filters, onFiltersChange }: AttacksFiltersProps) {
-  const attackTypes = Object.keys(attackColors) as AttackType[]
   const severities: AttackEvent["severity"][] = ["Low", "Medium", "High"]
 
   const updateFilters = (updates: Partial<FiltersType>) => {
