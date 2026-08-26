@@ -4,7 +4,13 @@ How one 802.11 frame becomes a row on a dashboard.
 
 This document describes what the code does. The normative interface definitions live in
 [`CONTRACT.md`](CONTRACT.md); the model card and its limitations live in
-[`../models/README.md`](../models/README.md).
+[`../models/README.md`](../models/README.md); the same flow drawn as diagrams is in
+[`model-pipeline.md`](model-pipeline.md).
+
+> **Two generations.** The detector loads either the **v2** causal TCN (ONNX) or the **v1** two-stage
+> LightGBM pair, chosen by `MODEL_VERSION`. Steps 1, 4 and 5 below are identical for both; steps 2
+> and 3 differ, and both are described. **No trained v2 artefact exists in this repository yet**, so
+> `auto` currently resolves to v1 — see [`models.md`](models.md).
 
 ---
 
@@ -44,18 +50,24 @@ debugging without dragging the rest of the system along.
         │
         ▼
  ┌─────────────────────────────────────────────────────────────────────┐
- │ 2. features.py — packet_to_row(pkt, iface, state)                   │
- │      -> (row: 31 named features, raw_min: 10-key dict for the DB)   │
+ │ 2. features.py — packet_to_features_v2(pkt, iface, state)     [v2]  │
+ │      scapy_to_raw()  →  dict keyed by tshark column names           │
+ │      feature_spec.derive_frame_features()  →  46 floats             │
+ │      -> (row: 46 features, raw_min: 10-key dict for the DB)         │
+ │    [v1]  packet_to_row()  →  31 named features                      │
  └─────────────────────────────────────────────────────────────────────┘
         │
         ▼  optional SSID soft filter (TARGET_SSID)
  ┌─────────────────────────────────────────────────────────────────────┐
- │ 3. pipeline.py — TwoStagePipeline.predict(row) -> Verdict           │
- │      stage 1: impute → scale → reindex → Booster → p1               │
+ │ 3. pipeline.py — V2Pipeline.predict(row) -> Verdict           [v2]  │
+ │      ring buffer: the last 126 frames of causal context             │
+ │      onnxruntime, 32 frames per call → 9 logits per frame           │
+ │      p1 = 1 − P(Normal)                                             │
  │        p1 <  STAGE1_THRESHOLD  →  Verdict(is_attack=False, stage=1) │
- │      stage 2: same transform → 6-way softmax → (label, p2)          │
+ │      label = argmax over the 8 attack classes;  p2 = P(label)       │
  │        p2 <  STAGE2_THRESHOLD  →  Verdict(is_attack=False, stage=2) │
  │        otherwise               →  Verdict(is_attack=True, ...)      │
+ │    [v1]  TwoStagePipeline: impute → scale → reindex → 2 × Booster   │
  └─────────────────────────────────────────────────────────────────────┘
         │ is_attack only
         ▼
@@ -96,28 +108,110 @@ to arrive.
 
 ### Step 2 — feature extraction
 
-`packet_to_row()` returns two things:
+Both generations return the same *pair*:
 
-* **`row`** — a dict keyed by the 31 model feature names, built from the RadioTap and Dot11 headers.
+* **`row`** — a dict keyed by that generation's feature names, built from the RadioTap and Dot11
+  headers.
 * **`raw_min`** — a small dict (`iface`, `sa`, `da`, `bssid`, `len`, `type`, `subtype`, `rate`, `sig`,
   `ssid`) stored verbatim in the `packets.raw` JSON column. It exists so an analyst can see the
   identity fields the model was never allowed to look at.
 
-The governing rule is: **a field the frame does not actually carry stays `None`**, so the bundle's
-`SimpleImputer` fills it with the training median. Nothing is invented. This matters more than it
-sounds — see §7.
+#### v2 — `packet_to_features_v2(pkt, iface, state)`
 
-Two features cannot be derived from a packet in isolation, so `ExtractState` carries them across
-calls: `frame.time_delta` (seconds since the previous captured frame) and `frame.time_relative`
-(seconds since the first frame of this capture session). The state object is per-detector-process, so
-`frame.time_relative` resets on every restart.
+Two steps, and the second one is the whole design:
 
-Of the 31 features, 29 are numeric and are the ones the imputer and scaler were fit on. The remaining
-two — `wlan.country_info.fnm` and `wlan.country_info.code` — are tshark-parsed categoricals with no
-scapy equivalent. They are always absent at inference time and are filled with `0.0` when the row is
-reindexed into the model's 31-column space.
+```
+scapy packet
+  → scapy_to_raw()                        a dict keyed by tshark / AWID3 column names
+  → feature_spec.derive_frame_features()  46 floats, in FEATURE_ORDER
+```
 
-### Step 3 — the two-stage classifier
+`derive_frame_features()` lives in `backend/detector/feature_spec.py` and is called by **both** this
+path and `ml/prepare_awid3.py`, the AWID3 preprocessor. Training and inference cannot derive features
+differently, because there is only one derivation. In v1 they were two separate implementations and
+16 of 29 features were silently absent live — see §7.
+
+The governing rule is: **a field the frame does not carry becomes NaN (for a magnitude) or `0.0` (for
+a flag), never invented and never imputed.** NaN reaches the model as a learned per-feature sentinel
+plus a companion mask channel, so "absent" is information the network can use rather than a value it
+is told equals the average.
+
+`FrameState` carries the only cross-frame state the contract allows: the previous frame's sequence
+number and BSSID (for `wlan.seq_delta` and `addr.same_bssid_as_prev`), plus the previous epoch, used
+only to reconstruct `frame.dt` when the source supplied no delta. It is O(1) by design and **cannot
+leak absolute session time into the features** — which is exactly what v1's `ExtractState` did.
+
+No raw identifier is in the v2 feature space. Addresses appear only as derived semantics
+(`addr.da_broadcast`, `addr.sa_is_bssid`, `addr.sa_local_admin`, …) and the SSID only as a length.
+The feature groups and the banned-field list are in [`models.md` §3](models.md).
+
+#### v1 — `packet_to_row(pkt, iface, state)`
+
+31 features: 29 numeric ones the bundle's imputer and scaler were fit on, plus
+`wlan.country_info.fnm` and `wlan.country_info.code`, two tshark-parsed categoricals with no scapy
+equivalent that are always absent at inference and filled with `0.0` when the row is reindexed.
+
+Here a field the frame does not carry stays `None`, so the bundle's `SimpleImputer` fills it with the
+training median. `ExtractState` carries `frame.time_delta` and `frame.time_relative`; the latter
+resets on every detector restart and is the leaked feature described in §7.
+
+### Step 3 — classification
+
+#### v2 — one causal TCN
+
+`V2Pipeline` loads `models/hawkshield_v2.onnx` through onnxruntime and keeps a **ring buffer of the
+last 126 frames**. The network is causal — every convolution is left-padded only — so the prediction
+for the newest frame is valid from past context alone, and the buffer holds exactly the receptive
+field it needs. At the head of a stream the sequence is simply shorter; there is no synthetic padding.
+
+```
+input   "frames"  (batch, 46, T) float32     NaN = the frame does not carry that field
+output  "logits"  (batch,  9, T) float32     one prediction per frame
+```
+
+Decision rule:
+
+| Quantity | Definition | Cutoff |
+|---|---|---|
+| `p1` | `1 − P(Normal)` | `STAGE1_THRESHOLD` = **0.40** — below it the frame is dropped |
+| `label` | argmax over the **eight** attack classes — never `Normal` | — |
+| `p2` | `P(label)` | `STAGE2_THRESHOLD` = **0.80** — below it the frame is dropped |
+
+The result is the same `Verdict(is_attack, label, p1, p2, stage)` v1 produced, so `sink.py` and the
+`packets` schema are unchanged. `stage` records where the decision was made — `0` means inference
+failed outright, `1` means rejected at the attack gate, `2` means it reached the naming step.
+
+**Batching.** `V2_BATCH_FRAMES` (default **32**) frames are scored per onnxruntime call, by feeding
+`context + N` positions and reading the last `N` outputs. Every scored frame still sees a full
+context, so batching is a cost decision and never a correctness one —
+`backend/tests/test_pipeline_v2.py::test_streaming_equivalence` pins that. Measured over 5000 frames
+of the deauth sample through the full capture path, per-frame inference falls from **1347.5 µs**
+(N=1) to **54.7 µs** (N=32), lifting end-to-end throughput from 292 to 723 frame/s and dropping
+inference from 39 % of wall time to 4 %. The cost is at most 32 frames of added detection delay —
+about 32 ms at 1000 frame/s. N=64 buys nothing measurable: the remaining 96 % is scapy parsing and
+feature derivation, not the model.
+
+**Threading.** `V2_ORT_THREADS` defaults to **2, not 0**. Left at the onnxruntime default — one
+thread per core, spin-waiting between calls — the same replay ran at 302 frame/s, **2.4× slower end
+to end**. That default is tuned for a batch job that owns the machine; a capture loop calling a small
+graph every 32 frames is the opposite, and on a four-core Pi the spin-wait competes directly with the
+sniffer.
+
+**Load-time validation.** `V2Pipeline` refuses to start unless the artefact's spec version, class
+list, feature list *and feature order*, feature count and normalisation vector lengths all match the
+running `feature_spec`, and the ONNX graph's own declared channel dimensions match too. All faults
+are reported at once. Under `MODEL_VERSION=v2` a mismatch raises `SpecMismatchError` and exits `2`;
+under `auto` it falls back to v1 and logs the reason at ERROR. The check caught a stale artefact on
+its first run, which is the entire justification for its existence.
+
+The ring-buffer arithmetic mirrors `ml.windows.inference_chunks` exactly, so a frame scored offline
+during evaluation and the same frame scored live see the same history.
+
+**Which extractor feeds which model is decided in one place.** The pipeline's `model_version` selects
+the extractor and the classifier together, so pairing a v2 model with v1 rows is impossible by
+construction rather than by review.
+
+#### v1 — the two-stage LightGBM fallback
 
 Both bundles share **one identical feature space**, which is why one extractor can feed both. The
 transform is the same for each stage and must be done in this order:
@@ -138,26 +232,18 @@ Decision rule:
 | 2 | LightGBM multiclass, `best_iteration=116` | `(label, p2)` = argmax of a 6-way softmax | `STAGE2_THRESHOLD` = **0.80** | drop, nothing persisted |
 
 The six classes, in the bundle's own id order: `SSDP`, `Evil_Twin`, `Krack`, `Deauth`, `(Re)Assoc`,
-`RogueAP`.
+`RogueAP`. It produces the same `Verdict` shape as v2.
 
-The result is a `Verdict(is_attack, label, p1, p2, stage)`. `stage` records where the decision was
-made — `0` means stage 1 could not score the row at all, `1` means it was rejected at stage 1, `2`
-means it reached stage 2.
+**Why v1 was two stages, and why v2 is one network.** The gate existed for cost — stage 1 was the
+only model that saw every frame, and a cheap binary classifier kept the expensive multiclass model
+off the overwhelmingly normal majority — and for independent knobs. v2 collapses both stages because
+the same 80 k-parameter graph scores every frame in 54.7 µs, which makes the gate unnecessary. The two
+thresholds survive unchanged as the operator-facing knobs, so a value tuned on v1 means the same
+thing on v2.
 
-**Why two stages rather than one seven-class model?**
-
-1. *Cost.* Stage 1 is the only model that sees every frame. On a Pi, the overwhelming majority of
-   traffic is normal, and a cheap binary gate keeps the expensive multiclass model off that path
-   entirely. Stage 2 only ever runs on the fraction that clears 0.40.
-2. *Independent knobs.* "How suspicious must a frame be to look at?" and "how sure must I be of the
-   name I give it?" are different questions with different costs. Raising `STAGE2_THRESHOLD` cuts
-   mislabelling without changing sensitivity; raising `STAGE1_THRESHOLD` cuts volume.
-3. *Class balance.* The training set was extremely skewed — the stage-2 class weights range from
-   `SSDP 0.29` to `RogueAP 99.94`. Training a rare-class discriminator separately from an
-   attack/normal discriminator keeps the imbalance out of the gate.
-4. *Honest failure.* Stage 2 has **no "none of the above" class**. Anything that clears stage 1 is
-   forced into one of six labels, and the 0.80 floor is the only guard against that. Splitting the
-   decision at least makes the guard expressible.
+The one thing the split could never fix: stage 2 has **no "none of the above" class**. Anything that
+clears stage 1 is forced into one of six labels, and the 0.80 floor is the only guard. v2 fixes this
+structurally — `Normal` is one of its nine classes, so the model can decline.
 
 ### Step 4 — why only attacks are stored
 
@@ -349,8 +435,12 @@ The full table is in [`CONTRACT.md` §3](CONTRACT.md) and every variable is comm
 
 | Variable | Default | Effect |
 |---|---|---|
-| `STAGE1_THRESHOLD` | `0.40` | raise to cut volume, lower to catch more (and log more noise) |
-| `STAGE2_THRESHOLD` | `0.80` | the only guard against stage 2's missing "unknown" class |
+| `MODEL_VERSION` | `auto` | `auto` \| `v1` \| `v2`. `auto` prefers a valid v2 artefact and falls back to v1; `v2` refuses to downgrade silently and exits `2` on a spec mismatch |
+| `V2_MODEL` / `V2_META` | `hawkshield_v2.onnx` / `hawkshield_v2_meta.json` | the v2 artefact and its metadata inside `MODEL_DIR` |
+| `V2_BATCH_FRAMES` | `32` | frames per onnxruntime call — throughput vs. up to N frames of detection delay |
+| `V2_ORT_THREADS` | `2` | onnxruntime intra-op threads. `0` = the runtime default, which spin-waits between calls and measured 2.4× slower end to end |
+| `STAGE1_THRESHOLD` | `0.40` | raise to cut volume, lower to catch more (and log more noise). v1: `P(attack)`; v2: `1 − P(Normal)` |
+| `STAGE2_THRESHOLD` | `0.80` | confidence floor on the attack name — in v1, the only guard against its missing "unknown" class |
 | `CAPTURE_IFACE` / `CAPTURE_CHANNEL` | `wlan1` / `6` | must match what `monitor_mode.sh` was given |
 | `TARGET_SSID` | *(empty)* | soft filter — frames whose parsed SSID differs are skipped |
 | `BATCH_SIZE` / `BATCH_FLUSH_SECONDS` | `20` / `2.0` | write latency vs. round-trip count |
@@ -383,23 +473,42 @@ asking about.
 
 ## 7. Where the accuracy actually comes from
 
-The architecture above is sound and tested. The models plugged into step 3 are not, and this document
-would be dishonest without saying so here.
+The architecture above was always sound. The **v1 models** plugged into step 3 were not, for two
+reasons that are now understood, fixed in v2, and worth keeping on the page because they are the
+reason the v2 design looks the way it does.
 
-`frame.time_relative` — a feature computed in step 2 purely as a bookkeeping value — carries **41.9 %
-of stage-1's split gain**. It encodes which capture session a row came from, not whether the traffic
-is malicious. `radiotap.channel.freq` carries another ~8.9 % and encodes the band. Together they mean
-stage 1 is largely answering "does this look like my training capture?"
+**v1 failure 1 — training and inference derived features in different code.** The models were trained
+on tshark columns; the detector runs scapy. **16 of the 29 numeric features could not be produced
+live at all.** They arrived `None` on every frame and were imputed to training medians that happen to
+sit where the model expects attack traffic — so the original detector flagged almost everything and
+looked like it worked. Fixing the extractor removed that accident and exposed the real behaviour: on
+the 20 000-frame deauth sample, ~97 % of which are genuine deauthentication frames, stage 1 flags 82,
+and stage 2 labels every frame of every sample capture `Krack`.
 
-The original extractor left 13 of the 29 numeric features permanently `None`. Every one of them was
-imputed to the training median on every live packet, and those medians happen to sit where the model
-expects attack traffic — so the old detector flagged almost everything and looked like it worked.
-Fixing the extractor (step 2 as documented above) removed that accident and exposed the real
-behaviour: on the 20 000-frame deauth sample, which is ~97 % genuine deauthentication frames, stage 1
-now flags 82 frames, and stage 2 labels every frame of every sample capture `Krack`.
+**v1 failure 2 — `frame.time_relative` was leakage.** A feature computed in step 2 purely as a
+bookkeeping value carried **41.9 % of stage-1's split gain**, while encoding which capture session a
+row came from rather than whether the traffic is malicious. `radiotap.channel.freq` carried another
+~8.9 % and encoded the band. Together they meant stage 1 was largely answering "does this look like
+my training capture?" Nulling `frame.time_relative` on the deauth sample flips detection from 0.41 %
+of frames to 100 %; nulling `radiotap.channel.freq` flips it to 0 %.
 
-The pipeline is doing exactly what it is supposed to do. The models need retraining — with capture
-sessions held out of the split and the session- and band-encoding features removed. The measurements,
-the ablation table and the reproduction commands are in
-[`../models/README.md` §5](../models/README.md); the short version is in the root
-[`README.md`](../README.md).
+**What step 2 and step 3 do about it now.** Both failures shared one root cause — training features
+and inference features were defined in different places by different code — so v2 defines them once.
+`feature_spec.derive_frame_features()` is the only derivation, called by the AWID3 preprocessor and by
+the live extractor alike; a feature that cannot be produced live cannot enter the spec.
+`feature_spec.EXCLUDED_COLUMNS` names every banned field *with its reason, in code*, and a test
+enforces it: session identity, raw identifiers, and everything above the MAC layer. Nothing is
+imputed — NaN reaches the model as a learned sentinel plus a mask channel. Evaluation holds out whole
+50 000-frame blocks rather than shuffling rows. And `V2Pipeline` refuses to load an artefact whose
+feature space is not the one the extractor produces, which is the specific condition that went
+unnoticed in v1 for its entire life.
+
+**What that does not entitle anyone to claim.** No v2 weights have been trained yet, so there is no
+v2 accuracy number, and this document will not invent one. When training completes, the measurements
+land in `ml/reports/eval_report.md`. Read them against the protocol's own limit: whole blocks are held
+out, but they share the session and testbed of the training blocks, so the numbers say "generalises
+across time within this testbed", not "generalises to your network".
+
+The full v1 post-mortem, the ablation table and the reproduction commands are in
+[`../models/README.md` §3.5](../models/README.md); the design that replaces it is in
+[`models.md`](models.md) and drawn in [`model-pipeline.md`](model-pipeline.md).

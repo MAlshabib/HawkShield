@@ -40,8 +40,10 @@ ones (`wlan_sa`, `avg_rssi`). See [`CONTRACT.md` §4](CONTRACT.md).
 
 ## GET `/health`
 
-Liveness and readiness. Deliberately dependency-free — it never imports the detector, and model
-availability is a plain filesystem check. It never raises: a database failure is reported, not thrown.
+Liveness and readiness, **and which detection model the files on disk would give you**. Deliberately
+dependency-free — it never imports the detector, model presence is a plain filesystem check, and the
+v2 artefact is judged by reading its meta JSON rather than loading the graph. It never raises: a
+database failure is reported, not thrown.
 
 **Parameters:** none.
 
@@ -55,21 +57,41 @@ curl -s http://localhost:8000/health
   "database": true,
   "packets": 1,
   "latest_packet_ts": "2026-08-24T14:05:00",
-  "models": { "stage1": true, "stage2": true },
+  "models": { "stage1": true, "stage2": true, "v2": false },
+  "model_version": "v1",
+  "spec_version": "2.1.0",
+  "artefact_spec_version": null,
+  "model_problems": [],
   "version": "1.0.0"
 }
 ```
 
 | Field | Meaning |
 |---|---|
-| `status` | `"ok"` when the database is reachable **and** both bundles exist; otherwise `"degraded"` |
+| `status` | `"ok"` when the database is reachable **and** `model_version` is not `"none"`; otherwise `"degraded"` |
 | `database` | a `COUNT(*)` against `packets` succeeded |
 | `packets` | total persisted attack rows (`0` on a healthy but idle system) |
 | `latest_packet_ts` | ISO-8601, or `null` when the table is empty |
 | `models.stage1` / `.stage2` | `MODEL_DIR/STAGE1_MODEL` and `MODEL_DIR/STAGE2_MODEL` exist on disk |
+| `models.v2` | the v2 ONNX **and** its meta exist **and** the meta matches the running `feature_spec` |
+| `model_version` | `"v2"` \| `"v1"` \| `"none"` — what the detector *would* load, honouring `MODEL_VERSION` |
+| `spec_version` | the feature contract **this build of the code** implements, e.g. `"2.1.0"` |
+| `artefact_spec_version` | the spec version the on-disk v2 artefact claims, or `null` when there is none |
+| `model_problems` | why `models.v2` is `false` when a v2 artefact is present but unusable; `[]` otherwise |
 | `version` | `APP_VERSION` from `backend/app/config.py` |
 
 `status` is always HTTP **200**, including when degraded — read the body, not the status line.
+
+> **`model_version` is advisory.** This endpoint runs in the API process, which does no inference, so
+> it reports what the *files* imply. The detector's own startup line — `ACTIVE MODEL: v2 (causal TCN,
+> ONNX) spec=…` or `ACTIVE MODEL: v1 (two-stage LightGBM) …` — is authoritative. The two disagree only
+> if the artefacts changed after the detector started, which is itself worth noticing.
+
+> **Expected today:** `models.v2` is `false`, `artefact_spec_version` is `null` and `model_version` is
+> `"v1"`, because no trained v2 artefact exists in this repository yet. `spec_version` still reports
+> `"2.1.0"` — that is the contract the *code* implements, not a claim that a matching model exists.
+> When `spec_version` and `artefact_spec_version` differ, `models.v2` is `false` and `model_problems`
+> says exactly why.
 
 ---
 
@@ -132,8 +154,13 @@ curl -s "http://localhost:8000/attacks?limit=2&offset=0"
 
 Notes:
 
-* `proba_anomaly` is the **stage-1** probability, `proba_attack` the **stage-2** confidence in
-  `predicted_label`. Both are always ≥ their thresholds, or the row would not exist.
+* `proba_anomaly` is the "is this an attack at all" score and `proba_attack` the confidence in
+  `predicted_label`. Under v1 those are the stage-1 and stage-2 probabilities; under v2 they are
+  `1 − P(Normal)` and `P(predicted_label)` from the single network. Both are always ≥
+  `STAGE1_THRESHOLD` / `STAGE2_THRESHOLD`, or the row would not exist.
+* `wlan_duration` from a **v1** detector is byte-swapped — scapy declares the 802.11 Duration/ID field
+  big-endian while the header is little-endian, so 314 µs was recorded as 14849. Fixed for v2; historical
+  rows are not.
 * `ts` is set by the detector at classification time, in UTC. On PostgreSQL the offset is included
   (`2026-08-24T14:05:00+00:00`); the SQLite example above is naive.
 * `raw` holds the identity fields the model was never allowed to see, plus the parsed SSID when the
@@ -160,8 +187,12 @@ Remember this counts **attacks only** — normal traffic is classified and dropp
 
 ## GET `/attacks/analysis`
 
-Count per `predicted_label`. **All six keys are always present**, zero-filled, so the dashboard never
-has to branch on a missing category. Labels outside the six are ignored.
+Count per `predicted_label`. **All eight attack keys are always present**, zero-filled, so the
+dashboard never has to branch on a missing category. Labels outside the eight are ignored, and
+`Normal` is never a key — only attacks are persisted.
+
+The keys and their order are **derived from `feature_spec.ATTACK_CLASSES`**, not hand-maintained, so
+a class added to the spec appears here with no code change. v2 added `Disas` and `Kr00k` to v1's six.
 
 ```bash
 curl -s http://localhost:8000/attacks/analysis
@@ -170,13 +201,21 @@ curl -s http://localhost:8000/attacks/analysis
 ```json
 {
   "Deauth": 1,
-  "SSDP": 0,
-  "Evil_Twin": 0,
+  "Disas": 0,
   "(Re)Assoc": 0,
   "RogueAP": 0,
-  "Krack": 0
+  "Krack": 0,
+  "Kr00k": 0,
+  "Evil_Twin": 0,
+  "SSDP": 0
 }
 ```
+
+> **A v1 rendering bug worth knowing about if you have historical screenshots.** The dashboard used
+> to render every `(Re)Assoc` row as `SSDP` — an alias table round-tripped a key through its display
+> string and never closed the loop, falling back to the first allowed type. **Any SSDP figure read
+> off the attacks page before that fix was inflated**, and `(Re)Assoc` understated. This endpoint's
+> JSON was always correct; only the rendering was wrong.
 
 ---
 
@@ -382,6 +421,8 @@ curl -s "http://localhost:8000/reports/summary?days=30"
     "reassoc": 0,
     "rogueap": 0,
     "krack": 0,
+    "disas": 0,
+    "kr00k": 0,
     "other": 0
   },
   "summary": {
@@ -393,7 +434,10 @@ curl -s "http://localhost:8000/reports/summary?days=30"
 }
 ```
 
-The `totals` keys are **lower-case frontend names**, not the DB labels. The mapping is fixed:
+The `totals` keys are **lower-case frontend names**, not the DB labels. The mapping is *derived* from
+`feature_spec.ATTACK_CLASSES` by `backend/app/config.py` — lower-case, punctuation dropped — rather
+than hand-maintained, so a class added to the spec appears here automatically. The six v1 keys keep
+their historical positions; v2 appends `disas` and `kr00k`:
 
 | DB label | `totals` key |
 |---|---|
@@ -403,7 +447,13 @@ The `totals` keys are **lower-case frontend names**, not the DB labels. The mapp
 | `(Re)Assoc` | `reassoc` |
 | `RogueAP` | `rogueap` |
 | `Krack` | `krack` |
+| `Disas` | `disas` |
+| `Kr00k` | `kr00k` |
 | anything else, incl. `null` | `other` |
+
+`(Re)Assoc` maps to plain `reassoc` — punctuation is dropped, not escaped, so no key ever needs URL-
+or JSON-quoting. The `other` bucket catches labels the current spec does not define, which is where
+v1 rows left in the table after a v2 upgrade land.
 
 `peakHour` is a UTC hour 0–23 (`0` when there is nothing in the window). `mostFrequentType` is
 `"other"` when the window is empty. `uniqueSources` counts distinct `src_mac`.
@@ -434,7 +484,7 @@ curl -s -X POST http://localhost:8000/reports/export \
      -d '{"days":7}' -o report.pdf
 ```
 
-The page contains the period, totals by type (the six labels plus `other`), and the four headline
+The page contains the period, totals by type (the eight labels plus `other`), and the four headline
 figures. It is generated in memory — nothing is written to disk on the Pi.
 
 ---

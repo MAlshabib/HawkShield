@@ -1,12 +1,14 @@
 # HawkShield
 
-**Wi-Fi intrusion *detection* for the Raspberry Pi 4** — monitor-mode 802.11 capture, a two-stage
-LightGBM classifier, a PostgreSQL attack log, and a dashboard plus natural-language assistant served
-from a single FastAPI process. One launcher, `python run.py`, runs it on the Pi or on a laptop.
+**Wi-Fi intrusion *detection* for the Raspberry Pi 4** — monitor-mode 802.11 capture, a causal
+temporal CNN over a 46-feature contract shared by training and inference, a PostgreSQL attack log,
+and a dashboard plus natural-language assistant served from a single FastAPI process. One launcher,
+`python run.py`, runs it on the Pi or on a laptop.
 
 ![Python](https://img.shields.io/badge/python-3.11-3776AB)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.116-009688)
 ![Next.js](https://img.shields.io/badge/Next.js-15-000000)
+![ONNX Runtime](https://img.shields.io/badge/ONNX%20Runtime-causal%20TCN-005CED)
 ![LightGBM](https://img.shields.io/badge/LightGBM-4.6-9ACD32)
 ![Platform](https://img.shields.io/badge/platform-Raspberry%20Pi%204%20%2F%20Bookworm-C51A4A)
 ![Licence](https://img.shields.io/badge/licence-proprietary-lightgrey)
@@ -16,11 +18,21 @@ from a single FastAPI process. One launcher, `python run.py`, runs it on the Pi 
 > descriptions of this project claimed "real-time prevention" and an email-report endpoint; neither
 > exists in this codebase. See [Roadmap — not yet implemented](#roadmap--not-yet-implemented).
 
-> **Model status — read before trusting a label.** The pipeline works; the shipped models leak.
-> Stage 1 depends heavily on `frame.time_relative`, a capture-session artefact, and stage 2 currently
-> answers `Krack` for every frame of every sample capture. Details and the reproduction command are in
-> [Model status](#model-status--known-training-data-leakage) and, in full, in
-> [`models/README.md` §5](models/README.md).
+> **Model status — read this before trusting a label.**
+> **v1 leaked, and it is understood exactly how.** Training and inference derived features in
+> different code (16 of 29 features were permanently NULL live and mean-imputed to training medians),
+> and `frame.time_relative` — seconds since capture start — was 42 % of stage-1's decision while
+> encoding nothing but which capture session a row came from.
+> **v2 is the answer to both**, and it is described throughout this README: one derivation function
+> called by training *and* inference, 46 features that can all actually be produced on a
+> monitor-mode Pi, 9 classes, whole capture blocks held out of the split, and a runtime that refuses
+> to load a model whose feature space is not the one the extractor produces.
+> **But no v2 weights have been trained yet.** `models/` holds only the v1 bundles, so `run.py` and
+> the detector **currently serve v1**, and no v2 accuracy figure appears anywhere in this repository —
+> the numbers land in `ml/reports/eval_report.md` when training completes.
+> Post-mortem and design: [Model status](#model-status--v1-post-mortem-and-the-v2-answer),
+> [`models/README.md`](models/README.md), [`docs/models.md`](docs/models.md).
+> Diagrams: [`docs/model-pipeline.md`](docs/model-pipeline.md).
 
 ![HawkShield project poster](docs/assets/Project_Poster.jpg)
 
@@ -54,8 +66,8 @@ python backend/scripts/check_rag.py     # optional: verify the /ask assistant is
 ```
 
 Open the URL it prints. `--demo` replays one of the bundled `.pcapng` captures through the real
-two-stage pipeline and stores the results, so the dashboard, the reports and the assistant all have
-genuine data to work with.
+detection pipeline — whichever generation `MODEL_VERSION` resolves to — and stores the results, so the
+dashboard, the reports and the assistant all have genuine data to work with.
 
 ```
   HawkShield
@@ -93,7 +105,10 @@ genuine data to work with.
 2. Picks a database. If `DATABASE_URL` is unset or still contains `CHANGE_ME`: **laptop** mode falls
    back to a local SQLite file (`hawkshield.db` in the repo root) and says so; **Pi** mode stops with
    exit 2 and tells you to configure PostgreSQL.
-3. Checks both model bundles are in `models/`.
+3. Checks both **v1** `.joblib` bundles are in `models/`. **Known gap:** this check has not been
+   updated for v2, so a checkout carrying a valid v2 ONNX artefact and no v1 bundles would be refused
+   even though the detector would run fine on it. Harmless today, since both bundles ship — but do not
+   delete them. Recorded in [`docs/CONTRACT.md` §8.4](docs/CONTRACT.md).
 4. Checks for a dashboard build at `frontend/out` — warns, does not fail, if there is none.
 5. Runs the schema migration (`python -m backend.scripts.init_db`).
 6. Checks the port is free, and suggests the next one if it is not.
@@ -126,15 +141,17 @@ The systemd path is still the right answer for an unattended Pi — see
 
 | Document | What is in it |
 |---|---|
-| [`docs/architecture.md`](docs/architecture.md) | Frame-by-frame data flow, the two-stage design, why one process serves both API and UI |
-| [`docs/deployment-pi.md`](docs/deployment-pi.md) | Full Raspberry Pi walkthrough — OS, adapter, PostgreSQL, systemd, verification |
+| [`docs/model-pipeline.md`](docs/model-pipeline.md) | **The diagrams** — whole system, feature derivation, the network, the split, the live path |
+| [`docs/architecture.md`](docs/architecture.md) | Frame-by-frame data flow, both model generations, why one process serves both API and UI |
+| [`docs/deployment-pi.md`](docs/deployment-pi.md) | Full Raspberry Pi walkthrough — OS, adapter, PostgreSQL, systemd, model copy, verification |
 | [`docs/api.md`](docs/api.md) | Every endpoint, with parameters and real example responses |
-| [`docs/models.md`](docs/models.md) | Pipeline, classes, thresholds, feature space — short; points at the model card |
-| [`models/README.md`](models/README.md) | Full model card, bundle internals, **and the leakage analysis** |
+| [`docs/models.md`](docs/models.md) | v2 pipeline, the 46-feature contract, the 9 classes, thresholds, excluded classes |
+| [`models/README.md`](models/README.md) | Full model card — v2 design and evaluation protocol, **and the v1 post-mortem** |
+| [`ml/README.md`](ml/README.md) | The training pipeline: one command, the split protocol, how to read the reports |
 | [`deploy/README.md`](deploy/README.md) | Operator runbook: installer flags, day-to-day commands, troubleshooting |
 | [`frontend/README.md`](frontend/README.md) | Dashboard pages, static-export build, offline map behaviour |
-| [`data/README.md`](data/README.md) | The six sample captures and the external training dataset |
-| [`docs/CONTRACT.md`](docs/CONTRACT.md) | Normative interface contract (schema, env vars, HTTP shapes, bundle layout) |
+| [`data/README.md`](data/README.md) | The six sample captures, AWID3, and the legacy v1 dataset |
+| [`docs/CONTRACT.md`](docs/CONTRACT.md) | Normative interface contract (schema, env vars, HTTP shapes, model layout) |
 
 ---
 
@@ -143,9 +160,12 @@ The systemd path is still the right answer for an unattended Pi — see
 | | Capability | Where |
 |---|---|---|
 | 📡 | **Monitor-mode capture** — scapy `sniff(store=False)` on a pinned channel, with ENETDOWN recovery and a 2 s heartbeat | `backend/detector/capture.py` |
-| 🧮 | **Honest feature extraction** — 29 numeric 802.11/RadioTap features per frame; a field the frame does not carry stays `None` and is imputed by the bundle, never invented | `backend/detector/features.py` |
-| 🔍 | **Stage 1 — binary** LightGBM `P(attack)` against `STAGE1_THRESHOLD` (0.40) | `backend/detector/pipeline.py` |
-| 🏷️ | **Stage 2 — multiclass** LightGBM over six labels (`SSDP`, `Evil_Twin`, `Krack`, `Deauth`, `(Re)Assoc`, `RogueAP`) with a `STAGE2_THRESHOLD` (0.80) confidence floor | `backend/detector/pipeline.py` |
+| 📜 | **One feature contract** — 46 features and one `derive_frame_features()`, called by **both** the AWID3 preprocessor and the live extractor. A feature that cannot be produced on a monitor-mode Pi cannot enter the spec, and `EXCLUDED_COLUMNS` names every banned field with its reason | `backend/detector/feature_spec.py` |
+| 🧮 | **Honest feature extraction** — a field the frame does not carry becomes NaN, never invented and never imputed; NaN reaches the model as a learned sentinel plus a mask channel | `backend/detector/features.py` |
+| 🧠 | **Causal dilated TCN** — 80 471 parameters, ONNX fp32, a 127-frame **past-only** receptive field, one prediction per frame. A unit test perturbs the future and asserts the past output is bit-identical | `ml/model.py`, `backend/detector/pipeline.py` |
+| 🏷️ | **Nine classes** — `Normal` + `Deauth`, `Disas`, `(Re)Assoc`, `RogueAP`, `Krack`, `Kr00k`, `Evil_Twin`, `SSDP`, gated by `STAGE1_THRESHOLD` (0.40) and `STAGE2_THRESHOLD` (0.80) | `backend/detector/feature_spec.py` |
+| 🛡️ | **A runtime that refuses a mismatch** — `V2Pipeline` will not load an artefact whose spec version, class list, feature list or feature order disagrees with the running code. v1 is selectable and is the automatic fallback | `backend/detector/pipeline.py` |
+| 🎓 | **Reproducible training** — one command from the AWID3 zip to an ONNX artefact, with whole capture blocks held out and a standing leakage ablation | `ml/run_training.ps1`, `ml/train.py` |
 | 💾 | **Attack-only persistence** — batched inserts into PostgreSQL `packets`; normal traffic is classified and dropped | `backend/detector/sink.py` |
 | 🌐 | **Analytics API** — counts, per-label breakdown, top offenders, channel usage, day×hour heatmap | `backend/app/routers/attacks.py` |
 | 🗺️ | **Map utilities** — AP inventory, per-source average RSSI, RSSI-weighted centroid origin estimate | `backend/app/routers/maps.py` |
@@ -168,14 +188,20 @@ The systemd path is still the right answer for an unattended Pi — see
    │            │  802.11 frames + RadioTap                               │
    │            ▼                                                         │
    │  ┌───────────────────────── hawkshield-detector.service (root) ───┐  │
-   │  │  scapy sniff  →  packet_to_row()  →  29 numeric features       │  │
-   │  │                          │                                     │  │
+   │  │  scapy sniff                                                   │  │
+   │  │      → scapy_to_raw()                                          │  │
+   │  │      → feature_spec.derive_frame_features()  →  46 features    │  │
+   │  │                          │   (the same call training makes)    │  │
    │  │                          ▼                                     │  │
-   │  │        stage 1  LightGBM binary   p1 = P(attack)               │  │
+   │  │      ring buffer: 126 frames of past-only context              │  │
+   │  │      causal TCN, ONNX fp32, 32 frames per call                 │  │
+   │  │                          │  9 class scores per frame           │  │
+   │  │                          ▼                                     │  │
+   │  │        p1 = 1 − P(Normal)                                      │  │
    │  │                   p1 < 0.40 ──────────────► drop (not stored)  │  │
    │  │                          │ p1 ≥ 0.40                           │  │
    │  │                          ▼                                     │  │
-   │  │        stage 2  LightGBM multiclass  (label, p2)               │  │
+   │  │        label = argmax over the 8 attack classes;  p2 = P(label)│  │
    │  │                   p2 < 0.80 ──────────────► drop (not stored)  │  │
    │  │                          │ p2 ≥ 0.80                           │  │
    │  │                          ▼                                     │  │
@@ -201,7 +227,13 @@ The systemd path is still the right answer for an unattended Pi — see
 
 One web process, one port. The API routes are registered first and the static export is mounted last
 at `/`, so the catch-all can never shadow an endpoint. Full narrative in
-[`docs/architecture.md`](docs/architecture.md).
+[`docs/architecture.md`](docs/architecture.md); the same flow **drawn**, including the training side
+that shares `derive_frame_features()` with the live path, is in
+[`docs/model-pipeline.md`](docs/model-pipeline.md).
+
+The detector box above is **v2**. Selected by `MODEL_VERSION` (`auto` | `v1` | `v2`), the v1 two-stage
+LightGBM path is still available and is what `auto` falls back to when no valid v2 artefact is on
+disk — which is the case in this checkout today.
 
 ---
 
@@ -334,10 +366,10 @@ All routes are registered **without a prefix**. Full request/response detail in
 
 | Method | Path | Purpose |
 |---|---|---|
-| GET | `/health` | DB reachability, packet count, latest timestamp, model presence, version |
+| GET | `/health` | DB reachability, packet count, latest timestamp, **`model_version` / `spec_version` / `artefact_spec_version`**, version |
 | GET | `/attacks?limit=&offset=` | Raw `packets` rows, newest first |
 | GET | `/packets/count` | `{"count": int}` |
-| GET | `/attacks/analysis` | Count per label — always all six keys, zero-filled |
+| GET | `/attacks/analysis` | Count per label — always all **eight** attack keys, zero-filled |
 | GET | `/top-offenders` | Source MACs by volume (key is `wlan_sa`) |
 | GET | `/channel-usage` | Frame counts per RadioTap frequency |
 | GET | `/heatmap-attack` | 7 days × 24 hours intensity grid, Sunday first |
@@ -400,11 +432,11 @@ Three more optional variables: `OPENROUTER_BASE_URL` (default `https://openroute
 change it only for a proxy or a self-hosted OpenAI-compatible endpoint), and `OPENROUTER_SITE_URL` /
 `OPENROUTER_APP_NAME`, which are the attribution headers OpenRouter shows on its dashboard.
 
-> **This has nothing to do with the detection models.** The assistant is a hosted LLM that reads the
-> `packets` table. The *detectors* are the two LightGBM bundles in `models/`, they run entirely
-> offline, and they still have the leakage problem described in
-> [Model status](#model-status--known-training-data-leakage). Changing `GEN_MODEL` does not make a
-> label more trustworthy.
+> **This has nothing to do with the detection model.** The assistant is a hosted LLM that reads the
+> `packets` table. The *detector* is the model in `models/` — the v2 ONNX graph, or the v1 bundles
+> while no v2 artefact exists — and it runs entirely offline on every frame. Changing `GEN_MODEL`
+> does not make a label more trustworthy: a better assistant reads the same rows more fluently. See
+> [Model status](#model-status--v1-post-mortem-and-the-v2-answer).
 
 ### Pre-flight check
 
@@ -451,81 +483,164 @@ HawkShield/
 │   │   ├── routers/              health.py attacks.py reports.py maps.py ask.py
 │   │   └── rag/                  packet_qa.py + knowledge/attacks.md
 │   ├── detector/               capture + inference — must not import backend.app.routers.*
-│   │   ├── features.py           packet_to_row(): scapy frame -> 29 numeric features
-│   │   ├── pipeline.py           Stage1, Stage2, TwoStagePipeline, Verdict
+│   │   ├── feature_spec.py       THE CONTRACT: 46 features, 9 classes, derive_frame_features()
+│   │   ├── features.py           scapy_to_raw() + packet_to_features_v2(); v1's packet_to_row()
+│   │   ├── pipeline.py           V2Pipeline (ONNX) + Stage1/Stage2/TwoStagePipeline, Verdict
 │   │   ├── capture.py            monitor mode, sniff loop, heartbeat, signal handling
 │   │   ├── sink.py               PacketSink — batched writes
 │   │   └── cli.py                argparse entrypoint
 │   ├── scripts/                init_db.py, verify_models.py, replay_pcap.py, check_rag.py
 │   ├── config/                 ap_locations.json
-│   ├── tests/                  pytest suites
+│   ├── tests/                  pytest suites (207 tests)
 │   └── requirements*.txt
+├── ml/                         training — runs on a laptop/GPU, never on the Pi
+│   ├── run_training.ps1 / .sh    one command: deps → data → train → evaluate → export
+│   ├── prepare_awid3.py          streams the AWID3 zip → Parquet, via feature_spec
+│   ├── windows.py                grouped split, causal windowing, inference tiling
+│   ├── model.py                  the causal dilated TCN + assert_causal()
+│   ├── train.py                  TCN and the LightGBM baseline on the identical split
+│   ├── evaluate.py               held-out blocks + the leakage ablation
+│   ├── export_onnx.py            → models/hawkshield_v2.onnx (+ int8, + meta)
+│   └── reports/                  train_report.md, eval_report.md
 ├── frontend/                   Next.js 15 / React 19 / Tailwind v4 → static export in out/
-├── models/                     stage1_binary_bundle.joblib, stage2_multiclass_bundle.joblib, README.md
+├── models/                     v1 bundles + README.md (the model card). v2 ONNX lands here
 ├── data/                       samples/*.pcapng (6 captures) + README.md
 ├── deploy/                     install_pi.sh, monitor_mode.sh, postgres_setup.sql, 2 × .service
-├── docs/                       CONTRACT.md, architecture.md, deployment-pi.md, api.md, models.md
-├── notebooks/                  EDA.ipynb, binary_classifier.ipynb, multiclass_classifier.ipynb
+├── docs/                       CONTRACT.md, model-pipeline.md, architecture.md, deployment-pi.md,
+│                               api.md, models.md
+├── notebooks/                  v1 only: EDA.ipynb, binary_classifier.ipynb, multiclass_classifier.ipynb
 ├── run.py                      the launcher — auto-detects Pi vs laptop, starts what it needs
 ├── .env.example                every variable, documented — copy to .env
 └── LICENSE
 ```
 
+`_work/` (git-ignored) is where training puts its intermediates: `_work/awid3_v2/` for the Parquet
+shards and `_work/models_v2/` for checkpoints and `split.json`.
+
 ---
 
-## Model status — known training-data leakage
+## Training the model
 
-**The engineering works. The models do not generalise.** Capture, feature extraction, storage, the
-API and the dashboard all behave correctly and are covered by tests. The problem is confined to the
-two shipped LightGBM bundles, and it is measured, not suspected.
+Training runs on a laptop or workstation with a GPU. **Never on the Pi** — it reads a 14.7 GB archive,
+wants PyTorch and ~4.5 GB of RAM, and the Pi's job is to load a finished model, not to build one.
 
-* **`frame.time_relative` — seconds since capture start — carries 41.9 % of stage-1's split gain**,
-  with a training median of ~583 s. That feature encodes *which capture session a row came from*, not
-  whether the traffic is malicious. It also drifts: a detector up for a day feeds values near 86 400
-  where the model was trained on ~583, and restarting the service resets it.
-* **`radiotap.channel.freq` carries ~8.9 % of stage-1's gain**, with a training median of 5180 MHz —
-  the training captures were mostly 5 GHz, while the Pi is pinned to 2.4 GHz.
-* **Stage 2 answers `Krack` for every frame of all six sample captures.** Before the feature-extraction
-  fix, the old code answered `SSDP` for everything. Neither is a real prediction.
+```powershell
+.\ml\run_training.ps1 -Fresh          # Windows
+```
+```bash
+./ml/run_training.sh --fresh          # Git Bash / WSL
+```
+
+One command: dependency check → preprocess AWID3 → train → evaluate → export. Each stage is echoed
+and a failure stops the run with the exit code and the stage name. **~50–90 minutes** end to end on an
+RTX 4070 SUPER with 16 cores; 4–6 hours CPU-only.
+
+`-Fresh` / `--fresh` re-runs AWID3 preprocessing; drop it to reuse `_work/awid3_v2/`. Other useful
+variants: `--model gbdt` (tree baseline, no GPU needed), `--max-rows 2000000 --epochs 3` (fast sanity
+pass on a subset of blocks), `--device cpu`, `--skip-export`.
+
+**PyTorch is not installed for you** — it is a 2.5 GB wheel and the CUDA build is your choice:
+
+```
+.venv\Scripts\python.exe -m pip install torch --index-url https://download.pytorch.org/whl/cu126
+```
+
+The run produces `models/hawkshield_v2.onnx` and `models/hawkshield_v2_meta.json` — copy both to the
+Pi and restart the detector ([`docs/deployment-pi.md` §4.5](docs/deployment-pi.md)) — plus
+`ml/reports/train_report.md` and `ml/reports/eval_report.md`, **which is where every accuracy number
+lives**. Full detail: [`ml/README.md`](ml/README.md).
+
+An int8 variant is also exported. **Do not ship it**: 2.6× smaller, measured ~4× *slower* — onnxruntime
+has no fast int8 Conv1d kernel at these shapes.
+
+---
+
+## Model status — v1 post-mortem, and the v2 answer
+
+> **Where things stand: no v2 weights exist in this repository yet.** `models/` holds the two v1
+> `.joblib` bundles and nothing else, so `MODEL_VERSION=auto` resolves to **v1** and that is what
+> `run.py` and the detector serve today. **No v2 accuracy figure appears anywhere in these docs**,
+> because none has been measured. They land in `ml/reports/eval_report.md` when training completes.
+
+### What went wrong in v1
+
+**The engineering was always sound; the v1 models did not generalise**, for two reasons that are now
+measured, understood, and structurally fixed.
+
+**1. Training and inference derived features in different code.** The bundles were trained on tshark
+columns; the detector runs scapy. **16 of the 29 numeric features could not be produced live at all.**
+They arrived NULL on every frame and were mean-imputed by the bundle's own `SimpleImputer` to training
+medians — and the model keyed on those constants. Nothing in the system reported it.
+
+**2. `frame.time_relative` was leakage.** Seconds since capture start carried **41.9 % of stage-1's
+split gain** while encoding nothing but *which capture session a row came from*. It also drifts: a
+detector up for a day feeds values near 86 400 where the model saw ~583, and restarting resets it.
+`radiotap.channel.freq` carried another ~8.9 % and encoded the band — training captures were mostly
+5 GHz, the Pi is pinned to 2.4 GHz.
 
 Ablation on `data/samples/deauth_raw_decrypted.pcapng` — a 20 000-frame capture that is ~97 % genuine
 deauthentication frames:
 
 | Stage-1 input | Frames flagged |
 |---|---:|
-| all features correctly populated | 82 / 20 000 (0.41 %) |
-| `frame.time_relative` forced null → imputed to 583 s | 20 000 (100 %) |
-| `radiotap.channel.freq` forced null → imputed to 5180 MHz | 0 (0 %) |
+| all features correctly populated | 82 / 20 000 (**0.41 %**) |
+| `frame.time_relative` forced null → imputed to 583 s | 20 000 (**100 %**) |
+| `radiotap.channel.freq` forced null → imputed to 5180 MHz | 0 (**0 %**) |
 
 Reproduce any row with the shipped tooling:
 
 ```bash
 python -m backend.scripts.replay_pcap data/samples/deauth_raw_decrypted.pcapng \
-    --dry-run --null-feature frame.time_relative
+    --model-version v1 --dry-run --null-feature frame.time_relative
 ```
 
-**What this means.** The original detector appeared to catch attacks largely because its extractor left
-features null, and the bundle's imputer filled them with training medians that happen to sit in the
-region the model associates with attack traffic — the right answer for the wrong reason. Honest
-feature extraction removed that accident and exposed the underlying problem.
+A model whose output swings between 0 % and 100 % on the presence of one bookkeeping column is not
+detecting anything. The original detector appeared to catch attacks because its extractor left
+features null and the imputer filled them with medians that happen to sit where the model expects
+attack traffic — the right answer for the wrong reason. Stage 2, correspondingly, answers `Krack` for
+every frame of all six sample captures.
 
-**Remedy.** Retrain with **capture sessions held out of the train/test split** — the notebooks shuffle
-rows across sessions, so frames from one capture land on both sides and the reported accuracy is
-optimistic — and **drop the session-encoding features** (`frame.time_relative`, `frame.time_delta*`)
-and the **band-encoding** ones (`radiotap.channel.freq`, `wlan_radio.frequency`, `wlan_radio.channel`).
-Training data is the CSV described in [`data/README.md`](data/README.md).
+### What v2 does about it
 
-Until then, treat live labels as indicative, not authoritative. Full analysis, per-capture replay
-numbers and the second known limitation (two tshark-only categorical features that scapy cannot
-supply) are in [`models/README.md` §5](models/README.md).
+| v1 failure | v2 response |
+|---|---|
+| two feature implementations that could drift apart | **one** `derive_frame_features()` in `backend/detector/feature_spec.py`, called by both `ml/prepare_awid3.py` and `backend/detector/features.py` |
+| 16 of 29 features permanently NULL live | a feature that cannot be produced live may not enter the spec — all 46 populate across the sample captures |
+| missing values mean-imputed to a training constant | NaN reaches the model as a learned sentinel plus a mask channel; nothing is imputed |
+| session- and band-identity features in the model | `EXCLUDED_COLUMNS` bans them **by name, with the reason, in code**, enforced by a test |
+| random row shuffle across the train/test split | whole 50 000-frame `block_id` groups held out; no window crosses a block boundary |
+| feature space could silently disagree with the artefact | `V2Pipeline` refuses to load on any spec / class / feature / order mismatch — it caught a stale artefact on its first run |
+| six classes, no way to say "normal" | nine classes, `Normal` among them |
+| nothing would have noticed any of this | the leakage ablation is a standing part of `ml/evaluate.py` |
+
+**What that does *not* entitle anyone to claim.** None of it is evidence that v2 works. That requires
+numbers, and the numbers do not exist yet. When they do, read them against the protocol's own limit:
+whole blocks are held out, but they share the session, testbed and radios of the training blocks, so
+the numbers say **"generalises across time within this testbed"**, not "generalises to your network".
+AWID3 recorded each attack exactly once, so leave-one-capture-out would delete the class — that is a
+real constraint, stated wherever the numbers are.
+
+### Two v1 bugs that may have misled you
+
+* **`wlan.duration` was byte-swapped.** scapy declares the 802.11 Duration/ID field big-endian; the
+  header is little-endian. A real 314 µs duration was fed to the model — and written to
+  `packets.wlan_duration` — as **14 849**, on every frame since day one.
+* **The dashboard rendered every `(Re)Assoc` row as `SSDP`.** An alias table round-tripped a key
+  through its display string and never closed the loop, falling back to the first allowed type.
+  **Any SSDP figure read off the attacks page before this fix was inflated**, and `(Re)Assoc`
+  understated. The stored rows were always correct; only the rendering was wrong.
+
+Full analysis both ways: [`models/README.md`](models/README.md). Design and rationale:
+[`docs/models.md`](docs/models.md). Diagrams: [`docs/model-pipeline.md`](docs/model-pipeline.md).
 
 ---
 
 ## Offline demo — no radio needed
 
 `data/samples/` holds six 20 000-frame `.pcapng` captures. `replay_pcap.py` pushes them through the
-*same* `packet_to_row()` and `TwoStagePipeline` the live detector uses, so what it prints is what the
-Pi would have done with those frames.
+*same* extractor and pipeline the live detector uses — including v2's ring buffer, if a v2 artefact is
+present — so what it prints is what the Pi would have done with those frames. `--model-version`
+(`auto` | `v1` | `v2`) chooses the generation; with no v2 artefact on disk, `auto` is v1.
 
 The launcher wraps this for you — `python run.py --demo` replays a capture into the database and then
 serves the dashboard, with `--demo-capture` and `--demo-frames` to choose which and how many. Drive
@@ -542,10 +657,12 @@ python -m backend.scripts.replay_pcap data/samples/*.pcapng --limit 5000 --json
 python -m backend.scripts.replay_pcap data/samples/beacon_raw_decrypted.pcapng --to-db
 ```
 
-The report prints packets read, capture span, stage-1 hit rate, persisted count, the stage-2 label
-distribution, and per-feature non-null coverage. Useful flags: `--limit N`, `--threshold1/2`,
-`--null-feature NAME` (repeatable — this is the leakage ablation), `--per-packet`, `--json`,
-`--model-dir`. See [`data/README.md`](data/README.md).
+The report prints packets read, capture span, the attack-gate hit rate, persisted count, the label
+distribution, and per-feature non-null coverage — that last table is the fastest way to tell whether
+extraction is doing its job on a new capture. Useful flags: `--limit N`, `--threshold1/2`,
+`--null-feature NAME` (repeatable — this is the leakage ablation), `--model-version`,
+`--batch-frames N`, `--per-packet`, `--json`, `--model-dir`. See
+[`data/README.md`](data/README.md).
 
 ---
 
@@ -557,15 +674,23 @@ python -m pytest backend/tests            # from the repo root
 
 | Suite | Tests | Covers |
 |---|---:|---|
-| `backend/tests/test_api.py` | 16 | every endpoint against a temporary database, including the `/ask` 503 path |
+| `backend/tests/test_features_v2.py` | 57 | the v2 feature contract: derivation from real frames, the multi-value cell parser, NaN conventions, no banned field reachable |
 | `backend/tests/test_rag.py` | 51 | routing, `SELECT`-only enforcement, row limiting, humanisation, error paths |
-| `backend/tests/test_features.py` + `test_pipeline_pcap.py` | 31 | feature extraction from real frames, bundle transform order, replay over the samples |
+| `backend/tests/test_pipeline_v2.py` | 39 | spec-mismatch refusal, streaming/batching equivalence, the verdict mapping, threading |
+| `backend/tests/test_features.py` | 22 | v1 feature extraction from real frames |
+| `backend/tests/test_api.py` | 16 | every endpoint against a temporary database, including the `/ask` 503 path |
 | `backend/tests/test_runtime_config.py` | 13 | dual-target regressions: blank `.env` values fall back to defaults, SQL dialect follows `DATABASE_URL`, SQLite `SELECT`s run without psycopg |
+| `backend/tests/test_pipeline_pcap.py` | 9 | v1 bundle transform order, replay over the samples |
 
-All 111 pass. Three more checks worth running:
+**All 207 pass** (v1 shipped with 111). The one worth singling out is the causality probe: it perturbs
+every *future* frame and asserts the past outputs are **bit-identical**, so a model that can see
+forward fails the suite rather than quietly inflating a score.
+
+Three more checks worth running:
 
 ```bash
-python -m backend.scripts.verify_models     # bundle digests, feature counts, class map
+python -m backend.scripts.verify_models     # v1 bundle digests, feature counts, class map
+python ml/model.py                          # the causality probe, standalone (needs torch)
 python backend/scripts/check_rag.py         # the /ask assistant end to end (needs a key + network)
 cd frontend && npx tsc --noEmit             # static export builds with zero TypeScript errors
 ```
@@ -579,8 +704,17 @@ None of the following exists in this codebase. They are listed as future work, n
 - [ ] **Prevention (the "P" in IPS)** — deauthenticating or blocking a malicious source, MAC
       denylisting, WLAN-controller or RADIUS integration. HawkShield currently only observes.
 - [ ] **Alerting** — email, webhooks, Slack, syslog. There is no notification path of any kind.
-- [ ] **Retrained models** — session-held-out split, session- and band-encoding features dropped.
-      This is the highest-value item on the list; see [Model status](#model-status--known-training-data-leakage).
+- [ ] **Trained v2 weights** — the pipeline, the contract and the runtime are in place; the model is
+      not. Run [`ml/run_training.ps1`](ml/run_training.ps1) and commit the ONNX artefact with its
+      measured numbers. Highest-value item on the list; see
+      [Model status](#model-status--v1-post-mortem-and-the-v2-answer).
+- [ ] **`run.py` accepting either model generation** — its preflight still hard-requires both v1
+      `.joblib` bundles, so a v2-only checkout would be refused even though the detector would run
+      fine. Known gap, recorded in [`docs/CONTRACT.md` §8.4](docs/CONTRACT.md).
+- [ ] **A `verify_models` v2 mode** — the script inspects the joblib bundles only; the v2 check today
+      is `V2Pipeline`'s own load-time validation, surfaced by `/health`.
+- [ ] **Evaluation beyond one testbed** — AWID3 recorded each attack once, so the split measures
+      generalisation across time within a single recording, not across deployments.
 - [ ] **Channel hopping** — the adapter is pinned to one channel for the life of the process.
 - [ ] **Normal-traffic sampling** — only attacks are persisted, so the table cannot be used to
       estimate a false-positive rate after the fact.
@@ -593,8 +727,9 @@ None of the following exists in this codebase. They are listed as future work, n
 Built by **Yasser**, **Mohammed**, **Haya**, **Ghala** and **Lena** as a capstone project.
 Original repository: [`YasserAlbogami/Comprehensive_Capstone`](https://github.com/YasserAlbogami/Comprehensive_Capstone).
 
-Built on FastAPI, SQLAlchemy, LightGBM, scikit-learn, scapy, ReportLab, Next.js, React, Tailwind CSS,
-Recharts and Leaflet.
+Built on FastAPI, SQLAlchemy, PyTorch, ONNX Runtime, LightGBM, scikit-learn, scapy, ReportLab,
+Next.js, React, Tailwind CSS, Recharts and Leaflet. The v2 model is trained on **AWID3** (University
+of the Aegean).
 
 ---
 

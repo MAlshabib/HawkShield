@@ -1,6 +1,6 @@
 #!/usr/bin/env python3
 """
-HawkShield v2 model: a causal dilated temporal CNN over the 47-feature contract.
+HawkShield v2 model: a causal dilated temporal CNN over the 46-feature contract.
 
 Design constraints, in priority order
 -------------------------------------
@@ -37,10 +37,19 @@ from __future__ import annotations
 import math
 from typing import Dict, List, Optional, Sequence
 
+import sys
+from pathlib import Path
+
 import numpy as np
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+
+REPO_ROOT = Path(__file__).resolve().parents[1]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
+
+from backend.detector.feature_spec import FEATURE_ORDER  # noqa: E402
 
 DEFAULT_DILATIONS: List[int] = [1, 2, 4, 8, 16, 32]
 
@@ -82,6 +91,11 @@ class FeatureFront(nn.Module):
             return z
         m = nanmask.index_select(1, self.mask_idx).to(z.dtype)
         return torch.cat([z, m], dim=1)
+
+
+# Width follows the contract; a literal here would silently rot on the next
+# spec change, which is the class of bug this project exists to avoid.
+N_FEATURES = len(FEATURE_ORDER)
 
 
 class ChannelNorm(nn.Module):
@@ -128,7 +142,7 @@ class CausalBlock(nn.Module):
 
 
 class HawkShieldTCN(nn.Module):
-    """Per-frame 9-class classifier. ``(B, 47, T) -> (B, 9, T)``."""
+    """Per-frame 9-class classifier. ``(B, 46, T) -> (B, 9, T)``."""
 
     def __init__(
         self,
@@ -179,7 +193,7 @@ class HawkShieldTCN(nn.Module):
 # --------------------------------------------------------------------------- #
 # Causality test                                                               #
 # --------------------------------------------------------------------------- #
-def assert_causal(model: nn.Module, n_features: int = 47, window: int = 128,
+def assert_causal(model: nn.Module, n_features: int = N_FEATURES, window: int = 128,
                   t: int = 64, seed: int = 0, tol: float = 0.0) -> Dict[str, float]:
     """Perturb every frame after *t* and assert outputs at <= *t* do not move.
 
@@ -236,7 +250,7 @@ def build_from_checkpoint(ckpt: Dict[str, object]) -> HawkShieldTCN:
 
 
 if __name__ == "__main__":  # quick self-check: python ml/model.py
-    m = HawkShieldTCN(np.zeros(47, np.float32), np.ones(47, np.float32),
+    m = HawkShieldTCN(np.zeros(N_FEATURES, np.float32), np.ones(N_FEATURES, np.float32),
                       list(range(18)), n_classes=9)
     print(f"parameters      : {m.n_parameters():,}")
     print(f"receptive field : {m.receptive_field} past frames")

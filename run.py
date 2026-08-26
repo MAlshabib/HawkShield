@@ -162,15 +162,52 @@ def resolve_database_url(mode: str) -> str:
     sys.exit(2)
 
 
+def _model_dir() -> Path:
+    """MODEL_DIR if set (env or .env), else <repo>/models.
+
+    Hardcoding the path here would disagree with the app's own config, which is
+    exactly the kind of drift this project keeps getting bitten by.
+    """
+    raw = os.environ.get("MODEL_DIR", "").strip()
+    if not raw:
+        env = REPO_ROOT / ".env"
+        if env.exists():
+            for line in env.read_text(encoding="utf-8", errors="ignore").splitlines():
+                line = line.strip()
+                if line.startswith("MODEL_DIR=") and not line.startswith("#"):
+                    raw = line.split("=", 1)[1].strip()
+                    break
+    if not raw:
+        return REPO_ROOT / "models"
+    d = Path(raw)
+    return d if d.is_absolute() else (REPO_ROOT / d)
+
+
 def check_models() -> bool:
-    d = REPO_ROOT / "models"
-    missing = [n for n in ("stage1_binary_bundle.joblib", "stage2_multiclass_bundle.joblib")
-               if not (d / n).exists()]
-    if missing:
-        bad(f"model bundle(s) missing from models/: {', '.join(missing)}")
-        return False
-    ok("model bundles present")
-    return True
+    """Either generation is enough to run.
+
+    v2 is a single ONNX artefact plus its meta; v1 is the two joblib bundles. The
+    detector picks whichever is valid, so refusing to start because the *other*
+    generation is absent would block a v2-only checkout for no reason.
+    """
+    d = _model_dir()
+    v2 = (d / "hawkshield_v2.onnx", d / "hawkshield_v2_meta.json")
+    v1 = (d / "stage1_binary_bundle.joblib", d / "stage2_multiclass_bundle.joblib")
+
+    if all(f.exists() for f in v2):
+        ok("v2 model present (causal TCN, ONNX)")
+        if not all(f.exists() for f in v1):
+            info("no v1 bundles; v2 only -- fine, the detector will use v2")
+        return True
+    if all(f.exists() for f in v1):
+        ok("v1 model bundles present")
+        info("no trained v2 artefact yet -- train one with ml/run_training.ps1")
+        return True
+
+    bad(f"no usable model in {d}")
+    info("Expected either hawkshield_v2.onnx + hawkshield_v2_meta.json (v2),")
+    info("or stage1_binary_bundle.joblib + stage2_multiclass_bundle.joblib (v1).")
+    return False
 
 
 def check_frontend() -> bool:

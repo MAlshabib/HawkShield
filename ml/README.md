@@ -8,7 +8,7 @@ D:/AWID3.zip                 46 GB of CSV inside a 14.7 GB zip
    │
    │  ml/prepare_awid3.py            ~4 min, 16 cores
    ▼
-_work/awid3_v2/**.parquet    ~24M rows × (47 float32 + label + block_id)
+_work/awid3_v2/**.parquet    ~24M rows × (46 float32 + label + block_id)
    │
    │  ml/train.py --model both       grouped split, never a random shuffle
    ▼
@@ -146,7 +146,16 @@ Shared by training, evaluation and (by construction) the live detector.
 
 ### `ml/model.py` — the causal TCN
 
-`(batch, 47, T) → (batch, 9, T)`, one prediction per frame.
+`(batch, 46, T) → (batch, 9, T)`, one prediction per frame.
+
+> Spec **2.1.0** dropped `frame.fcs_bad`, taking the contract from 47 features to
+> **46**. The channel count is read from the checkpoint's normalisation vectors at
+> construction time, so the network follows the spec automatically — but several
+> docstrings in `ml/model.py` still say 47, and `assert_causal()`'s *default*
+> `n_features` is still 47. That default only affects the standalone probe
+> (`python ml/model.py`), not training or export, both of which pass the real
+> width. `backend/detector/feature_spec.py` and
+> [`../docs/CONTRACT.md` §5.1](../docs/CONTRACT.md) are the authority: **46**.
 
 * 6 residual blocks, kernel 3, dilations 1·2·4·8·16·32 → **receptive field 127
   past frames**; ~81k parameters at the default width of 56 channels.
@@ -199,7 +208,7 @@ mechanisms so they do not double-count:
   surface into a cliff; `--weight-cap` trades a little rare-class recall for
   convergence.
 
-The LightGBM baseline gets the 47 per-frame features plus 36 causal rolling
+The LightGBM baseline gets the 46 per-frame features plus 36 causal rolling
 aggregates (a tree sees one row at a time and otherwise cannot represent "sixty
 deauths in the last second").
 
@@ -265,6 +274,13 @@ there is different.
 
 ## Reading the reports
 
+> ⚠️ **Both files in `ml/reports/` today are from an earlier smoke run** — a
+> 2.4 M-row subset at spec **2.0.0**, on CPU, with several classes absent from the
+> test split. They are shape examples, not results. **Do not quote a number out of
+> them**, and do not copy one into a README or a slide: no v2 weights have been
+> trained yet, and no v2 accuracy figure appears anywhere else in this repository
+> for exactly that reason. A real `run_training` overwrites both.
+
 `ml/reports/train_report.md`
 
 * **Rows per class per split** — check this first. Any `Warning — too few blocks`
@@ -287,6 +303,38 @@ there is different.
 * **Head to head** — if LightGBM wins, LightGBM wins. A ~1 MB tree model that
   beats the network on macro-F1 is the better answer for a Pi, and the report
   says so rather than hiding it.
+
+---
+
+## Shipping the result
+
+`export_onnx.py` writes three files into `models/`. Two of them are what the Pi
+needs:
+
+```
+models/hawkshield_v2.onnx         fp32 graph  -- SHIP THIS
+models/hawkshield_v2_meta.json    spec version, classes, feature order, norm constants
+models/hawkshield_v2.int8.onnx    exported for measurement -- do NOT ship
+```
+
+Copy the **pair** across and restart the detector:
+
+```bash
+scp models/hawkshield_v2.onnx      pi@<pi-ip>:~/HawkShield/models/
+scp models/hawkshield_v2_meta.json pi@<pi-ip>:~/HawkShield/models/
+ssh pi@<pi-ip> sudo systemctl restart hawkshield-detector
+```
+
+They travel together and they travel with the code. `V2Pipeline` compares the
+meta's spec version, class list, feature list and **feature order** against the
+running `backend/detector/feature_spec.py` and refuses a mismatch, naming the
+artefact and the fix. Under `MODEL_VERSION=auto` it then falls back to v1 and logs
+the reason at ERROR — visible in `GET /health` as `models.v2: false` plus a
+`model_problems` list. Under `MODEL_VERSION=v2` it exits `2` instead of
+downgrading.
+
+Nothing here runs on the Pi. Training is a laptop/GPU job; the Pi loads an
+artefact. See [`../docs/deployment-pi.md` §4.5](../docs/deployment-pi.md).
 
 ## Non-goals
 

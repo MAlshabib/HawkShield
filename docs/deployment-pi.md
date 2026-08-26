@@ -7,6 +7,11 @@ full troubleshooting matrix, the uninstall procedure — is [`../deploy/README.m
 which is maintained by the deployment owner. This page does not restate it; it links to it. When the
 two disagree, `deploy/README.md` wins on operational detail.
 
+> **The Pi does not train anything.** Model training runs on a laptop or workstation with a GPU and
+> produces an ONNX artefact you copy across — see [§4.5](#45-the-detection-model). The Pi only ever
+> loads a model. It has no PyTorch, no CUDA, no AWID3 archive, and nothing on this page will put them
+> there.
+
 ---
 
 ## 1. What you need
@@ -117,6 +122,26 @@ Rules that will save you an evening:
 * `MODEL_DIR`, `FRONTEND_DIST` and `AP_LOCATIONS_FILE` ship blank and should stay blank unless you
   keep those files outside the checkout. Blank means "use the packaged default", explicitly.
 
+**Model selection**, all optional and all sane by default:
+
+```ini
+MODEL_VERSION=auto        # auto | v1 | v2. auto prefers a valid v2 artefact, falls back to v1
+V2_BATCH_FRAMES=32        # frames per onnxruntime call
+V2_ORT_THREADS=2          # onnxruntime intra-op threads -- see below
+```
+
+> **`V2_ORT_THREADS` matters more on a Pi than anywhere else.** `0` means "the onnxruntime default",
+> which is one thread per core *and which spin-waits between calls*. On a four-core Pi running the
+> sniffer, the sink and uvicorn on the same silicon, that busy-wait competes directly with capture. On
+> the dev box the default measured **2.4× slower end to end** than pinning it to 2 (302 vs 723
+> frame/s). Leave it at `2`. Raise it only with a measurement in hand.
+>
+> `V2_BATCH_FRAMES=32` costs at most 32 frames of detection delay — about 32 ms at 1000 frame/s — and
+> cuts per-frame inference from 1347.5 µs to 54.7 µs. `1` is the honest worst case if you ever need to
+> rule batching out while debugging.
+>
+> Both are ignored while v1 is the active model.
+
 > **`DATABASE_URL` is not optional on the Pi.** A laptop can run the whole stack with the shipped
 > `CHANGE_ME` placeholder — `run.py` quietly falls back to a local SQLite file so a demo works with
 > zero setup. **The Pi deliberately does not do this.** `run.py` exits 2 and tells you to configure
@@ -175,6 +200,61 @@ than a crash. Details and the `NEXT_PUBLIC_API_BASE` trap are in
 
 ---
 
+### 4.5 The detection model
+
+The same "build elsewhere, copy the result" rule applies to the model, and for the same reason: the
+build needs a machine the Pi is not.
+
+**Training runs on a laptop or workstation with a GPU. Never on the Pi.** It reads the 14.7 GB AWID3
+archive, needs PyTorch and ~4.5 GB of RAM for the feature array, and takes 50–90 minutes on an
+RTX 4070 SUPER (4–6 hours CPU-only). None of that belongs on a sensor.
+
+```powershell
+# laptop / workstation, from the repo root
+.\ml\run_training.ps1 -Fresh
+```
+```bash
+./ml/run_training.sh --fresh
+```
+
+That writes three files into `models/`, and those are the only artefacts the Pi needs:
+
+```bash
+scp models/hawkshield_v2.onnx      pi@<pi-ip>:~/HawkShield/models/
+scp models/hawkshield_v2_meta.json pi@<pi-ip>:~/HawkShield/models/
+sudo systemctl restart hawkshield-detector
+```
+
+`models/hawkshield_v2.int8.onnx` is also produced. **Do not deploy it.** It is 2.6× smaller
+(348 KB → 134 KB) but measured ~4× *slower* — onnxruntime has no fast int8 Conv1d kernel at these
+shapes and dequantises on every call. If the Pi's storage is genuinely the constraint, re-measure on
+the Pi itself before switching; the arithmetic there is not the arithmetic on x86.
+
+Confirm what the Pi picked up:
+
+```bash
+curl -s http://localhost:8000/health          # model_version, spec_version, artefact_spec_version
+journalctl -u hawkshield-detector | grep "ACTIVE MODEL"
+```
+
+The detector refuses to load an artefact whose spec version, class list, feature list or feature
+order disagrees with the code in the checkout, and says exactly which. If you copied a model across
+without also pulling the matching code, that is the message you will get — and under
+`MODEL_VERSION=auto` it will quietly fall back to v1 rather than run something it cannot verify.
+
+> **Right now this section is aspirational.** No trained v2 artefact exists in this repository yet, so
+> a fresh Pi install runs **v1** and `/health` reports `"model_version": "v1"`. That is expected, not a
+> fault. Training details are in [`../ml/README.md`](../ml/README.md); the model card is
+> [`../models/README.md`](../models/README.md).
+
+> **`run.py`'s preflight still hard-requires both v1 `.joblib` bundles.** A checkout carrying a valid
+> v2 ONNX artefact and *no* v1 bundles would be refused by the launcher even though the detector would
+> run fine on v2. Harmless today because both bundles ship — but do not "clean up" `models/` by
+> deleting them. Recorded as a known gap in [`CONTRACT.md` §8.4](CONTRACT.md). The systemd units call
+> `backend.detector.cli` directly and are not affected.
+
+---
+
 ## 5. Monitor mode
 
 The detector unit is enabled but will not usefully run until the adapter is in monitor mode on the
@@ -215,7 +295,7 @@ systemctl status hawkshield-detector
 iw dev wlan1 info        # "type monitor" and the channel you configured
 ```
 
-**3 — The API answers and the models loaded.**
+**3 — The API answers, and a model loaded.**
 
 ```bash
 curl -s http://localhost:8000/health
@@ -223,19 +303,41 @@ curl -s http://localhost:8000/health
 
 ```json
 {"status":"ok","database":true,"packets":0,"latest_packet_ts":null,
- "models":{"stage1":true,"stage2":true},"version":"1.0.0"}
+ "models":{"stage1":true,"stage2":true,"v2":false},
+ "model_version":"v1","spec_version":"2.1.0","artefact_spec_version":null,
+ "model_problems":[],"version":"1.0.0"}
 ```
 
-`"status":"degraded"` means either the database is unreachable or a model bundle is missing — the
-`database` and `models` fields say which.
+`"status":"degraded"` means either the database is unreachable or **no** model is usable — the
+`database`, `models` and `model_problems` fields say which.
 
-**4 — The bundles on disk are the ones the detector expects.**
+Read `model_version` carefully: it is what the *files on disk* imply, computed by the API process,
+which does no inference. `"v1"` with `"v2": false` and a `null` `artefact_spec_version` is the
+expected state until a trained v2 artefact is copied across (§4.5). If a v2 artefact **is** present
+but `models.v2` is `false`, `model_problems` names the mismatch — usually a spec version that does not
+match the checkout.
+
+**3b — What the detector actually loaded.** The authoritative record is one line in its own log:
+
+```bash
+journalctl -u hawkshield-detector | grep "ACTIVE MODEL"
+```
+
+```
+ACTIVE MODEL: v1 (two-stage LightGBM) ...
+```
+
+If `/health` and this line disagree, the artefacts changed after the detector started — restart it.
+
+**4 — The v1 bundles on disk are the ones the detector expects.**
 
 ```bash
 cd ~/HawkShield && .venv/bin/python -m backend.scripts.verify_models
 ```
 
-Non-zero exit means a bundle is missing, unreadable, or internally inconsistent.
+Non-zero exit means a bundle is missing, unreadable, or internally inconsistent. Note that this tool
+checks the **v1 joblib bundles only** — it has no v2 mode. The v2 equivalent is the detector's own
+load-time validation, reported by `/health` as above.
 
 **5 — The detector is actually seeing frames.** The heartbeat logs every 2 seconds:
 
@@ -446,6 +548,13 @@ If `backend/requirements.txt` changed, reinstall into the venv first. If the sch
 the checkout path changed, just re-run `sudo ./deploy/install_pi.sh --skip-apt` — it is idempotent and
 will not touch your `.env`. If the frontend changed, rebuild the export on a networked machine (§4).
 
+**If the model changed**, copy the new `hawkshield_v2.onnx` **and** `hawkshield_v2_meta.json` across
+together (§4.5) and restart the detector. Copy them as a pair and pull the matching code: the runtime
+compares the artefact's spec version, class list and feature order against the checkout and refuses a
+mismatch rather than serving a model whose feature space is not the one the extractor produces. A
+`git pull` that changes `backend/detector/feature_spec.py` without a matching artefact will drop the
+detector back to v1 — visible immediately in `/health` and in the `ACTIVE MODEL:` log line.
+
 Uninstall instructions are at the end of [`deploy/README.md`](../deploy/README.md).
 
 ---
@@ -467,7 +576,9 @@ sudo .venv/bin/python -m backend.detector.cli --iface wlan1 --channel 6 --dry-ru
 
 `--dry-run` classifies and logs without opening a database connection at all — exactly what you want
 when checking a new radio. The detector CLI also accepts `--ssid`, `--threshold1`, `--threshold2`,
-`--model-dir` and `--log-level`; each defaults to the matching `.env` value.
+`--model-dir`, `--model-version`, `--batch-frames` and `--log-level`; each defaults to the matching
+`.env` value. `--model-version v2` is the way to make a mismatch loud: it exits `2` with the reason
+instead of falling back to v1.
 
 ### Or use the launcher
 
@@ -486,6 +597,7 @@ the dashboard URL and the LAN URL, and Ctrl-C stops both children cleanly.
 
 | Situation | What the launcher does |
 |---|---|
+| a v1 `.joblib` bundle missing from `models/` | exits 2 — even if a valid v2 artefact is present. Known gap, [`CONTRACT.md` §8.4](CONTRACT.md); do not delete the bundles |
 | `DATABASE_URL` unset or `CHANGE_ME` | exits 2; **no SQLite fallback on the Pi** |
 | `init_db` fails | exits 2, prints the last lines of the error and `sudo systemctl status postgresql` |
 | not run with `sudo` | warns, starts the dashboard only, prints the `sudo` command to get capture |
