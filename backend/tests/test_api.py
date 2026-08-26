@@ -19,7 +19,7 @@ from sqlalchemy.orm import Session, sessionmaker
 from sqlalchemy.pool import StaticPool
 
 # The app must never require a real API key or a real Postgres to import.
-os.environ.setdefault("OPENAI_API_KEY", "")
+os.environ.setdefault("OPENROUTER_API_KEY", "")
 
 from backend.app.db import Base, get_db  # noqa: E402
 from backend.app.main import app  # noqa: E402
@@ -348,7 +348,7 @@ def test_ask_returns_503_without_api_key(
     from backend.app.config import settings
     from backend.app.routers import ask as ask_router
 
-    monkeypatch.setattr(settings, "OPENAI_API_KEY", "", raising=False)
+    monkeypatch.setattr(settings, "OPENROUTER_API_KEY", "", raising=False)
     ask_router.cache.store.clear()
 
     r = client.post("/ask", json={"question": "how many deauth attacks?", "session_id": "t1"})

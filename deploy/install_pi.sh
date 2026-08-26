@@ -375,7 +375,7 @@ ${C_YLW}${C_BLD}  ============================================================${
   Optional, everything works without them:
 
     CAPTURE_CHANNEL   channel to pin (default 6) - must match monitor_mode.sh
-    OPENAI_API_KEY    leave empty and POST /ask returns HTTP 503; nothing else
+    OPENROUTER_API_KEY  leave empty and POST /ask returns HTTP 503; nothing else
                       is affected.
 
   Then:

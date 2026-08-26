@@ -38,5 +38,6 @@ scapy==2.6.1
 # --- Reporting ---------------------------------------------------------------
 reportlab==4.4.3
 
-# --- RAG / /ask (optional at runtime: no OPENAI_API_KEY -> /ask returns 503) --
+# --- RAG / /ask (optional at runtime: no OPENROUTER_API_KEY -> /ask returns 503)
+# The openai SDK is the client for OpenRouter, which is OpenAI-wire-compatible.
 openai==1.102.0

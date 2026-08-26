@@ -1,6 +1,6 @@
 """Tests for backend.app.rag.packet_qa.
 
-No network, no OPENAI_API_KEY, no PostgreSQL: the OpenAI client and the database
+No network, no OPENROUTER_API_KEY, no PostgreSQL: the OpenRouter client and the database
 layer are always faked.
 """
 
@@ -34,7 +34,7 @@ def _isolated_config(monkeypatch):
     monkeypatch.setattr(packet_qa, "_settings", None, raising=False)
     monkeypatch.setattr(packet_qa, "_client", None, raising=False)
     for var in (
-        "OPENAI_API_KEY",
+        "OPENROUTER_API_KEY",
         "DATABASE_URL",
         "GEN_MODEL",
         "HUMANIZE_SQL",
@@ -71,7 +71,7 @@ def _fake_client(replies):
 # --------------------------------------------------------------------------- #
 def test_import_without_api_key_succeeds(monkeypatch):
     """Re-importing the module with no credentials must not raise."""
-    monkeypatch.delenv("OPENAI_API_KEY", raising=False)
+    monkeypatch.delenv("OPENROUTER_API_KEY", raising=False)
     monkeypatch.delenv("DATABASE_URL", raising=False)
     module = importlib.reload(packet_qa)
     assert module.SYSTEM_PROMPT
@@ -90,13 +90,13 @@ def test_rag_unavailable_is_not_swallowed_into_error_dict():
     try:
         packet_qa.packet_ask("what is an evil twin?")
     except packet_qa.RagUnavailable as exc:
-        assert "OPENAI_API_KEY" in str(exc)
+        assert "OPENROUTER_API_KEY" in str(exc)
     else:  # pragma: no cover
         pytest.fail("packet_ask should have raised RagUnavailable")
 
 
 def test_missing_database_url_raises_rag_unavailable(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     with pytest.raises(packet_qa.RagUnavailable):
         packet_qa._db_url()
 
@@ -297,7 +297,7 @@ def test_jsonable_handles_bytes_and_unknown_objects():
 # End-to-end with fakes: routing, SQL execution, humanisation                  #
 # --------------------------------------------------------------------------- #
 def test_sql_mode_end_to_end_with_fakes(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("DATABASE_URL", "postgresql+psycopg2://u:p@h/db")
 
     client, completions = _fake_client(
@@ -327,7 +327,7 @@ def test_sql_mode_end_to_end_with_fakes(monkeypatch):
 
 
 def test_sql_mode_appends_limit_to_reported_sql(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     monkeypatch.setenv("HUMANIZE_SQL", "0")
     monkeypatch.setenv("RAG_MAX_ROWS", "100")
 
@@ -350,7 +350,7 @@ def test_sql_mode_appends_limit_to_reported_sql(monkeypatch):
 
 
 def test_humanisation_failure_falls_back_to_deterministic(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
 
     class _Flaky(_FakeCompletions):
         def create(self, **kwargs):
@@ -378,7 +378,7 @@ def test_humanisation_failure_falls_back_to_deterministic(monkeypatch):
 
 
 def test_docs_mode_returns_answer_without_sql(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     client, _ = _fake_client(
         [json.dumps({"mode": "DOCS", "sql": "", "answer": "An evil twin is a rogue AP..."})]
     )
@@ -395,7 +395,7 @@ def test_docs_mode_returns_answer_without_sql(monkeypatch):
 
 
 def test_oos_mode_gets_default_scope_message(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     client, _ = _fake_client([json.dumps({"mode": "OOS", "sql": "", "answer": ""})])
     monkeypatch.setattr(packet_qa, "_get_client", lambda: client)
 
@@ -405,7 +405,7 @@ def test_oos_mode_gets_default_scope_message(monkeypatch):
 
 
 def test_model_emitting_a_write_becomes_an_error_result(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     client, _ = _fake_client(
         [json.dumps({"mode": "SQL", "sql": "DROP TABLE packets", "answer": ""})]
     )
@@ -418,7 +418,7 @@ def test_model_emitting_a_write_becomes_an_error_result(monkeypatch):
 
 
 def test_malformed_model_json_becomes_an_error_result(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     client, _ = _fake_client(["not json at all"])
     monkeypatch.setattr(packet_qa, "_get_client", lambda: client)
 
@@ -428,7 +428,7 @@ def test_malformed_model_json_becomes_an_error_result(monkeypatch):
 
 
 def test_code_fenced_json_is_accepted(monkeypatch):
-    monkeypatch.setenv("OPENAI_API_KEY", "test-key")
+    monkeypatch.setenv("OPENROUTER_API_KEY", "test-key")
     fenced = "```json\n" + json.dumps({"mode": "OOS", "sql": "", "answer": "Out of scope."}) + "\n```"
     client, _ = _fake_client([fenced])
     monkeypatch.setattr(packet_qa, "_get_client", lambda: client)

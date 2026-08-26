@@ -283,10 +283,11 @@ grep DATABASE_URL ~/HawkShield/.env
 A password containing `@`, `:`, `/` or `#` must be percent-encoded in the URL
 (`@` → `%40`). Easiest fix is to pick a password without them.
 
-### 3. `POST /ask` returns 503 — missing OpenAI key
+### 3. `POST /ask` returns 503 - missing OpenRouter key
 
 This is **expected behaviour, not a bug**. The RAG endpoint is the only thing
-that needs an API key. With `OPENAI_API_KEY` empty, the API starts normally,
+that needs an OpenRouter API key (https://openrouter.ai/keys).
+Verify the whole path with: `python backend/scripts/check_rag.py`. With `OPENROUTER_API_KEY` empty, the API starts normally,
 every other endpoint works, the dashboard works, and only `/ask` returns:
 
 ```
@@ -296,7 +297,7 @@ every other endpoint works, the dashboard works, and only `/ask` returns:
 To enable it:
 
 ```bash
-nano ~/HawkShield/.env      # OPENAI_API_KEY=sk-...
+nano ~/HawkShield/.env      # OPENROUTER_API_KEY=sk-or-v1-...
 sudo systemctl restart hawkshield-api
 ```
 
@@ -312,10 +313,10 @@ Still 503 after setting the key? The service is not seeing it:
 
 ```bash
 sudo systemctl show hawkshield-api -p Environment      # is the key loaded?
-grep OPENAI ~/HawkShield/.env
+grep OPENROUTER ~/HawkShield/.env
 ```
 
-Common causes: the key was written as `export OPENAI_API_KEY=...` (systemd's
+Common causes: the key was written as `export OPENROUTER_API_KEY=...` (systemd's
 `EnvironmentFile` is not a shell — drop the `export`), the value was quoted when
 it should not be, or the service was never restarted after the edit.
 

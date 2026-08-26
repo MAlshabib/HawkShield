@@ -12,6 +12,9 @@ This document describes what the code does. The normative interface definitions 
 
 Two processes on one Raspberry Pi, sharing one PostgreSQL database and nothing else.
 
+*(That is the deployed shape. The same code also runs on a laptop with no radio, where the detector
+is simply not started and the database may be SQLite — see §3.)*
+
 | Process | Unit | User | Job |
 |---|---|---|---|
 | Detector | `hawkshield-detector.service` | root (`CAP_NET_RAW`, `CAP_NET_ADMIN`) | capture → classify → write |
@@ -102,7 +105,7 @@ to arrive.
 
 The governing rule is: **a field the frame does not actually carry stays `None`**, so the bundle's
 `SimpleImputer` fills it with the training median. Nothing is invented. This matters more than it
-sounds — see §6.
+sounds — see §7.
 
 Two features cannot be derived from a packet in isolation, so `ExtractState` carries them across
 calls: `frame.time_delta` (seconds since the previous captured frame) and `frame.time_relative`
@@ -193,14 +196,100 @@ is not a health endpoint.
 `/ask` is the only endpoint with an external dependency. The router owns the TTL cache (200 entries,
 600 s, key = sha256 of `session_id||question`) and the 5-turn session memory, then delegates to
 `backend/app/rag/packet_qa.py`. That module is imported inside a `try` at module load: if the import
-fails, or if `OPENAI_API_KEY` is empty, `/ask` answers **503** and every other endpoint is unaffected.
-Generated SQL is checked to be a single read-only `SELECT`, has a `LIMIT` appended when unbounded
-(`RAG_MAX_ROWS`, default 500), and runs under a Postgres `statement_timeout`
+fails, or if `OPENROUTER_API_KEY` is empty, `/ask` answers **503** and every other endpoint is
+unaffected. Generated SQL is checked to be a single read-only `SELECT`, has a `LIMIT` appended when
+unbounded (`RAG_MAX_ROWS`, default 500), and on PostgreSQL runs under a `statement_timeout`
 (`RAG_SQL_TIMEOUT_MS`, default 15 000 ms).
+
+The model is hosted on OpenRouter, which speaks the OpenAI wire protocol; `GEN_MODEL` defaults to
+`deepseek/deepseek-v4-flash`. Which model answers is a configuration detail — the SQL it writes is
+not, because it has to match whichever database is configured. See §4.
 
 ---
 
-## 3. One process serves both the API and the UI
+## 3. One repo, two targets
+
+HawkShield runs on a Raspberry Pi with a radio and on a laptop with none, from the same checkout,
+with no configuration difference between them. `run.py` is what makes that true.
+
+### Mode detection
+
+```
+/proc/device-tree/model contains "raspberry pi"     ─┐
+                    or                               ├─►  pi
+platform.system() == "Linux" and machine in
+    {aarch64, armv7l, armv6l}                       ─┘
+
+anything else                                       ────►  laptop
+```
+
+The device tree is checked first because it is definitive; the architecture check is the fallback for
+a Pi-class board that does not expose one. `--mode pi|laptop` overrides both, and the banner prints
+`(forced)` when it has been. Everything downstream is a consequence of that one word.
+
+| | Pi | Laptop |
+|---|---|---|
+| Detector | started (`backend.detector.cli`) | not started — nothing to capture from |
+| API + dashboard | started | started |
+| Database | PostgreSQL, **required** | PostgreSQL if configured, else SQLite |
+| Missing/`CHANGE_ME` `DATABASE_URL` | exit 2 with instructions | falls back to `hawkshield.db`, warns, continues |
+| Not root | detector cannot open a raw socket → falls back to dashboard-only with a `sudo` hint | irrelevant |
+| Not Linux | n/a | live capture is refused outright; `--demo` is the way to get data |
+
+`--detector` / `--no-detector` override the process choice independently of the mode, which is how
+you get a dashboard-only Pi or force a capture attempt on a Linux laptop with a monitor-mode adapter.
+
+### Why the laptop gets SQLite
+
+The alternative is asking a demo machine to install and configure PostgreSQL before it can show
+anything, which is a setup step that fails in front of an audience. So: if `DATABASE_URL` is unset or
+still carries the `CHANGE_ME` placeholder that `.env.example` ships, laptop mode writes to a SQLite
+file in the repo root and says so in the preflight output. Nothing is silently *reconfigured* — the
+fallback lives in the launcher's process environment for that session only.
+
+The Pi does not get the same courtesy, deliberately. A sensor's attack log is the product; putting it
+in an unmanaged file that no backup or `pg_dump` covers, because someone forgot to set a password, is
+worse than refusing to start. Pi mode exits 2 and points at `deploy/README.md`.
+
+### The consequence: dialect-aware SQL
+
+Two databases means `/ask` cannot assume one SQL dialect. `packet_qa._sql_dialect()` reads
+`DATABASE_URL`, and two things follow from it:
+
+1. **The prompt.** `_POSTGRES_NOTES` or `_SQLITE_NOTES` is appended to the system prompt, spelling out
+   time filters, bucketing, JSON access and casts for that dialect — `NOW() - INTERVAL '24 hours'`
+   versus `datetime('now', '-24 hours')`, `date_trunc` versus `strftime`, `raw->>'ssid'` versus
+   `json_extract`.
+2. **The executor.** SQLite reuses the app's SQLAlchemy engine, because `psycopg` cannot parse a
+   `sqlite://` URL at all. PostgreSQL keeps the `psycopg` path with its server-side statement timeout.
+
+The `SELECT`-only check and the `LIMIT` cap sit above the split and apply to both.
+
+### Preflight
+
+Everything the launcher checks before it starts a process, in order — each is a failure mode that
+otherwise surfaces as a blank dashboard or a stack trace minutes later:
+
+| Check | On failure |
+|---|---|
+| `.env` exists | copied from `.env.example` |
+| `DATABASE_URL` usable | SQLite fallback (laptop) / exit 2 (Pi) |
+| both model bundles in `MODEL_DIR` | fatal only if the detector was going to run |
+| `frontend/out/index.html` exists | warn; the API runs without a UI |
+| `python -m backend.scripts.init_db` succeeds | exit 2, with the last lines of the error and a `systemctl status postgresql` hint on the Pi |
+| the port is free | exit 2, suggesting the next port |
+| root, if the detector is wanted | drop to dashboard-only, print the `sudo` command |
+
+Then it prints the local URL, the LAN URL, `/docs` and `/health`, supervises both children, and on
+`SIGINT`/`SIGTERM` terminates them in reverse order with an 8-second grace period before `kill()`.
+If either child exits on its own, the launcher stops the other and returns that exit code.
+
+`run.py` is stdlib-only and imports nothing from `backend`, so a broken dependency shows up as a
+child process failing with a readable traceback rather than as the launcher failing to start.
+
+---
+
+## 4. One process serves both the API and the UI
 
 This is the single most consequential design decision in the deployment, and it was forced by the
 hardware.
@@ -248,7 +337,7 @@ The costs are real too, and they are documented where they bite:
 
 ---
 
-## 4. Configuration
+## 5. Configuration
 
 Every tunable is environment-driven through one `pydantic-settings` object,
 `backend/app/config.py::settings`, loaded from the repo-root `.env`. There are no hardcoded paths,
@@ -265,11 +354,20 @@ The full table is in [`CONTRACT.md` §3](CONTRACT.md) and every variable is comm
 | `CAPTURE_IFACE` / `CAPTURE_CHANNEL` | `wlan1` / `6` | must match what `monitor_mode.sh` was given |
 | `TARGET_SSID` | *(empty)* | soft filter — frames whose parsed SSID differs are skipped |
 | `BATCH_SIZE` / `BATCH_FLUSH_SECONDS` | `20` / `2.0` | write latency vs. round-trip count |
-| `OPENAI_API_KEY` | *(empty)* | empty ⇒ `/ask` returns 503, everything else works |
+| `OPENROUTER_API_KEY` | *(empty)* | empty ⇒ `/ask` returns 503, everything else works |
+| `GEN_MODEL` | `deepseek/deepseek-v4-flash` | which OpenRouter model answers `/ask` |
+| `DATABASE_URL` | `postgresql+psycopg2://…CHANGE_ME…` | also selects the SQL dialect `/ask` generates (§3) |
+
+One rule is worth stating because it used to be a security bug: for `MODEL_DIR`, `FRONTEND_DIST` and
+`AP_LOCATIONS_FILE`, **a blank value means "use the packaged default"**, not "the repo root".
+`.env.example` ships those three blank on purpose. A blank `FRONTEND_DIST` previously resolved to the
+repo root and FastAPI happily served the entire checkout — `.env` included — as static files.
+`Settings._blank_means_default` now intercepts that, and
+`backend/tests/test_runtime_config.py` pins it.
 
 ---
 
-## 5. Data model
+## 6. Data model
 
 One table matters: `packets`, declared once in `backend/app/models.py`. Its columns are the identity
 and radio fields from `raw_min`, the two model probabilities, the predicted label, and the `raw` JSON
@@ -283,7 +381,7 @@ asking about.
 
 ---
 
-## 6. Where the accuracy actually comes from
+## 7. Where the accuracy actually comes from
 
 The architecture above is sound and tested. The models plugged into step 3 are not, and this document
 would be dishonest without saying so here.

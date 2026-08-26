@@ -76,7 +76,11 @@ def _truthy(value: str) -> bool:
     return str(value).strip().lower() in {"1", "true", "yes", "on"}
 
 
-DEFAULT_GEN_MODEL = "gpt-4o"
+# OpenRouter (OpenAI-compatible API). Default is DeepSeek V4 Flash: strong at
+# SQL generation and strict JSON, ~$0.08/$0.16 per M tokens, 1M context.
+# Alternatives that work well here: z-ai/glm-5.3-flash, qwen/qwen3.7-flash.
+DEFAULT_GEN_MODEL = "deepseek/deepseek-v4-flash"
+DEFAULT_BASE_URL = "https://openrouter.ai/api/v1"
 DEFAULT_MAX_ROWS = 500          # LIMIT safety net for un-limited SELECTs
 DEFAULT_SQL_TIMEOUT_MS = 15000  # server-side statement timeout
 
@@ -225,22 +229,31 @@ _client: Any = None
 
 
 def _get_client() -> Any:
-    """Build (once) and return the OpenAI client. Raises :class:`RagUnavailable`."""
+    """Build (once) and return the OpenRouter client. Raises :class:`RagUnavailable`."""
     global _client
     if _client is not None:
         return _client
 
-    api_key = _cfg("OPENAI_API_KEY")
+    api_key = _cfg("OPENROUTER_API_KEY")
     if not api_key:
-        raise RagUnavailable("OPENAI_API_KEY is not configured; the assistant is disabled.")
+        raise RagUnavailable("OPENROUTER_API_KEY is not configured; the assistant is disabled.")
 
     try:
-        from openai import OpenAI  # imported lazily: keeps module import cheap and safe
+        from openai import OpenAI  # OpenRouter speaks the OpenAI wire protocol
     except Exception as exc:  # pragma: no cover - packaging problem
         raise RagUnavailable(f"The openai package is not installed: {exc}") from exc
 
-    _client = OpenAI(api_key=api_key)
-    logger.info("OpenAI client initialised (model=%s)", _cfg("GEN_MODEL", DEFAULT_GEN_MODEL))
+    base_url = _cfg("OPENROUTER_BASE_URL", DEFAULT_BASE_URL)
+    # Optional attribution headers; OpenRouter uses them for its app leaderboard.
+    headers = {
+        "HTTP-Referer": _cfg("OPENROUTER_SITE_URL", "https://github.com/MAlshabib/HawkShield"),
+        "X-Title": _cfg("OPENROUTER_APP_NAME", "HawkShield"),
+    }
+    _client = OpenAI(api_key=api_key, base_url=base_url, default_headers=headers)
+    logger.info(
+        "OpenRouter client initialised (model=%s, base_url=%s)",
+        _cfg("GEN_MODEL", DEFAULT_GEN_MODEL), base_url,
+    )
     return _client
 
 
@@ -369,18 +382,65 @@ def _rows_to_dicts(cols: Sequence[str], rows: Sequence[Sequence[Any]]) -> List[D
 
 
 # --------------------------------------------------------------------------- #
+# SQL dialect                                                                  #
+# --------------------------------------------------------------------------- #
+# The same repo runs on the Pi (PostgreSQL) and on a laptop demo (SQLite), so the
+# generated SQL has to match whichever database is actually configured.
+_POSTGRES_NOTES = """
+=== SQL DIALECT: PostgreSQL ===
+- Time filters: ts >= NOW() - INTERVAL '1 hour' / '24 hours' / '7 days';
+  "today" is ts >= date_trunc('day', NOW()).
+- Buckets: date_trunc('hour', ts), EXTRACT(HOUR FROM ts), EXTRACT(DOW FROM ts) (0 = Sunday).
+- JSON: raw->>'ssid' returns text; cast when you need a number, e.g. (raw->>'sig')::float.
+"""
+
+_SQLITE_NOTES = """
+=== SQL DIALECT: SQLite ===
+This database is SQLite, NOT PostgreSQL. PostgreSQL-only syntax will fail.
+- Time filters: ts >= datetime('now', '-1 hour') / '-24 hours' / '-7 days';
+  "today" is ts >= date('now').
+- Buckets: strftime('%H', ts) for the hour, strftime('%w', ts) for the weekday (0 = Sunday).
+  There is no date_trunc, no EXTRACT, no INTERVAL keyword and no NOW().
+- JSON: json_extract(raw, '$.ssid') instead of raw->>'ssid'.
+- There is no :: cast syntax; use CAST(x AS REAL) or CAST(x AS INTEGER).
+"""
+
+
+def _sql_dialect() -> str:
+    """Return 'sqlite' or 'postgresql', derived from DATABASE_URL."""
+    return "sqlite" if _cfg("DATABASE_URL").strip().lower().startswith("sqlite") else "postgresql"
+
+
+def _dialect_notes() -> str:
+    return _SQLITE_NOTES if _sql_dialect() == "sqlite" else _POSTGRES_NOTES
+
+
+# --------------------------------------------------------------------------- #
 # Database access                                                              #
 # --------------------------------------------------------------------------- #
 def _run_sql(sql: str) -> Tuple[List[str], List[Tuple[Any, ...]]]:
     """Execute a validated, row-limited SELECT and return ``(cols, rows)``."""
     statement = _apply_row_limit(_assert_select_only(sql))
-    url = _db_url()
     timeout_ms = _cfg_int("RAG_SQL_TIMEOUT_MS", DEFAULT_SQL_TIMEOUT_MS)
+    dialect = _sql_dialect()
+
+    logger.info("Executing RAG SELECT (%s): %s", dialect, statement.replace("\n", " "))
+
+    if dialect == "sqlite":
+        # Reuse the app's SQLAlchemy engine; psycopg cannot parse a sqlite:// URL.
+        from sqlalchemy import text as sa_text
+
+        from backend.app.db import engine
+
+        with engine.connect() as conn:
+            result = conn.execute(sa_text(statement))
+            cols = list(result.keys())
+            rows = [tuple(r) for r in result.fetchall()]
+        return cols, rows
 
     import psycopg  # imported lazily so the module imports without a DB driver
 
-    logger.info("Executing RAG SELECT: %s", statement.replace("\n", " "))
-    with psycopg.connect(url, options=f"-c statement_timeout={timeout_ms}") as conn:
+    with psycopg.connect(_db_url(), options=f"-c statement_timeout={timeout_ms}") as conn:
         with conn.cursor() as cur:
             cur.execute(statement)  # type: ignore[arg-type]
             cols = [d[0] for d in (cur.description or [])]
@@ -433,7 +493,10 @@ def _json_or_none(text: str) -> Optional[Dict[str, Any]]:
 def _route_and_generate(question: str) -> Dict[str, str]:
     """Single LLM call: classify the question and emit SQL or a docs answer."""
     attacks_ctx = _load_attacks_context()
-    messages: List[Dict[str, str]] = [{"role": "system", "content": SYSTEM_PROMPT.strip()}]
+    messages: List[Dict[str, str]] = [
+        {"role": "system", "content": SYSTEM_PROMPT.strip()},
+        {"role": "system", "content": _dialect_notes().strip()},
+    ]
     if attacks_ctx:
         messages.append({"role": "system", "content": f"CONTEXT (attack knowledge base):\n{attacks_ctx}"})
     else:

@@ -202,3 +202,20 @@ band (2.4 GHz) or the run length differs from the training captures.
 One further structural caveat: only frames clearing both thresholds are persisted, so the `packets`
 table cannot be used to estimate a false-positive rate after the fact. Use
 `backend/scripts/replay_pcap.py`, which reports the stage-1 hit rate over every frame read.
+
+---
+
+## 7. Not to be confused with the `/ask` assistant
+
+"The model" is ambiguous in this repo, and the distinction matters when reading a label.
+
+| | Detection models | `/ask` assistant |
+|---|---|---|
+| What | the two LightGBM bundles in `models/` | a hosted LLM, `GEN_MODEL`, default `deepseek/deepseek-v4-flash` via OpenRouter |
+| Runs | on the Pi, offline, on every frame | only when someone asks a question, over the network |
+| Produces | `predicted_label`, `proba_anomaly`, `proba_attack` | prose, and read-only `SELECT`s over rows the detectors already wrote |
+| Required | yes — no bundles, no detection | no — with no key, `/ask` returns 503 and nothing else changes |
+
+**The leakage described in §6 is a property of the LightGBM bundles alone.** Which LLM answers `/ask`
+has no bearing on it whatsoever: a better assistant reads the same mislabelled rows more fluently.
+Retraining the bundles is the only fix, and it has not happened yet.

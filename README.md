@@ -2,7 +2,7 @@
 
 **Wi-Fi intrusion *detection* for the Raspberry Pi 4** — monitor-mode 802.11 capture, a two-stage
 LightGBM classifier, a PostgreSQL attack log, and a dashboard plus natural-language assistant served
-from a single FastAPI process.
+from a single FastAPI process. One launcher, `python run.py`, runs it on the Pi or on a laptop.
 
 ![Python](https://img.shields.io/badge/python-3.11-3776AB)
 ![FastAPI](https://img.shields.io/badge/FastAPI-0.116-009688)
@@ -23,6 +23,99 @@ from a single FastAPI process.
 > [`models/README.md` §5](models/README.md).
 
 ![HawkShield project poster](docs/assets/Project_Poster.jpg)
+
+---
+
+## Quickstart — one command
+
+```bash
+python run.py
+```
+
+`run.py` is the only thing you have to run. It works out where it is, checks everything that can go
+wrong before it goes wrong, and starts the right processes for that machine:
+
+| Detected | What starts | Database |
+|---|---|---|
+| **Raspberry Pi** — `/proc/device-tree/model`, then Linux + `aarch64` / `armv7l` | detector (live 802.11 capture) **+** API **+** dashboard | PostgreSQL, **required** — the launcher refuses to start without one |
+| **Anything else** — laptop | API **+** dashboard, reading whatever is already in the database | PostgreSQL if configured, otherwise a local SQLite file it creates for you |
+
+That split is the whole point: **the same checkout runs on both machines, with no config edits on the
+laptop.** Use the project's own interpreter — `.venv/bin/python run.py`, or
+`.venv/Scripts/python.exe run.py` on Windows — and run it **from the repo root**.
+
+### At the conference — the laptop demo, two commands
+
+```bash
+python backend/scripts/check_rag.py     # optional pre-flight: proves the /ask assistant will answer
+python run.py --demo                    # replay a sample attack capture, then serve the dashboard
+```
+
+Open the URL it prints. Nothing to install, configure, or start by hand — no database, no `.env`
+edit, no radio.
+
+```
+  HawkShield
+  Windows AMD64
+  detected: LAPTOP
+
+-- checks ------------------------------------------------------------
+  OK    .env found
+  WARN  no usable DATABASE_URL -- using a local SQLite file for this session
+        sqlite:///D:/HawkShield/hawkshield.db
+  OK    model bundles present
+  OK    dashboard build found (frontend/out)
+  OK    database reachable, schema ready
+
+-- demo data ---------------------------------------------------------
+        replaying assoc_flood_raw_decrypted.pcapng (1500 frames) into the database...
+        persisted (p2>=0.80): 592 (39.47%)
+
+-- starting ----------------------------------------------------------
+        detector off -- dashboard reads existing data only
+
+  Dashboard   http://localhost:8000
+              http://192.168.3.11:8000   (from another device on this network)
+  API docs    http://localhost:8000/docs
+  Health      http://localhost:8000/health
+
+  Ctrl-C to stop
+```
+
+*(that run was `python run.py --demo --demo-frames 1500`; the default is 4000 frames)*
+
+### What it does before starting anything
+
+1. Creates `.env` from `.env.example` if it is missing.
+2. Picks a database. If `DATABASE_URL` is unset or still contains `CHANGE_ME`: **laptop** mode falls
+   back to a local SQLite file (`hawkshield.db` in the repo root) and says so; **Pi** mode stops with
+   exit 2 and tells you to configure PostgreSQL.
+3. Checks both model bundles are in `models/`.
+4. Checks for a dashboard build at `frontend/out` — warns, does not fail, if there is none.
+5. Runs the schema migration (`python -m backend.scripts.init_db`).
+6. Checks the port is free, and suggests the next one if it is not.
+7. On the Pi, checks for root. Without it, the detector cannot open a raw socket, so it falls back to
+   dashboard-only and prints the `sudo` hint.
+
+Then it prints the dashboard URL, the LAN URL to open on a phone, `/docs` and `/health`.
+**Ctrl-C stops everything cleanly.**
+
+### Flags
+
+| Flag | Default | Effect |
+|---|---|---|
+| `--mode auto\|pi\|laptop` | `auto` | override the detection — e.g. force laptop behaviour on the Pi |
+| `--host` | `0.0.0.0` | bind address |
+| `--port` | `8000` | serve somewhere else |
+| `--demo` | off | replay a sample capture into the database before starting |
+| `--demo-capture PATH` | `data/samples/assoc_flood_raw_decrypted.pcapng` | which capture `--demo` replays |
+| `--demo-frames N` | `4000` | how many frames `--demo` replays |
+| `--detector` / `--no-detector` | on for Pi, off for laptop | force live capture on or off |
+| `--iface` / `--channel` | from `.env` | passed straight to the detector CLI |
+| `--reload` | off | uvicorn auto-reload, for development |
+
+The systemd path is still the right answer for an unattended Pi — see
+[Full Raspberry Pi install](#full-raspberry-pi-install-systemd).
 
 ---
 
@@ -54,9 +147,10 @@ from a single FastAPI process.
 | 🌐 | **Analytics API** — counts, per-label breakdown, top offenders, channel usage, day×hour heatmap | `backend/app/routers/attacks.py` |
 | 🗺️ | **Map utilities** — AP inventory, per-source average RSSI, RSSI-weighted centroid origin estimate | `backend/app/routers/maps.py` |
 | 🧾 | **Reports** — JSON summary and a one-page A4 PDF export (ReportLab) | `backend/app/routers/reports.py` |
-| 🧠 | **`/ask` assistant (optional)** — OpenAI-backed text-to-SQL over `packets` plus Q&A from a bundled attack knowledge base; read-only `SELECT` enforcement, row cap and statement timeout | `backend/app/rag/packet_qa.py` |
+| 🧠 | **`/ask` assistant (optional)** — text-to-SQL over `packets` plus Q&A from a bundled attack knowledge base, through **OpenRouter** (default model DeepSeek V4 Flash); dialect-aware (PostgreSQL on the Pi, SQLite on a laptop demo), read-only `SELECT` enforcement, row cap and statement timeout | `backend/app/rag/packet_qa.py` |
 | 🖥️ | **Dashboard** — Next.js 15 static export served by FastAPI itself at `/`, same-origin, no second web server | `frontend/` |
 | 🔁 | **Offline replay** — score any `.pcapng` through the exact live code path, no radio required | `backend/scripts/replay_pcap.py` |
+| 🚀 | **One launcher** — auto-detects Pi vs laptop, preflights `.env`/database/models/build/port, starts what that machine needs | `run.py` |
 
 ---
 
@@ -128,7 +222,14 @@ The default configuration pins the adapter to **2.4 GHz channel 6**. The adapter
 
 ---
 
-## Quickstart (Raspberry Pi)
+## Full Raspberry Pi install (systemd)
+
+`python run.py` is enough to demo on a Pi, and it is what you want when you are standing next to it.
+For an unattended sensor that comes back after a reboot, install the two systemd units instead.
+
+Note the one hard difference from the laptop: **the Pi expects PostgreSQL.** There is no SQLite
+fallback there — `run.py` exits 2 if `DATABASE_URL` is unset or still says `CHANGE_ME`, rather than
+quietly writing a sensor's attack log to a file that nothing backs up.
 
 ```bash
 # 1. Clone
@@ -157,6 +258,14 @@ curl -s http://localhost:8000/health
 hostname -I                     # then open http://<pi-ip>:8000 in a browser
 ```
 
+Steps 5–7 have a launcher equivalent, useful when a unit will not start and you want the output in
+front of you — stop `hawkshield-api` first, or port 8000 is taken:
+
+```bash
+sudo ./deploy/monitor_mode.sh wlan1 6
+sudo .venv/bin/python run.py            # detector + API + dashboard, in the foreground
+```
+
 ### Build the frontend on a machine with internet
 
 `frontend/out/` is **git-ignored**, so a fresh clone has no dashboard until you build it — and the
@@ -182,14 +291,26 @@ feed it captures instead of live frames.
 ```bash
 python -m venv .venv
 .venv/bin/pip install -r backend/requirements-dev.txt      # runtime + pytest + httpx
-cp .env.example .env                                       # SQLite/Postgres URL of your choice
 
+.venv/bin/python run.py --demo                             # .env, database, schema, data, server
+```
+
+That is the whole setup. `run.py` copies `.env.example` to `.env`, falls back to a SQLite file
+because the shipped `DATABASE_URL` still says `CHANGE_ME`, creates the schema and loads sample
+attacks. You only need a `DATABASE_URL` of your own if you want the laptop to read the Pi's
+PostgreSQL.
+
+Doing it by hand is still supported, and is what `run.py` runs underneath:
+
+```bash
+cp .env.example .env
 .venv/bin/python -m backend.scripts.init_db                # create the schema
 .venv/bin/uvicorn backend.app.main:app --reload --port 8000
 ```
 
 On Windows use `.venv/Scripts/python.exe`. Run **everything from the repo root** — `backend` is a
 package and the module paths (`backend.app.main:app`, `python -m backend.detector.cli`) assume it.
+`run.py --reload` is the launcher's equivalent of `uvicorn --reload`.
 
 Two frontend options:
 
@@ -222,7 +343,7 @@ All routes are registered **without a prefix**. Full request/response detail in
 | POST | `/map/estimate-origin` | RSSI-weighted centroid of the supplied APs |
 | GET | `/reports/summary?days=` | Totals by type + headline figures |
 | POST | `/reports/export` | One-page A4 PDF (`application/pdf`) |
-| POST | `/ask` | Natural-language question → SQL or knowledge-base answer. **503 without `OPENAI_API_KEY`** |
+| POST | `/ask` | Natural-language question → SQL or knowledge-base answer. **503 without `OPENROUTER_API_KEY`** |
 | GET | `/` `/home/` `/dashboard/` `/attacks/` `/rag/` | The static dashboard |
 
 **Removed on purpose:** `POST /detector/start` and `POST /reports/email`. The detector is a systemd
@@ -239,8 +360,77 @@ Against a live instance with the frontend built:
 / /home/ /dashboard/ /attacks/ /rag/                  -> 200 text/html
 /leaflet/marker-icon.png                              -> 200 image/png
 /reports/export                                       -> 200 application/pdf
-/ask (no OPENAI_API_KEY)                              -> 503
+/ask (no OPENROUTER_API_KEY)                          -> 503
 ```
+
+---
+
+## The `/ask` assistant
+
+Optional, and the only part of HawkShield that talks to anything outside the box. It runs through
+[OpenRouter](https://openrouter.ai), which speaks the OpenAI wire protocol, so one key reaches every
+model below. Get one at <https://openrouter.ai/keys> and put it in `.env`:
+
+```ini
+OPENROUTER_API_KEY=sk-or-v1-...
+```
+
+With the key empty or unset, the API starts normally and **only** `POST /ask` returns 503. No other
+endpoint and no other dashboard page is affected.
+
+### Model choice
+
+`GEN_MODEL` picks the model. The default was chosen for two things this workload leans on hard —
+clean SQL generation and strict JSON adherence, because the router's whole contract is a single JSON
+object containing one `SELECT`.
+
+| `GEN_MODEL` | Why you would pick it | ~$ / M tokens (in / out) |
+|---|---|---|
+| **`deepseek/deepseek-v4-flash`** *(default)* | DeepSeek V4 Flash. Strong SQL, strict JSON, 1M-token context | 0.08 / 0.16 |
+| `z-ai/glm-5.3-flash` | GLM 5.3 Flash — close second, different failure modes | 0.075 / 0.25 |
+| `qwen/qwen3.7-flash` | cheapest of the four | 0.03 / 0.13 |
+| `qwen/qwen3-235b-a22b-2507` | largest and slowest; reach for it only if the small models misroute | 0.09 / 0.55 |
+
+Prices move; `check_rag.py` prints the live figure from OpenRouter's catalogue.
+
+Three more optional variables: `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1` —
+change it only for a proxy or a self-hosted OpenAI-compatible endpoint), and `OPENROUTER_SITE_URL` /
+`OPENROUTER_APP_NAME`, which are the attribution headers OpenRouter shows on its dashboard.
+
+> **This has nothing to do with the detection models.** The assistant is a hosted LLM that reads the
+> `packets` table. The *detectors* are the two LightGBM bundles in `models/`, they run entirely
+> offline, and they still have the leakage problem described in
+> [Model status](#model-status--known-training-data-leakage). Changing `GEN_MODEL` does not make a
+> label more trustworthy.
+
+### Pre-flight check — run this before a demo
+
+```bash
+python backend/scripts/check_rag.py
+```
+
+It verifies, in order: a key is configured → the configured model actually exists on OpenRouter (and
+prints its context length and live price) → the model answers a knowledge-base question in `DOCS`
+mode → it generates valid SQL against the real schema in `SQL` mode → that SQL executes against your
+database. **Exit code 0 means `POST /ask` will work.** Anything else prints what to fix.
+
+`--skip-db` checks the model only, generating the SQL without running it — use it when the database
+is not up yet, or to tell "the model is broken" apart from "the database is unreachable".
+
+Verified against the live API on the SQLite demo database:
+
+| Question | Generated SQL | Answer |
+|---|---|---|
+| *How many attacks have been detected in total?* | `SELECT COUNT(*) AS count FROM packets` | "The total number of attacks detected is 592." |
+| *Which source MAC address is the top offender?* | `SELECT src_mac, COUNT(*) AS count FROM packets GROUP BY src_mac ORDER BY count DESC LIMIT 1` | — |
+
+### It knows which database it is talking to
+
+The generated SQL matches whatever `DATABASE_URL` points at: **PostgreSQL** on the Pi, **SQLite** on
+a laptop demo. The system prompt carries dialect-specific notes, and the executor runs SQLite through
+the app's SQLAlchemy engine instead of psycopg. Verified: on SQLite it emits
+`ts >= datetime('now', '-24 hours')` rather than the PostgreSQL `NOW() - INTERVAL '24 hours'`, which
+would simply have failed.
 
 ---
 
@@ -263,7 +453,7 @@ HawkShield/
 │   │   ├── capture.py            monitor mode, sniff loop, heartbeat, signal handling
 │   │   ├── sink.py               PacketSink — batched writes
 │   │   └── cli.py                argparse entrypoint
-│   ├── scripts/                init_db.py, verify_models.py, replay_pcap.py
+│   ├── scripts/                init_db.py, verify_models.py, replay_pcap.py, check_rag.py
 │   ├── config/                 ap_locations.json
 │   ├── tests/                  pytest suites
 │   └── requirements*.txt
@@ -273,6 +463,7 @@ HawkShield/
 ├── deploy/                     install_pi.sh, monitor_mode.sh, postgres_setup.sql, 2 × .service
 ├── docs/                       CONTRACT.md, architecture.md, deployment-pi.md, api.md, models.md
 ├── notebooks/                  EDA.ipynb, binary_classifier.ipynb, multiclass_classifier.ipynb
+├── run.py                      the launcher — auto-detects Pi vs laptop, starts what it needs
 ├── .env.example                every variable, documented — copy to .env
 └── LICENSE
 ```
@@ -333,6 +524,10 @@ supply) are in [`models/README.md` §5](models/README.md).
 *same* `packet_to_row()` and `TwoStagePipeline` the live detector uses, so what it prints is what the
 Pi would have done with those frames.
 
+The launcher wraps this for you — `python run.py --demo` replays a capture into the database and then
+serves the dashboard, with `--demo-capture` and `--demo-frames` to choose which and how many. Drive
+the script directly when you want the analysis report rather than a dashboard:
+
 ```bash
 # score one capture; --dry-run is the default, nothing touches the database
 python -m backend.scripts.replay_pcap data/samples/deauth_raw_decrypted.pcapng
@@ -362,11 +557,13 @@ python -m pytest backend/tests            # from the repo root
 | `backend/tests/test_api.py` | 16 | every endpoint against a temporary database, including the `/ask` 503 path |
 | `backend/tests/test_rag.py` | 51 | routing, `SELECT`-only enforcement, row limiting, humanisation, error paths |
 | `backend/tests/test_features.py` + `test_pipeline_pcap.py` | 31 | feature extraction from real frames, bundle transform order, replay over the samples |
+| `backend/tests/test_runtime_config.py` | 13 | dual-target regressions: blank `.env` values fall back to defaults, SQL dialect follows `DATABASE_URL`, SQLite `SELECT`s run without psycopg |
 
-All 98 pass. Two more checks worth running:
+All 111 pass. Three more checks worth running:
 
 ```bash
 python -m backend.scripts.verify_models     # bundle digests, feature counts, class map
+python backend/scripts/check_rag.py         # the /ask assistant end to end (needs a key + network)
 cd frontend && npx tsc --noEmit             # static export builds with zero TypeScript errors
 ```
 

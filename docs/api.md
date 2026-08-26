@@ -441,8 +441,9 @@ figures. It is generated in memory — nothing is written to disk on the Pi.
 
 ## POST `/ask`
 
-Natural-language question over the `packets` table and a bundled attack knowledge base.
-**Optional**: with no `OPENAI_API_KEY`, this endpoint — and only this endpoint — is unavailable.
+Natural-language question over the `packets` table and a bundled attack knowledge base, answered by a
+model hosted on [OpenRouter](https://openrouter.ai) (default `deepseek/deepseek-v4-flash`).
+**Optional**: with no `OPENROUTER_API_KEY`, this endpoint — and only this endpoint — is unavailable.
 
 **Request**
 
@@ -471,7 +472,7 @@ prepended to the question as context, and answers are cached for 600 s (200 entr
 **Response — 503, no API key** (verified):
 
 ```json
-{ "detail": "OPENAI_API_KEY is not configured; the assistant is disabled." }
+{ "detail": "OPENROUTER_API_KEY is not configured; the assistant is disabled." }
 ```
 
 | Field | Meaning |
@@ -484,12 +485,71 @@ prepended to the question as context, and answers are cached for 600 s (200 entr
 | `error` | present only in `ERROR` mode |
 
 Safety rails, all env-tunable: generated SQL must be a **single read-only `SELECT`**; an unbounded
-`SELECT` gets a `LIMIT` appended (`RAG_MAX_ROWS`, default 500); every query runs under a Postgres
+`SELECT` gets a `LIMIT` appended (`RAG_MAX_ROWS`, default 500); on PostgreSQL every query runs under a
 `statement_timeout` (`RAG_SQL_TIMEOUT_MS`, default 15000 ms). The knowledge base is
 `backend/app/rag/knowledge/attacks.md`, overridable with `ATTACKS_FILE`.
 
 An `ERROR` mode is still HTTP **200** with the message in `error`. A **500** means an unhandled
 failure — check `journalctl -u hawkshield-api`.
+
+### The SQL matches the database
+
+`/ask` is dialect-aware. `packet_qa._sql_dialect()` reads `DATABASE_URL` and picks the notes that go
+into the system prompt, so the model writes **PostgreSQL** on the Pi and **SQLite** on a laptop demo
+(where `run.py` falls back to a local file). The executor follows: SQLite runs through the app's
+SQLAlchemy engine, PostgreSQL through `psycopg` with the statement timeout applied.
+
+| | PostgreSQL | SQLite |
+|---|---|---|
+| last 24 h | `ts >= NOW() - INTERVAL '24 hours'` | `ts >= datetime('now', '-24 hours')` |
+| today | `ts >= date_trunc('day', NOW())` | `ts >= date('now')` |
+| hour bucket | `date_trunc('hour', ts)`, `EXTRACT(HOUR FROM ts)` | `strftime('%H', ts)` |
+| JSON | `raw->>'ssid'` | `json_extract(raw, '$.ssid')` |
+| cast | `(raw->>'sig')::float` | `CAST(x AS REAL)` |
+
+Verified on the SQLite demo database: the model emitted `datetime('now', '-24 hours')`, not the
+PostgreSQL form, which would have failed outright.
+
+### Configuration
+
+| Variable | Default | Notes |
+|---|---|---|
+| `OPENROUTER_API_KEY` | *(empty)* | empty ⇒ this endpoint is 503. Keys: <https://openrouter.ai/keys> |
+| `GEN_MODEL` | `deepseek/deepseek-v4-flash` | alternatives: `z-ai/glm-5.3-flash`, `qwen/qwen3.7-flash` (cheapest), `qwen/qwen3-235b-a22b-2507` (largest) |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | change only for a proxy or a self-hosted OpenAI-compatible API |
+| `OPENROUTER_SITE_URL` / `OPENROUTER_APP_NAME` | repo URL / `HawkShield` | attribution headers OpenRouter shows on its dashboard |
+| `HUMANIZE_SQL` | `1` | `0` ⇒ deterministic template answers, one fewer model call |
+| `RAG_MAX_ROWS` | `500` | `LIMIT` appended to unbounded `SELECT`s |
+| `RAG_SQL_TIMEOUT_MS` | `15000` | PostgreSQL `statement_timeout` |
+| `ATTACKS_FILE` | *(empty = packaged)* | knowledge-base override |
+
+### Pre-flight: `check_rag.py`
+
+Run this before you demo `/ask`. It exercises the whole path so a failure tells you *which* part is
+broken, instead of a 503 or an `ERROR` mode with no context.
+
+```bash
+python backend/scripts/check_rag.py
+python backend/scripts/check_rag.py --skip-db     # model only; generate the SQL, do not run it
+```
+
+| Step | Checks |
+|---|---|
+| configuration | `OPENROUTER_API_KEY` is set and a client can be built |
+| catalogue | `GEN_MODEL` exists on OpenRouter; prints its context length and live per-million price |
+| `DOCS` mode | a knowledge-base question comes back with a real answer, routed as `DOCS` |
+| `SQL` mode | a text-to-SQL question is routed as `SQL` and produces a query |
+| execution | that query runs against the live database and is humanised |
+
+| Exit | Meaning |
+|---|---:|
+| `0` | `POST /ask` will work |
+| `2` | no key, or `GEN_MODEL` is not a real OpenRouter model id (it suggests near matches) |
+| `3` | the `DOCS` call failed or returned an empty answer |
+| `4` | the `SQL` call misrouted, failed to generate, or the query would not execute |
+
+An exit of `4` with a database error means the model is fine and your database is not — re-run with
+`--skip-db` to confirm.
 
 ---
 
@@ -538,7 +598,7 @@ implemented.
 | **422** | request validation failed (e.g. `limit=0`, `limit=200000`, a missing `question`) — FastAPI's standard body |
 | **404** | unknown path; served by the static export's `404.html` when a frontend is mounted |
 | **500** | unhandled server error — read `journalctl -u hawkshield-api -n 50` |
-| **503** | `/ask` only: no `OPENAI_API_KEY`, or the RAG module failed to import |
+| **503** | `/ask` only: no `OPENROUTER_API_KEY`, or the RAG module failed to import |
 
 There is no rate limiting and no authentication. `/attacks` with `limit=100000` will happily build a
 100 000-row JSON array on a Raspberry Pi; page it.

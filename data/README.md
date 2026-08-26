@@ -37,6 +37,17 @@ it is the one the leakage ablation in [`../models/README.md` §5](../models/READ
 `TwoStagePipeline` the live detector uses, so what it prints is what the Pi would have done with those
 frames. **This is the offline demo path — no radio, no monitor mode, no Raspberry Pi.**
 
+For a demo, you do not need to call it directly. `run.py --demo` replays a capture into the database
+and then serves the dashboard on top of the result — on a laptop with no configuration at all, since
+it falls back to a local SQLite file:
+
+```bash
+python run.py --demo                                    # 4000 frames of assoc_flood, then the dashboard
+python run.py --demo --demo-capture data/samples/deauth_raw_decrypted.pcapng --demo-frames 20000
+```
+
+Call the script directly when you want the analysis report rather than a dashboard:
+
 ```bash
 # one capture; --dry-run is the DEFAULT, nothing touches the database
 python -m backend.scripts.replay_pcap data/samples/deauth_raw_decrypted.pcapng

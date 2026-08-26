@@ -8,9 +8,10 @@ from __future__ import annotations
 
 import logging
 from pathlib import Path
-from typing import Annotated, List
+from typing import Annotated, List, Any
 
 from pydantic import field_validator
+from pydantic_core.core_schema import ValidationInfo
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
 logger = logging.getLogger(__name__)
@@ -20,6 +21,15 @@ REPO_ROOT: Path = Path(__file__).resolve().parents[2]
 
 #: Reported by GET /health.
 APP_VERSION: str = "1.0.0"
+
+
+# Defaults for the path settings, also used when the environment supplies a blank
+# value (see Settings._blank_means_default).
+_PATH_DEFAULTS = {
+    "MODEL_DIR": REPO_ROOT / "models",
+    "FRONTEND_DIST": REPO_ROOT / "frontend" / "out",
+    "AP_LOCATIONS_FILE": REPO_ROOT / "backend" / "config" / "ap_locations.json",
+}
 
 
 class Settings(BaseSettings):
@@ -49,9 +59,14 @@ class Settings(BaseSettings):
     BATCH_SIZE: int = 20
     BATCH_FLUSH_SECONDS: float = 2.0
 
-    # ---- RAG ------------------------------------------------------------
-    OPENAI_API_KEY: str = ""
-    GEN_MODEL: str = "gpt-4o"
+    # ---- RAG (OpenRouter; OpenAI-compatible API) -------------------------
+    OPENROUTER_API_KEY: str = ""
+    OPENROUTER_BASE_URL: str = "https://openrouter.ai/api/v1"
+    # DeepSeek V4 Flash: strong SQL + strict JSON, 1M context, ~$0.08/$0.16 per M.
+    # Alternatives: z-ai/glm-5.3-flash, qwen/qwen3.7-flash
+    GEN_MODEL: str = "deepseek/deepseek-v4-flash"
+    OPENROUTER_SITE_URL: str = "https://github.com/MAlshabib/HawkShield"
+    OPENROUTER_APP_NAME: str = "HawkShield"
     HUMANIZE_SQL: int = 1
 
     # ---- web ------------------------------------------------------------
@@ -75,6 +90,20 @@ class Settings(BaseSettings):
             return [str(item).strip() for item in v if str(item).strip()]
         return [str(v)]
 
+    @field_validator("MODEL_DIR", "FRONTEND_DIST", "AP_LOCATIONS_FILE", mode="before")
+    @classmethod
+    def _blank_means_default(cls, v: Any, vinfo: ValidationInfo) -> Any:
+        """An empty value in .env means "unset", not "the repo root".
+
+        `MODEL_DIR=` with nothing after it is a natural way to write "use the
+        default", and .env.example ships exactly that. Without this, Path("")
+        resolves to the repo root, which would make FRONTEND_DIST serve the whole
+        checkout -- .env included -- over HTTP.
+        """
+        if v is None or (isinstance(v, str) and not v.strip()):
+            return _PATH_DEFAULTS[vinfo.field_name]
+        return v
+
     @field_validator("MODEL_DIR", "FRONTEND_DIST", "AP_LOCATIONS_FILE", mode="after")
     @classmethod
     def _absolutise(cls, v: Path) -> Path:
@@ -96,7 +125,7 @@ class Settings(BaseSettings):
 
     @property
     def rag_enabled(self) -> bool:
-        return bool(self.OPENAI_API_KEY.strip())
+        return bool(self.OPENROUTER_API_KEY.strip())
 
     def safe_database_url(self) -> str:
         """``DATABASE_URL`` with any password replaced by ``***`` for logging."""

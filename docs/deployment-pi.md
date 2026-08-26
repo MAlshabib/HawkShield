@@ -113,7 +113,15 @@ Rules that will save you an evening:
   on the same line becomes part of the value.
 * `CAPTURE_CHANNEL` must match the channel of the network you are monitoring **and** the channel you
   hand to `monitor_mode.sh`. Two places, one number.
-* Leave `OPENAI_API_KEY` empty unless you want `/ask`. Everything else works without it.
+* Leave `OPENROUTER_API_KEY` empty unless you want `/ask`. Everything else works without it.
+* `MODEL_DIR`, `FRONTEND_DIST` and `AP_LOCATIONS_FILE` ship blank and should stay blank unless you
+  keep those files outside the checkout. Blank means "use the packaged default", explicitly.
+
+> **`DATABASE_URL` is not optional on the Pi.** A laptop can run the whole stack with the shipped
+> `CHANGE_ME` placeholder — `run.py` quietly falls back to a local SQLite file so a demo works with
+> zero setup. **The Pi deliberately does not do this.** `run.py` exits 2 and tells you to configure
+> PostgreSQL, rather than writing a sensor's attack log to an unmanaged file that no backup covers.
+> If you see `DATABASE_URL is unset or still contains CHANGE_ME`, that is this check, working.
 
 Then run the installer again — this is the pass that does the real work:
 
@@ -378,30 +386,48 @@ grep DATABASE_URL ~/HawkShield/.env
 ### 8.3 `POST /ask` returns 503
 
 **This is expected behaviour, not a bug.** `/ask` is the only endpoint that needs an API key. With
-`OPENAI_API_KEY` empty the API starts normally, every other endpoint works, and the dashboard works —
-only the assistant page reports the service as unavailable.
+`OPENROUTER_API_KEY` empty the API starts normally, every other endpoint works, and the dashboard
+works — only the assistant page reports the service as unavailable.
 
-To enable it:
+To enable it, get a key from <https://openrouter.ai/keys>:
 
 ```bash
-nano ~/HawkShield/.env      # OPENAI_API_KEY=sk-...
+nano ~/HawkShield/.env      # OPENROUTER_API_KEY=sk-or-v1-...
 sudo systemctl restart hawkshield-api
+
+.venv/bin/python backend/scripts/check_rag.py     # proves the whole path before you trust it
 
 curl -s -X POST http://localhost:8000/ask \
      -H 'Content-Type: application/json' \
      -d '{"question":"how many deauth attacks today?"}'
 ```
 
+`check_rag.py` is the fast way to tell *which* thing is wrong: it checks the key, confirms `GEN_MODEL`
+exists on OpenRouter and prints its live price, then runs a knowledge-base question and a
+text-to-SQL question and executes the SQL. Exit 0 means `/ask` will work; exit 2 is a key or model-id
+problem, 3 is the knowledge-base call, 4 is SQL generation or execution. `--skip-db` checks the model
+alone, which separates "the model is broken" from "the database is unreachable". It needs outbound
+HTTPS from the Pi.
+
 Still 503 after setting the key? The service is not seeing it:
 
 ```bash
 sudo systemctl show hawkshield-api -p Environment
-grep OPENAI ~/HawkShield/.env
+grep OPENROUTER ~/HawkShield/.env
 ```
 
-Usual causes: the line was written as `export OPENAI_API_KEY=...` (drop the `export` — systemd's
+Usual causes: the line was written as `export OPENROUTER_API_KEY=...` (drop the `export` — systemd's
 `EnvironmentFile` is not a shell), the value was quoted when it should not have been, or the service
 was never restarted after the edit.
+
+A different symptom — 200s in `ERROR` mode with SQL that will not parse — usually means `GEN_MODEL`
+points at a model that is bad at strict JSON or at SQL. The default is
+`deepseek/deepseek-v4-flash`; `z-ai/glm-5.3-flash` and `qwen/qwen3.7-flash` also work here. See
+[`api.md`](api.md) for the full table.
+
+Note that the Pi generates **PostgreSQL**, because `DATABASE_URL` points at PostgreSQL. A laptop demo
+on the SQLite fallback generates SQLite. That is automatic and needs no configuration; it is
+described in [`architecture.md` §3](architecture.md).
 
 A **500** rather than a 503 means the opposite: the key is present but was rejected upstream, or the
 generated SQL failed. Read the traceback with `journalctl -u hawkshield-api -n 50`.
@@ -436,8 +462,40 @@ sudo .venv/bin/python -m backend.detector.cli --iface wlan1 --channel 6
 sudo .venv/bin/python -m backend.detector.cli --iface wlan1 --channel 6 --dry-run --log-level DEBUG
 .venv/bin/python -m backend.scripts.init_db
 .venv/bin/python -m backend.scripts.verify_models
+.venv/bin/python backend/scripts/check_rag.py
 ```
 
 `--dry-run` classifies and logs without opening a database connection at all — exactly what you want
 when checking a new radio. The detector CLI also accepts `--ssid`, `--threshold1`, `--threshold2`,
 `--model-dir` and `--log-level`; each defaults to the matching `.env` value.
+
+### Or use the launcher
+
+`run.py` starts the same two processes in the foreground, after running the preflight checks above
+for you. It is the quickest way to see what is broken, and the right way to demo a Pi you are
+standing next to.
+
+```bash
+sudo systemctl stop hawkshield-api hawkshield-detector   # or port 8000 is taken
+sudo ./deploy/monitor_mode.sh wlan1 6
+sudo .venv/bin/python run.py
+```
+
+It prints one line per check — `.env`, database, model bundles, dashboard build, schema, port — then
+the dashboard URL and the LAN URL, and Ctrl-C stops both children cleanly.
+
+| Situation | What the launcher does |
+|---|---|
+| `DATABASE_URL` unset or `CHANGE_ME` | exits 2; **no SQLite fallback on the Pi** |
+| `init_db` fails | exits 2, prints the last lines of the error and `sudo systemctl status postgresql` |
+| not run with `sudo` | warns, starts the dashboard only, prints the `sudo` command to get capture |
+| port 8000 busy (a unit is still running) | exits 2 and suggests `--port 8001` |
+| no `frontend/out` | warns and serves the API without a UI |
+
+Useful flags here: `--no-detector` (dashboard only), `--iface` / `--channel` (override `.env` for one
+run), `--port`, and `--mode laptop` to force laptop behaviour on the Pi. `--demo` replays a sample
+capture into the database first — handy for proving the dashboard before the radio works, but note
+it writes to the **real** PostgreSQL database on a Pi.
+
+Systemd remains the right answer for an unattended sensor: it restarts on failure and comes back
+after a reboot. `run.py` does neither.

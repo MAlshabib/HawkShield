@@ -84,11 +84,14 @@ credentials, or thresholds anywhere in the codebase. `backend/detector/*` reads 
 | `TARGET_SSID` | *(empty = no filter)* | detector |
 | `BATCH_SIZE` | `20` | detector sink |
 | `BATCH_FLUSH_SECONDS` | `2.0` | detector sink |
-| `OPENAI_API_KEY` | *(empty = RAG disabled)* | RAG |
-| `GEN_MODEL` | `gpt-4o` | RAG |
+| `OPENROUTER_API_KEY` | *(empty = RAG disabled)* | RAG — key from <https://openrouter.ai/keys> |
+| `GEN_MODEL` | `deepseek/deepseek-v4-flash` | RAG — any OpenRouter model id |
+| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | RAG — OpenAI-compatible endpoint override |
+| `OPENROUTER_SITE_URL` | `https://github.com/MAlshabib/HawkShield` | RAG — sent as `HTTP-Referer` |
+| `OPENROUTER_APP_NAME` | `HawkShield` | RAG — sent as `X-Title` |
 | `HUMANIZE_SQL` | `1` | RAG |
 | `RAG_MAX_ROWS` | `500` | RAG — `LIMIT` safety net appended to unbounded `SELECT`s |
-| `RAG_SQL_TIMEOUT_MS` | `15000` | RAG — Postgres `statement_timeout` for `/ask` queries |
+| `RAG_SQL_TIMEOUT_MS` | `15000` | RAG — Postgres `statement_timeout` for `/ask` queries (PostgreSQL only) |
 | `ATTACKS_FILE` | *(empty = packaged `app/rag/knowledge/attacks.md`)* | RAG — knowledge-base override |
 | `CORS_ORIGINS` | `http://localhost:3000` (comma-separated) | app |
 | `FRONTEND_DIST` | `<repo>/frontend/out` | app |
@@ -96,6 +99,17 @@ credentials, or thresholds anywhere in the codebase. `backend/detector/*` reads 
 | `LOG_LEVEL` | `INFO` | all |
 
 `.env` is loaded from the repo root. **Never commit a real `.env`** — only `.env.example` with placeholders.
+
+**Blank means default.** For the three path variables `MODEL_DIR`, `FRONTEND_DIST` and `AP_LOCATIONS_FILE`,
+a value that is empty or whitespace-only MUST resolve to the packaged default in the table above, never to
+`Path("")` / the repo root. `.env.example` ships all three blank, so this is the normal case, not an edge one.
+Enforced by `Settings._blank_means_default` in `backend/app/config.py`; pinned by
+`backend/tests/test_runtime_config.py`. Relative values are resolved against the repo root, not the CWD.
+*(This was a real defect: a blank `FRONTEND_DIST` resolved to the repo root and FastAPI served the entire
+checkout — including `.env` — as static files.)*
+
+**`DATABASE_URL` selects the SQL dialect** that `/ask` generates and executes: `sqlite:` prefix ⇒ SQLite,
+anything else ⇒ PostgreSQL. See §8.
 
 Note: `RAG_MAX_ROWS`, `RAG_SQL_TIMEOUT_MS` and `ATTACKS_FILE` are read directly from the environment by
 `backend/app/rag/packet_qa.py` rather than being fields on the `Settings` class. Behaviour is identical
@@ -121,7 +135,7 @@ All routes are registered on the app **without** a prefix (the frontend calls `$
 | POST | `/map/estimate-origin` | body `{"sa","minutes","ap_locations":[…]}` → `{"sa","method":"weighted-centroid","used":int,"center":{"lat","lng"}|null}` |
 | GET | `/reports/summary?days=30` | `{"period": str, "totals": {deauth,ssdp,evil_twin,reassoc,rogueap,krack,other}, "summary": {"totalAttacks","mostFrequentType","peakHour","uniqueSources"}}` |
 | POST | `/reports/export` | body `{"days": int}` → `application/pdf` stream, `Content-Disposition: attachment; filename="hawkshield_report_<days>d.pdf"` |
-| POST | `/ask` | body `{"question": str, "session_id": str?}` → `{"cached": bool, "mode": "SQL"\|"DOCS"\|"OOS"\|"ERROR", "sql": str, "answer": str, "cols": [str], "rows": [obj], "error": str?}`; **503** `{"detail": "..."}` when no `OPENAI_API_KEY` |
+| POST | `/ask` | body `{"question": str, "session_id": str?}` → `{"cached": bool, "mode": "SQL"\|"DOCS"\|"OOS"\|"ERROR", "sql": str, "answer": str, "cols": [str], "rows": [obj], "error": str?}`; **503** `{"detail": "..."}` when no `OPENROUTER_API_KEY` |
 | GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool}, "version": str}` |
 
 Label mapping used by `/reports/summary` (DB label → frontend key), keep verbatim:
@@ -250,3 +264,73 @@ def packet_ask(question: str) -> dict:
 - A prepared virtualenv with all pinned deps is at `.venv/` (use `.venv/Scripts/python.exe` on this Windows
   laptop). Use it to actually run and verify your code — do not hand back untested work.
 - Report honestly: if something does not work, say so with the error output.
+
+---
+
+## 8. Launcher and target detection
+
+`run.py` at the repo root is **the** entry point for both machines. It is stdlib-only, imports nothing from
+`backend`, and runs everything else as a subprocess of `sys.executable`. Keep it that way: a launcher that
+cannot start because a dependency is broken cannot report that a dependency is broken.
+
+### 8.1 Mode
+
+`detect_mode()` returns exactly `"pi"` or `"laptop"`:
+
+1. `/proc/device-tree/model` exists and contains `raspberry pi` (case-insensitive) ⇒ `pi`
+2. else `platform.system() == "Linux"` and `platform.machine() in {aarch64, armv7l, armv6l}` ⇒ `pi`
+3. else ⇒ `laptop`
+
+`--mode auto|pi|laptop` overrides the result; `auto` is the default. The detector runs when the mode is `pi`,
+and `--detector` / `--no-detector` override that independently.
+
+| | `pi` | `laptop` |
+|---|---|---|
+| Processes | `backend.detector.cli` + uvicorn | uvicorn only |
+| Database | PostgreSQL, required | PostgreSQL if configured, else SQLite |
+
+### 8.2 Database selection — normative
+
+`resolve_database_url(mode)` reads `DATABASE_URL` from the environment, falling back to the `DATABASE_URL=`
+line in `.env`.
+
+* Non-empty **and** not containing `CHANGE_ME` ⇒ use it, unchanged, in both modes.
+* Otherwise, `mode == "laptop"` ⇒ set `DATABASE_URL=sqlite:///<repo>/hawkshield.db` in the launcher's own
+  process environment (never written to `.env`), warn, and continue.
+* Otherwise, `mode == "pi"` ⇒ **exit 2.** There is no SQLite fallback on the Pi, by design: an attack log is
+  the sensor's product and must not land in an unmanaged file because a password was left unset.
+
+Consequence, and the point of the whole arrangement: **the same checkout runs on both machines with no
+configuration edits on the laptop.**
+
+### 8.3 SQL dialect
+
+`packet_qa._sql_dialect()` returns `"sqlite"` when `DATABASE_URL` starts with `sqlite`, else `"postgresql"`.
+It governs two things, which MUST stay in agreement:
+
+* the dialect notes appended to `SYSTEM_PROMPT` (`_SQLITE_NOTES` / `_POSTGRES_NOTES`);
+* the executor in `_run_sql()` — SQLite goes through `backend.app.db.engine`, PostgreSQL through `psycopg`
+  with `statement_timeout` applied.
+
+The `SELECT`-only assertion and the `RAG_MAX_ROWS` cap sit above the split and apply to both.
+
+### 8.4 Preflight, in order
+
+`.env` created from `.env.example` if absent → database chosen (§8.2) → both model bundles present in
+`MODEL_DIR` → `frontend/out/index.html` present (warn only) → `python -m backend.scripts.init_db` →
+port free → root, if the detector is wanted. Failures exit `2`. Losing root downgrades to dashboard-only with
+a `sudo` hint rather than failing. `SIGINT`/`SIGTERM` terminate children in reverse start order with an
+8-second grace period before `kill()`.
+
+### 8.5 Flags
+
+`--mode`, `--host` (`0.0.0.0`), `--port` (`8000`), `--demo`, `--demo-capture`
+(`data/samples/assoc_flood_raw_decrypted.pcapng`), `--demo-frames` (`4000`), `--detector` / `--no-detector`,
+`--iface`, `--channel`, `--reload`. `run.py --help` is authoritative.
+
+### 8.6 Assistant pre-flight
+
+`backend/scripts/check_rag.py` verifies `/ask` end to end: key present → `GEN_MODEL` exists in the OpenRouter
+catalogue (with its live price) → a `DOCS` answer → a `SQL` generation → that SQL executed. Exit `0` means
+`POST /ask` will work; `2` = key/model id, `3` = `DOCS` call, `4` = `SQL` generation or execution.
+`--skip-db` stops before execution.
