@@ -90,8 +90,26 @@ $RECYCLE.BIN/
 *.swp
 *.swo
 *~
-.claude/settings.local.json
+*.orig
+*.rej
+*.bak
 
-# Local dev databases (SQLite files used for laptop testing)
+# --- Agent / assistant tooling -------------------------------------------------
+# Local session + settings state only. CLAUDE.md itself stays committed if present.
+.claude/
+!CLAUDE.md
+
+# --- Jupyter ------------------------------------------------------------------
+# Notebooks in notebooks/ are committed (outputs stripped); checkpoints are not.
+.ipynb_checkpoints/
+*-checkpoint.ipynb
+
+# --- Local dev databases (SQLite files used for laptop testing) ---------------
 *.db
 *.sqlite
+
+# --- Generated output ---------------------------------------------------------
+hawkshield_report_*.pdf
+scratch/
+tmp/
+*.tmp
