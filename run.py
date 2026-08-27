@@ -184,28 +184,36 @@ def _model_dir() -> Path:
 
 
 def check_models() -> bool:
-    """Either generation is enough to run.
+    """Any one of the three targets is enough to run.
 
-    v2 is a single ONNX artefact plus its meta; v1 is the two joblib bundles. The
-    detector picks whichever is valid, so refusing to start because the *other*
-    generation is absent would block a v2-only checkout for no reason.
+    v2-gbdt is a LightGBM text model plus the shared meta; v2-tcn is the ONNX
+    graph plus the same meta; v1 is the two joblib bundles. The detector picks
+    whichever is valid, so refusing to start because the *others* are absent would
+    block a perfectly good single-target checkout for no reason.
     """
     d = _model_dir()
-    v2 = (d / "hawkshield_v2.onnx", d / "hawkshield_v2_meta.json")
+    meta = d / "hawkshield_v2_meta.json"
+    gbdt = (d / "hawkshield_v2_gbdt.txt", meta)
+    tcn = (d / "hawkshield_v2.onnx", meta)
     v1 = (d / "stage1_binary_bundle.joblib", d / "stage2_multiclass_bundle.joblib")
 
-    if all(f.exists() for f in v2):
-        ok("v2 model present (causal TCN, ONNX)")
-        if not all(f.exists() for f in v1):
-            info("no v1 bundles; v2 only -- fine, the detector will use v2")
-        return True
+    found = []
+    if all(f.exists() for f in gbdt):
+        found.append("v2-gbdt (LightGBM + causal rolling aggregates)")
+    if all(f.exists() for f in tcn):
+        found.append("v2-tcn (causal TCN, ONNX)")
     if all(f.exists() for f in v1):
-        ok("v1 model bundles present")
-        info("no trained v2 artefact yet -- train one with ml/run_training.ps1")
+        found.append("v1 (two-stage LightGBM bundles)")
+
+    if found:
+        ok("model present: " + ", ".join(found))
+        if found[0].startswith("v2-gbdt"):
+            info("MODEL_VERSION=auto will serve v2-gbdt -- it won on the held-out set")
         return True
 
     bad(f"no usable model in {d}")
-    info("Expected either hawkshield_v2.onnx + hawkshield_v2_meta.json (v2),")
+    info("Expected any of: hawkshield_v2_gbdt.txt + hawkshield_v2_meta.json (v2-gbdt),")
+    info("hawkshield_v2.onnx + hawkshield_v2_meta.json (v2-tcn),")
     info("or stage1_binary_bundle.joblib + stage2_multiclass_bundle.joblib (v1).")
     return False
 

@@ -1,19 +1,44 @@
-"""Inference pipelines: v2 (causal TCN, ONNX) and v1 (two-stage LightGBM).
+"""Inference pipelines: v2-gbdt (LightGBM + causal rollups), v2-tcn (ONNX) and v1.
 
-``build_pipeline()`` picks between them.  ``auto`` -- the default -- serves v2 when
-``models/hawkshield_v2.onnx`` and its meta file are present *and* the meta agrees
-with the running ``feature_spec``, and otherwise falls back to v1 with a log line
-naming the reason.  Both expose ``predict(row) -> Verdict``, so ``sink.py`` and the
-``packets`` schema are untouched by the change.
+``build_pipeline()`` picks between the three.  ``auto`` -- the default -- prefers
+**v2-gbdt**, falls back to **v2-tcn**, then to **v1**, and says in the log which
+one is live and why it is not the one above it.  All three expose
+``predict(row) -> Verdict``, so ``sink.py`` and the ``packets`` schema are
+untouched by the choice.
 
-v2 -- ``V2Pipeline``
+Why v2-gbdt is first
 --------------------
+Both v2 models were trained on the full AWID3 archive and scored on the same
+5,943,908 held-out frames.  Measured test macro-F1: **GBDT 0.9907**, TCN 0.9856.
+Per class it is the attacks that matter that separate them -- Krack 0.9999 vs
+0.9644, (Re)Assoc 0.9975 vs 0.9671, RogueAP 1.0000 vs 0.9955 -- against one class
+where the TCN is ahead, Disas 0.9738 vs 0.9578.  The committed rule is that
+whichever model wins on measurement ships, so ``auto`` serves the GBDT.  The TCN
+stays a first-class, fully supported target: it is 348 KB against 3.0 MB, needs no
+lightgbm wheel, and is the right choice on a box where the GBDT will not run.
+
+v2-gbdt -- ``GBDTPipeline``
+---------------------------
+One LightGBM multiclass booster, 49 boosting rounds x 9 classes = 441 trees, over
+**82** columns: the 46 per-frame spec features **plus 36 causal rolling
+aggregates**.  A tree sees one row at a time, so on its own it cannot represent
+"sixty deauths in the last second"; the aggregates hand it a bounded past.  They
+are computed live by :class:`RollupState`, whose arithmetic is
+prefix-sum-identical to ``ml.windows.causal_rollups`` -- the training-time
+builder -- and pinned to it by ``test_pipeline_v2.py``.  See ``RollupState`` for
+why "identical" there means bit-for-bit and not merely close.
+
+v2-tcn -- ``V2Pipeline``
+------------------------
 One causal dilated TCN, ``(batch, 46, T) float32 -> (batch, 9, T)`` per-frame
 logits.  NaN in the input means "this frame does not carry that field"; the graph
 handles it with a learned sentinel plus a mask channel, so **nothing is imputed
 here**.  Streaming keeps a ring buffer of the last ``context`` frames and scores
 ``V2_BATCH_FRAMES`` new frames per onnxruntime call -- see ``V2Pipeline`` for why
-that is 25x cheaper per frame than calling once per packet.
+that is 25x cheaper per frame than calling once per packet.  Both v2 pipelines
+consume the *same* 46-feature extractor output (``packet_to_features_v2``); that
+is what ``feature_space == "v2"`` on a pipeline object means, and it is what
+``capture.py`` and ``replay_pcap.py`` branch on.
 
 v1 -- ``TwoStagePipeline``
 --------------------------
@@ -58,11 +83,56 @@ __all__ = [
     "TwoStagePipeline",
     "V2Meta",
     "V2Pipeline",
+    "GBDTPipeline",
+    "RollupState",
     "SpecMismatchError",
+    "MODEL_VERSIONS",
+    "MODEL_VERSION_ALIASES",
+    "ROLLUP_MEAN_STD",
+    "ROLLUP_RATE",
+    "ROLLUP_WINDOWS",
+    "GBDT_FEATURE_NAMES",
+    "canonical_model_version",
+    "rollup_names",
     "build_pipeline",
     "load_v2_meta",
     "sha256_file",
 ]
+
+
+# ---------------------------------------------------------------------------
+# Model selection vocabulary
+# ---------------------------------------------------------------------------
+#: The values ``--model-version`` / ``MODEL_VERSION`` accept, canonical spelling.
+#:
+#: ``backend.app.config`` carries the same tuple so that ``GET /health`` can
+#: report the selection without importing the detector (and dragging lightgbm and
+#: onnxruntime into the web process).  ``test_pipeline_v2`` asserts the two are
+#: equal, so they cannot drift apart silently.
+MODEL_VERSIONS: Tuple[str, ...] = ("auto", "v1", "v2-tcn", "v2-gbdt")
+
+#: Accepted spellings that are not canonical.  ``v2`` predates the split and
+#: still means the TCN, so an existing ``.env`` keeps working unchanged.
+MODEL_VERSION_ALIASES: Dict[str, str] = {
+    "v2": "v2-tcn",
+    "tcn": "v2-tcn",
+    "v2tcn": "v2-tcn",
+    "gbdt": "v2-gbdt",
+    "v2gbdt": "v2-gbdt",
+    "lightgbm": "v2-gbdt",
+}
+
+
+def canonical_model_version(value: Any) -> str:
+    """Normalise a requested model version, or raise ``ValueError``."""
+    raw = str(value or "auto").strip().lower()
+    version = MODEL_VERSION_ALIASES.get(raw, raw)
+    if version not in MODEL_VERSIONS:
+        raise ValueError(
+            f"model_version must be one of {MODEL_VERSIONS} "
+            f"(aliases: {sorted(MODEL_VERSION_ALIASES)}), got {value!r}"
+        )
+    return version
 
 
 # ---------------------------------------------------------------------------
@@ -398,6 +468,7 @@ class TwoStagePipeline:
 
     #: Consumed by ``capture.py`` to choose the feature extractor and by the CLI log.
     model_version = "v1"
+    feature_space = "v1"
     spec_version = None
 
     def __init__(
@@ -531,6 +602,36 @@ def _softmax(z: np.ndarray, axis: int = 0) -> np.ndarray:
     return e / np.sum(e, axis=axis, keepdims=True)
 
 
+def verdict_from_probs(p: np.ndarray, thr1: float, thr2: float) -> Verdict:
+    """One 9-class probability vector -> the v1-shaped ``Verdict``.
+
+    ``p1 = 1 - P(Normal)``  -- "is this an attack at all", against thr1.
+    ``p2 = P(argmax attack class)`` -- "am I confident which one", against thr2.
+    The label is the argmax over the eight *attack* classes, so a frame that
+    clears thr1 always carries a class name even when Normal is still the overall
+    argmax.
+
+    One implementation, shared by both v2 pipelines: the decision rule is part of
+    the contract, and two copies of it would eventually disagree about a
+    threshold boundary and be invisible in the API, which reports only the
+    outcome.
+    """
+    if not np.all(np.isfinite(p)):
+        logger.warning("[v2] non-finite probabilities; dropping frame")
+        return Verdict(is_attack=False, stage=0)
+    p1 = float(1.0 - p[0])
+    if p1 < thr1:
+        return Verdict(is_attack=False, p1=p1, stage=1)
+    k = int(np.argmax(p[1:]))
+    return Verdict(
+        is_attack=float(p[1 + k]) >= thr2,
+        label=ATTACK_CLASSES[k],
+        p1=p1,
+        p2=float(p[1 + k]),
+        stage=2,
+    )
+
+
 #: What ``V2Pipeline.push`` accepts: the dict ``packet_to_features_v2`` returns,
 #: or an already-ordered 46-vector.
 FrameFeatures = Union[Dict[str, float], Sequence[float], np.ndarray]
@@ -586,7 +687,9 @@ class V2Pipeline:
     forces an immediate flush and therefore costs the N=1 row above.
     """
 
-    model_version = "v2"
+    model_version = "v2-tcn"
+    #: Which extractor feeds this pipeline; ``capture.py`` branches on it.
+    feature_space = "v2"
 
     def __init__(
         self,
@@ -793,24 +896,7 @@ class V2Pipeline:
 
     # -- verdicts ----------------------------------------------------------
     def _verdict(self, p: np.ndarray) -> Verdict:
-        """One 9-class probability vector -> the v1-shaped ``Verdict``.
-
-        ``p1 = 1 - P(Normal)``  -- "is this an attack at all", against thr1.
-        ``p2 = P(argmax attack class)`` -- "am I confident which one", against thr2.
-        The label is the argmax over the eight *attack* classes, so a frame that
-        clears thr1 always carries a class name even when Normal is still the
-        overall argmax.
-        """
-        if not np.all(np.isfinite(p)):
-            logger.warning("[v2] non-finite probabilities; dropping frame")
-            return Verdict(is_attack=False, stage=0)
-        p1 = float(1.0 - p[0])
-        if p1 < self.thr1:
-            return Verdict(is_attack=False, p1=p1, stage=1)
-        k = int(np.argmax(p[1:]))
-        label = ATTACK_CLASSES[k]
-        p2 = float(p[1 + k])
-        return Verdict(is_attack=p2 >= self.thr2, label=label, p1=p1, p2=p2, stage=2)
+        return verdict_from_probs(p, self.thr1, self.thr2)
 
     # -- contract-compatible single-frame API ------------------------------
     def predict(self, row: FrameFeatures) -> Verdict:
@@ -841,9 +927,506 @@ class V2Pipeline:
 
 
 # ---------------------------------------------------------------------------
+# v2-gbdt - LightGBM over per-frame features + causal rolling aggregates
+# ---------------------------------------------------------------------------
+# These four constants ARE the GBDT's half of the feature contract, exactly as
+# FEATURE_ORDER is the per-frame half.  They are the runtime mirror of
+# ``ml.windows.ROLLUP_*``; ``test_pipeline_v2.test_rollup_spec_matches_training``
+# imports the training module and asserts they are equal, element for element, so
+# a change on either side fails the suite instead of quietly shifting 36 columns.
+#
+# They are *not* imported from ``ml.windows`` at runtime, deliberately:
+# ``ml.windows`` pulls in pyarrow, which has no business on a capture box and is
+# not installed on one.  The load-time check below is stronger than an import
+# anyway -- it compares against the names LightGBM itself wrote into the model
+# file at training time.
+ROLLUP_MEAN_STD: List[str] = [
+    "frame.len", "frame.dt_log", "radio.signal_dbm",
+    "wlan.duration", "wlan.seq_delta", "radio.datarate",
+]
+ROLLUP_RATE: List[str] = [
+    "mgmt.has_reason", "fc.retry", "addr.da_broadcast",
+    "eapol.present", "fc.protected", "addr.da_multicast",
+]
+ROLLUP_WINDOWS: List[int] = [16, 64]
+
+
+def rollup_names(windows: Sequence[int] = tuple(ROLLUP_WINDOWS)) -> List[str]:
+    """Column names of the rolling block, in the order the model expects them."""
+    names: List[str] = []
+    for n in windows:
+        names += [f"roll{n}.{c}.mean" for c in ROLLUP_MEAN_STD]
+        names += [f"roll{n}.{c}.std" for c in ROLLUP_MEAN_STD]
+        names += [f"roll{n}.{c}.rate" for c in ROLLUP_RATE]
+    return names
+
+
+#: The 82 columns the booster was trained on: 46 per-frame + 36 rolling.
+GBDT_FEATURE_NAMES: List[str] = list(FEATURE_ORDER) + rollup_names()
+
+
+class RollupState:
+    """Streaming causal rolling aggregates for one frame sequence.
+
+    Reproduces ``ml.windows.causal_rollups`` -- the builder that produced the
+    training matrix -- **bit for bit**, not approximately.  That is the whole
+    point of this class, so it is worth being explicit about how, because the
+    obvious implementation gets two things wrong.
+
+    1. The window is ``w + 1`` frames, not ``w``
+       ------------------------------------------
+       ``causal_rollups`` aggregates rows ``[max(i - w, 0), i + 1)`` for row *i*.
+       For ``w = 16`` that is **seventeen** frames: the current one and the
+       sixteen before it.  A streaming buffer that keeps "the last 16 frames" is
+       off by one against training on every single row.  It would not crash, it
+       would not look wrong, it would just feed the booster 36 columns that are
+       systematically not the ones it was fitted on -- which is precisely the
+       train/serve gap this project exists to eliminate.
+
+    2. Prefix sums, not a sliding re-sum
+       ----------------------------------
+       Training computes ``cumsum`` over the whole block and subtracts two
+       prefixes.  Re-summing a 17- or 65-row window per frame would be *correct*
+       maths and a *different* float64 rounding, and ``std`` is computed as
+       ``E[x^2] - E[x]^2``, where that difference is amplified: on a run of
+       near-constant ``frame.len`` the cancellation leaves ~1e-9 of noise whose
+       square root is ~3e-5, so two arithmetically-equivalent implementations can
+       disagree in the 5th decimal of a feature the model splits on.  So this
+       keeps running prefix sums and a ring of the last ``max(w) + 2`` prefix
+       snapshots, and subtracts exactly the same two float64 numbers training
+       subtracted.  Equality is then exact, and the test asserts exact.
+
+    NaN is "the frame does not carry that field": excluded from both numerator
+    and denominator, never treated as zero.  ``mean`` is NaN when the window
+    holds no values at all, ``std`` when it holds fewer than two -- the model was
+    trained with those NaNs present and reads them as information.
+
+    :meth:`reset` returns the state to the head of a fresh stream, which is the
+    live equivalent of a ``block_id`` boundary: no aggregate ever spans a
+    detector restart, exactly as none ever spanned two source files in training.
+    """
+
+    def __init__(self, windows: Optional[Sequence[int]] = None) -> None:
+        self.windows: List[int] = [int(w) for w in (windows or ROLLUP_WINDOWS)]
+        if not self.windows or any(w < 1 for w in self.windows):
+            raise ValueError(f"rollup windows must all be >= 1, got {self.windows}")
+        self.names: List[str] = rollup_names(self.windows)
+
+        # Column groups, resolved once against FEATURE_ORDER and concatenated into
+        # one gather: mean/std columns first, then rate columns.  Both groups get
+        # the same treatment except that only the first needs squares, so keeping
+        # them in one array halves the number of numpy calls per frame, and numpy
+        # call overhead -- not arithmetic -- is what this costs.
+        self._ms_idx = np.asarray([FEATURE_ORDER.index(c) for c in ROLLUP_MEAN_STD])
+        self._rate_idx = np.asarray([FEATURE_ORDER.index(c) for c in ROLLUP_RATE])
+        self._idx = np.concatenate((self._ms_idx, self._rate_idx))
+        self._n_ms = len(self._ms_idx)
+        self._n_cols = self._n_ms + len(self._rate_idx)
+
+        # See the class docstring: prefix index j for row i runs over
+        # [i - max(w), i + 1], which is max(w) + 2 distinct values.  Sizing the
+        # ring exactly that means slot 0 still holds the all-zero prefix cs[0]
+        # for as long as any window is still clamped to the head of the stream.
+        self._cap = max(self.windows) + 2
+        self.reset()
+
+    # -- state -------------------------------------------------------------
+    def reset(self) -> None:
+        """Start a fresh stream: no aggregate spans this boundary."""
+        self._cs = np.zeros(self._n_cols, dtype=np.float64)     # sum of values
+        self._cs2 = np.zeros(self._n_ms, dtype=np.float64)      # sum of squares
+        self._cn = np.zeros(self._n_cols, dtype=np.float64)     # count of non-NaN
+        self._h_cs = np.zeros((self._cap, self._n_cols), dtype=np.float64)
+        self._h_cs2 = np.zeros((self._cap, self._n_ms), dtype=np.float64)
+        self._h_cn = np.zeros((self._cap, self._n_cols), dtype=np.float64)
+        self._rows = 0                                          # frames consumed
+        #: Ring slots to subtract, one per window; rewritten in place each frame.
+        self._lo_slots = np.zeros(len(self.windows), dtype=np.intp)
+
+    @property
+    def n_features(self) -> int:
+        return len(self.names)
+
+    @property
+    def rows(self) -> int:
+        return self._rows
+
+    # -- the aggregate -----------------------------------------------------
+    def update(self, vec: np.ndarray) -> np.ndarray:
+        """Consume one 46-feature frame; return its ``(36,)`` float32 rollups.
+
+        Causal by construction: the returned row is a function of this frame and
+        the ones already consumed, and of nothing else.
+        """
+        nms = self._n_ms
+        v = np.asarray(vec, dtype=np.float64)[self._idx]
+        valid = ~np.isnan(v)
+        v0 = np.where(valid, v, 0.0)
+
+        # Same accumulation order as np.cumsum, so the same float64 values.
+        self._cs += v0
+        self._cn += valid
+        self._cs2 += v0[:nms] * v0[:nms]
+
+        self._rows += 1
+        j = self._rows                       # prefix index of the row just added
+        slot = j % self._cap
+        self._h_cs[slot] = self._cs
+        self._h_cs2[slot] = self._cs2
+        self._h_cn[slot] = self._cn
+
+        # Window w for row i = j - 1 covers rows [max(i - w, 0), i + 1): w + 1 of
+        # them.  Both windows are evaluated in one shot below, as (n_windows, n_cols).
+        i = j - 1
+        lo = self._lo_slots
+        for k, w in enumerate(self.windows):
+            lo[k] = max(i - w, 0) % self._cap
+
+        cnt = self._cn - self._h_cn[lo]
+        tot = self._cs - self._h_cs[lo]
+        denom = np.maximum(cnt, 1.0)
+        mean = tot / denom
+        mean[cnt == 0] = np.nan              # an empty window has no mean, not 0.0
+
+        d_ms = denom[:, :nms]
+        var = np.maximum(
+            (self._cs2 - self._h_cs2[lo]) / d_ms - (tot[:, :nms] / d_ms) ** 2, 0.0
+        )
+        std = np.sqrt(var)
+        std[cnt[:, :nms] <= 1] = np.nan      # one sample has no spread, not 0.0
+
+        out = np.empty(self.n_features, dtype=np.float32)
+        step = 2 * nms + (self._n_cols - nms)
+        for k in range(len(self.windows)):
+            base = k * step
+            out[base:base + nms] = mean[k, :nms]                  # mean, mean/std group
+            out[base + nms:base + 2 * nms] = std[k]               # std,  mean/std group
+            out[base + 2 * nms:base + step] = mean[k, nms:]       # rate group
+        return out
+
+
+class GBDTPipeline:
+    """Streaming per-frame classifier over the exported LightGBM booster.
+
+    Same ``Verdict`` and the same ``push``/``flush``/``predict`` surface as
+    :class:`V2Pipeline`, so ``capture.py``, ``sink.py``, ``replay_pcap.py`` and
+    the ``packets`` schema do not know which of the two is running.
+
+    Batching
+    --------
+    Unlike the TCN, a tree ensemble has no temporal receptive field, so batching
+    here is a *pure* cost decision with no correctness component at all: the 36
+    rolling columns are built by :class:`RollupState` at ``push`` time, one frame
+    at a time, in arrival order.  A frame's 82-column row is therefore fully
+    determined before any prediction happens, and grouping rows into one
+    ``Booster.predict`` call cannot change a single verdict.  ``test_pipeline_v2``
+    asserts that across batch sizes anyway, because "cannot" is a claim.
+
+    Threads
+    -------
+    ``GBDT_NUM_THREADS`` is passed to every ``predict`` call for the same reason
+    ``V2_ORT_THREADS`` is pinned for onnxruntime: the default is one thread per
+    core, which is right for a batch job and wrong for a capture loop sharing 4
+    cores with scapy, the API and Postgres.
+    """
+
+    model_version = "v2-gbdt"
+    #: Same 46-feature extractor as the TCN.  See ``V2Pipeline``.
+    feature_space = "v2"
+
+    def __init__(
+        self,
+        model_dir: Optional[Path] = None,
+        thr1: Optional[float] = None,
+        thr2: Optional[float] = None,
+        batch_frames: Optional[int] = None,
+        gbdt_path: Optional[Path] = None,
+        meta_path: Optional[Path] = None,
+        num_threads: Optional[int] = None,
+    ) -> None:
+        s = get_settings()
+        self.model_dir = Path(model_dir if model_dir is not None else s.MODEL_DIR)
+        self.thr1 = float(thr1 if thr1 is not None else s.STAGE1_THRESHOLD)
+        self.thr2 = float(thr2 if thr2 is not None else s.STAGE2_THRESHOLD)
+
+        self.gbdt_path = Path(
+            gbdt_path if gbdt_path is not None
+            else self.model_dir / getattr(s, "V2_GBDT", "hawkshield_v2_gbdt.txt")
+        )
+        self.meta_path = Path(
+            meta_path if meta_path is not None
+            else self.model_dir / getattr(s, "V2_META", "hawkshield_v2_meta.json")
+        )
+        if not self.gbdt_path.is_file():
+            raise FileNotFoundError(f"v2 GBDT model not found: {self.gbdt_path}")
+
+        # The same meta file, and the same validator, as the TCN: spec version,
+        # class list and the 46 per-frame feature names are one contract shared by
+        # both v2 targets, and neither may serve against a stale one.
+        self.meta = load_v2_meta(self.meta_path)
+        self.spec_version = self.meta.spec_version
+
+        if CLASSES[0] != "Normal":
+            raise SpecMismatchError(
+                f"feature_spec.CLASSES[0] is {CLASSES[0]!r}, expected 'Normal': "
+                "GBDTPipeline derives p1 as 1 - P(class 0)"
+            )
+
+        import lightgbm as lgb  # imported here so TCN-only boxes need not have it
+
+        try:
+            self.booster = lgb.Booster(model_file=str(self.gbdt_path))
+        except Exception as exc:
+            raise SpecMismatchError(
+                f"{self.gbdt_path} is not a loadable LightGBM model: {exc}"
+            ) from exc
+
+        self.rollups = RollupState()
+        self.feature_names = list(GBDT_FEATURE_NAMES)
+        self._validate_booster()
+
+        self.n_features = len(self.feature_names)
+        self.n_classes = len(CLASSES)
+        self.num_threads = int(
+            num_threads if num_threads is not None else getattr(s, "GBDT_NUM_THREADS", 2)
+        )
+        self.batch_frames = max(
+            1, int(batch_frames if batch_frames is not None
+                   else getattr(s, "V2_BATCH_FRAMES", 32))
+        )
+
+        self._pend: List[np.ndarray] = []
+        self.frames_seen = 0
+        self.inferences = 0
+        self.failures = 0
+
+        logger.info(
+            "GBDTPipeline ready: %s sha256=%s spec=%s features=%d (%d frame + %d rolling, "
+            "windows %s) classes=%d trees=%d iterations=%d batch_frames=%d threads=%d "
+            "thr1=%.3f thr2=%.3f",
+            self.gbdt_path, sha256_file(self.gbdt_path)[:16], self.spec_version,
+            self.n_features, len(FEATURE_ORDER), self.rollups.n_features,
+            self.rollups.windows, self.n_classes, self.booster.num_trees(),
+            self.booster.current_iteration(), self.batch_frames, self.num_threads,
+            self.thr1, self.thr2,
+        )
+
+    # -- load-time validation ---------------------------------------------
+    def _validate_booster(self) -> str:
+        """Check the *model file's own* column names, not just the meta's claims.
+
+        LightGBM writes ``feature_names=`` into the saved model, so the artefact
+        states, in its own words, the 82 columns it was fitted on.  Comparing that
+        against ``GBDT_FEATURE_NAMES`` catches every way the two sides can drift:
+        a feature added to or removed from the spec, a different rollup window, a
+        renamed aggregate, and -- the one nothing else would catch -- the same 82
+        names in a different order, which would feed every column to the wrong
+        split and produce confident nonsense.
+        """
+        problems: List[str] = []
+        got = [str(n) for n in self.booster.feature_name()]
+        want = self.feature_names
+
+        if got != want:
+            if len(got) != len(want):
+                problems.append(
+                    f"feature count mismatch: model has {len(got)}, this build expects "
+                    f"{len(want)} ({len(FEATURE_ORDER)} per-frame + "
+                    f"{self.rollups.n_features} rolling over windows {self.rollups.windows})"
+                )
+            missing = [n for n in want if n not in got]
+            extra = [n for n in got if n not in want]
+            if missing:
+                problems.append(f"columns the model is missing: {missing}")
+            if extra:
+                problems.append(f"columns the model has but this build does not: {extra}")
+            if not missing and not extra:
+                first = next(i for i, (a, b) in enumerate(zip(got, want)) if a != b)
+                problems.append(
+                    f"column ORDER differs at index {first}: model {got[first]!r} vs "
+                    f"this build {want[first]!r} (same names, wrong order - every "
+                    f"column would be fed to the wrong split)"
+                )
+
+        n_out = int(self.booster.num_model_per_iteration())
+        if n_out != len(CLASSES):
+            problems.append(
+                f"model emits {n_out} scores per iteration, feature_spec has "
+                f"{len(CLASSES)} classes"
+            )
+
+        if not problems:
+            # The names and counts can all agree and the model still be a
+            # regressor or a binary classifier saved with 9 names.  One probe row
+            # settles what it actually returns, at load time rather than at 3am.
+            try:
+                probe = self.booster.predict(
+                    np.zeros((1, len(want)), dtype=np.float32), num_threads=1
+                )
+                shape = tuple(np.asarray(probe).shape)
+            except Exception as exc:
+                problems.append(f"predict() failed on a probe row: {exc}")
+                shape = ()
+            if shape and shape != (1, len(CLASSES)):
+                problems.append(
+                    f"predict() returned shape {shape}, expected (1, {len(CLASSES)}) - "
+                    f"this is not a {len(CLASSES)}-class probability model"
+                )
+
+        if problems:
+            raise SpecMismatchError(
+                "the exported GBDT artefact does not match "
+                "backend/detector/feature_spec.py + the rolling-aggregate spec "
+                f"(spec {SPEC_VERSION}, {len(FEATURE_ORDER)} per-frame features, "
+                f"{len(CLASSES)} classes).\n"
+                f"  artefact: {self.gbdt_path}\n"
+                + "\n".join(f"  - {p}" for p in problems)
+                + "\nRetrain with `python ml/train.py --model gbdt` against the current "
+                  "spec and re-export with `python ml/export_onnx.py`, or pin "
+                  "--model-version v2-tcn. Refusing to serve a model whose feature "
+                  "space is not the one the extractor produces."
+            )
+        return "ok"
+
+    # -- properties --------------------------------------------------------
+    @property
+    def classes(self) -> List[str]:
+        return list(CLASSES)
+
+    @property
+    def attack_classes(self) -> List[str]:
+        return list(ATTACK_CLASSES)
+
+    @property
+    def pending(self) -> int:
+        """Frames buffered but not yet scored."""
+        return len(self._pend)
+
+    # -- feature vectorisation --------------------------------------------
+    def vectorise(self, features: FrameFeatures) -> np.ndarray:
+        """One frame -> a ``(46,)`` float32 vector in ``FEATURE_ORDER`` order.
+
+        Identical rules to :meth:`V2Pipeline.vectorise`: a dict is read by name,
+        never by iteration order, and a missing key is NaN, not 0.0.
+        """
+        if isinstance(features, dict):
+            return np.fromiter(
+                (float(features.get(k, np.nan)) for k in FEATURE_ORDER),
+                dtype=np.float32, count=len(FEATURE_ORDER),
+            )
+        vec = np.asarray(features, dtype=np.float32).ravel()
+        if vec.size != len(FEATURE_ORDER):
+            raise ValueError(f"expected {len(FEATURE_ORDER)} features, got {vec.size}")
+        return vec
+
+    def build_row(self, features: FrameFeatures) -> np.ndarray:
+        """Consume one frame into the rolling state; return its ``(82,)`` row.
+
+        This *advances* the stream.  Call it once per frame, in arrival order.
+        """
+        vec = self.vectorise(features)
+        return np.concatenate((vec, self.rollups.update(vec)))
+
+    # -- streaming ---------------------------------------------------------
+    def push(self, features: FrameFeatures) -> List[Verdict]:
+        """Buffer one frame; returns verdicts when the batch completes."""
+        self._pend.append(self.build_row(features))
+        self.frames_seen += 1
+        if len(self._pend) >= self.batch_frames:
+            return self.flush()
+        return []
+
+    def flush(self) -> List[Verdict]:
+        """Score whatever is buffered, however few frames that is."""
+        if not self._pend:
+            return []
+        X = np.stack(self._pend, axis=0)
+        n = X.shape[0]
+        self._pend.clear()
+
+        try:
+            probs = np.asarray(
+                self.booster.predict(X, num_threads=self.num_threads), dtype=np.float64
+            )
+            self.inferences += 1
+        except Exception as exc:
+            self.failures += 1
+            logger.error("[v2-gbdt] booster.predict failed on %d frames: %s", n, exc)
+            return [Verdict(is_attack=False, stage=0)] * n
+
+        if probs.ndim != 2 or probs.shape != (n, self.n_classes):
+            self.failures += 1
+            logger.error(
+                "[v2-gbdt] unusable output shape %s for %d frames (expected (%d, %d))",
+                probs.shape, n, n, self.n_classes,
+            )
+            return [Verdict(is_attack=False, stage=0)] * n
+
+        return [verdict_from_probs(probs[j], self.thr1, self.thr2) for j in range(n)]
+
+    def reset(self) -> None:
+        """Drop the rolling state.  Use at a stream boundary (a new capture file).
+
+        The live counterpart of "a window never spans a ``block_id`` boundary":
+        after this, no aggregate mixes frames from the two streams.
+        """
+        self.rollups.reset()
+        self._pend.clear()
+
+    # -- contract-compatible single-frame API ------------------------------
+    def predict(self, row: FrameFeatures) -> Verdict:
+        """Score one frame now.  Same ``Verdict`` as ``TwoStagePipeline.predict``."""
+        self._pend.append(self.build_row(row))
+        self.frames_seen += 1
+        verdicts = self.flush()
+        return verdicts[-1] if verdicts else Verdict(is_attack=False, stage=0)
+
+    def predict_stream(self, rows: Iterable[FrameFeatures]) -> List[Verdict]:
+        """Score a whole stream, batched, one verdict per row in order."""
+        out: List[Verdict] = []
+        for row in rows:
+            out.extend(self.push(row))
+        out.extend(self.flush())
+        return out
+
+
+# ---------------------------------------------------------------------------
 # Selection
 # ---------------------------------------------------------------------------
-MODEL_VERSIONS = ("auto", "v1", "v2")
+AnyPipeline = Union["GBDTPipeline", "V2Pipeline", TwoStagePipeline]
+
+#: ``auto``'s preference order, and the one-line reason each is where it is.
+#: The order is a measurement, not a taste: both v2 models were scored on the same
+#: 5,943,908 held-out AWID3 frames and the GBDT won, so the GBDT serves.
+_AUTO_ORDER: Tuple[Tuple[str, str], ...] = (
+    ("v2-gbdt", "test macro-F1 0.9907 - the best measured model"),
+    ("v2-tcn", "test macro-F1 0.9856, no lightgbm wheel needed"),
+    ("v1", "legacy two-stage bundles; last resort"),
+)
+
+_DESCRIPTIONS: Dict[str, str] = {
+    "v2-gbdt": "LightGBM + causal rolling aggregates",
+    "v2-tcn": "causal TCN, ONNX",
+    "v1": "two-stage LightGBM",
+}
+
+
+def _load_one(
+    version: str,
+    model_dir: Optional[Path],
+    thr1: Optional[float],
+    thr2: Optional[float],
+    batch_frames: Optional[int],
+) -> AnyPipeline:
+    if version == "v2-gbdt":
+        return GBDTPipeline(
+            model_dir=model_dir, thr1=thr1, thr2=thr2, batch_frames=batch_frames
+        )
+    if version == "v2-tcn":
+        return V2Pipeline(
+            model_dir=model_dir, thr1=thr1, thr2=thr2, batch_frames=batch_frames
+        )
+    return TwoStagePipeline(model_dir=model_dir, thr1=thr1, thr2=thr2)
 
 
 def build_pipeline(
@@ -852,46 +1435,60 @@ def build_pipeline(
     thr1: Optional[float] = None,
     thr2: Optional[float] = None,
     batch_frames: Optional[int] = None,
-) -> Union["V2Pipeline", TwoStagePipeline]:
-    """Load the requested pipeline and say, in the log, which one is live.
+) -> AnyPipeline:
+    """Load the requested pipeline and say, in the log, which one is live and why.
 
-    ``auto``  v2 if its artefact is present and validates, else v1.
-    ``v2``    v2 or nothing -- a mismatch is fatal, not a silent downgrade.
-    ``v1``    the two-stage LightGBM bundles.
+    ``auto``      v2-gbdt, else v2-tcn, else v1 -- each downgrade logged with its
+                  reason, because a silent downgrade to a worse model is the same
+                  failure mode as a silent feature mismatch.
+    ``v2-gbdt``   the LightGBM booster or nothing.
+    ``v2-tcn``    the ONNX TCN or nothing (``v2`` is still accepted, and means this).
+    ``v1``        the two-stage LightGBM bundles.
+
+    An explicit choice never downgrades: a missing artefact or a spec mismatch
+    raises.  Only ``auto`` falls through, and only loudly.
     """
-    version = str(model_version or "auto").lower()
-    if version not in MODEL_VERSIONS:
-        raise ValueError(
-            f"model_version must be one of {MODEL_VERSIONS}, got {model_version!r}"
+    version = canonical_model_version(model_version)
+
+    if version != "auto":
+        pipe = _load_one(version, model_dir, thr1, thr2, batch_frames)
+        logger.info(
+            "ACTIVE MODEL: %s (%s) spec=%s classes=%d - requested explicitly",
+            version, _DESCRIPTIONS[version], getattr(pipe, "spec_version", None),
+            len(pipe.classes),
         )
+        return pipe
 
-    if version in ("auto", "v2"):
+    tried: List[str] = []
+    for candidate, why in _AUTO_ORDER:
         try:
-            pipe = V2Pipeline(
-                model_dir=model_dir, thr1=thr1, thr2=thr2, batch_frames=batch_frames
-            )
-            logger.info(
-                "ACTIVE MODEL: v2 (causal TCN, ONNX) spec=%s classes=%d",
-                pipe.spec_version, pipe.n_classes,
-            )
-            return pipe
+            pipe = _load_one(candidate, model_dir, thr1, thr2, batch_frames)
         except FileNotFoundError as exc:
-            if version == "v2":
-                raise
-            logger.info("v2 artefact not available (%s); falling back to v1", exc)
+            tried.append(f"{candidate}: artefact not available ({exc})")
+            logger.info("auto: %s artefact not available (%s)", candidate, exc)
+            continue
         except SpecMismatchError as exc:
-            if version == "v2":
-                raise
+            tried.append(f"{candidate}: REJECTED, does not match feature_spec")
             logger.error(
-                "v2 artefact REJECTED - it does not match the running feature_spec. "
-                "Falling back to v1. Details:\n%s", exc,
+                "auto: %s artefact REJECTED - it does not match the running "
+                "feature_spec. Details:\n%s", candidate, exc,
             )
+            continue
         except Exception as exc:  # noqa: BLE001 - any load failure downgrades, loudly
-            if version == "v2":
-                raise
-            logger.error("v2 failed to load (%s: %s); falling back to v1",
-                         type(exc).__name__, exc)
+            tried.append(f"{candidate}: failed to load ({type(exc).__name__}: {exc})")
+            logger.error("auto: %s failed to load (%s: %s)",
+                         candidate, type(exc).__name__, exc)
+            continue
 
-    pipe_v1 = TwoStagePipeline(model_dir=model_dir, thr1=thr1, thr2=thr2)
-    logger.info("ACTIVE MODEL: v1 (two-stage LightGBM) classes=%d", len(pipe_v1.classes))
-    return pipe_v1
+        logger.info(
+            "ACTIVE MODEL: %s (%s) spec=%s classes=%d - %s%s",
+            candidate, _DESCRIPTIONS[candidate], getattr(pipe, "spec_version", None),
+            len(pipe.classes), why,
+            "" if not tried else "; passed over " + " | ".join(tried),
+        )
+        return pipe
+
+    raise FileNotFoundError(
+        "no model could be loaded. Tried, in preference order:\n"
+        + "\n".join(f"  - {t}" for t in tried)
+    )

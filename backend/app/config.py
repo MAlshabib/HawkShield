@@ -47,13 +47,51 @@ __all__ = [
     "REPO_ROOT",
     "SPEC_VERSION",
     "Settings",
+    "MODEL_VERSIONS",
+    "MODEL_VERSION_ALIASES",
+    "canonical_model_version",
     "configure_logging",
     "front_key",
+    "gbdt_status",
+    "gbdt_model_problems",
     "redact_url",
     "settings",
     "v2_meta_problems",
     "v2_status",
 ]
+
+# --------------------------------------------------------------------------- #
+# Model selection vocabulary                                                    #
+# --------------------------------------------------------------------------- #
+# Duplicated, deliberately, from ``backend.detector.pipeline``: this module must
+# stay importable in the web process without dragging lightgbm and onnxruntime in
+# behind it, and ``GET /health`` needs to name the same three targets the detector
+# chooses between.  ``test_pipeline_v2.test_model_version_vocabulary_is_shared``
+# asserts the two copies are equal, so they cannot drift.
+MODEL_VERSIONS = ("auto", "v1", "v2-tcn", "v2-gbdt")
+
+#: ``v2`` predates the tcn/gbdt split and still means the TCN, so an existing
+#: ``.env`` or ``--model-version v2`` keeps working unchanged.
+MODEL_VERSION_ALIASES = {
+    "v2": "v2-tcn",
+    "tcn": "v2-tcn",
+    "v2tcn": "v2-tcn",
+    "gbdt": "v2-gbdt",
+    "v2gbdt": "v2-gbdt",
+    "lightgbm": "v2-gbdt",
+}
+
+
+def canonical_model_version(value: Any) -> str:
+    """Normalise a requested model version, or raise ``ValueError``."""
+    raw = str(value or "auto").strip().lower()
+    version = MODEL_VERSION_ALIASES.get(raw, raw)
+    if version not in MODEL_VERSIONS:
+        raise ValueError(
+            f"model_version must be one of {MODEL_VERSIONS} "
+            f"(aliases: {sorted(MODEL_VERSION_ALIASES)}), got {value!r}"
+        )
+    return version
 
 
 # Defaults for the path settings, also used when the environment supplies a blank
@@ -85,11 +123,19 @@ class Settings(BaseSettings):
     STAGE1_THRESHOLD: float = 0.40
     STAGE2_THRESHOLD: float = 0.80
 
-    # ---- v2 model (single causal TCN, ONNX) ------------------------------
-    #: ``auto`` -> v2 when the ONNX artefact is present and validates, else v1.
+    # ---- v2 models (LightGBM + rollups, and the causal TCN) --------------
+    #: One of ``MODEL_VERSIONS``.  ``auto`` -> v2-gbdt, else v2-tcn, else v1,
+    #: taking the first whose artefact is present and matches ``feature_spec``.
+    #: ``v2`` is accepted and means ``v2-tcn`` (see ``MODEL_VERSION_ALIASES``).
     MODEL_VERSION: str = "auto"
     V2_MODEL: str = "hawkshield_v2.onnx"
     V2_META: str = "hawkshield_v2_meta.json"
+    #: LightGBM text model: 46 per-frame features + 36 causal rolling aggregates.
+    V2_GBDT: str = "hawkshield_v2_gbdt.txt"
+    #: LightGBM predict threads.  Pinned for the same reason V2_ORT_THREADS is:
+    #: the library default is one thread per core, which starves the capture loop
+    #: on a 4-core Pi that is also running scapy, the API and Postgres.
+    GBDT_NUM_THREADS: int = 2
     #: Frames scored per onnxruntime call.  See ``V2Pipeline`` for the tradeoff.
     V2_BATCH_FRAMES: int = 32
     #: onnxruntime intra-op threads; 0 means "leave the runtime default".
@@ -181,6 +227,10 @@ class Settings(BaseSettings):
     @property
     def v2_meta_path(self) -> Path:
         return self.MODEL_DIR / self.V2_META
+
+    @property
+    def v2_gbdt_path(self) -> Path:
+        return self.MODEL_DIR / self.V2_GBDT
 
     @property
     def rag_enabled(self) -> bool:
@@ -368,6 +418,130 @@ def v2_status(model_dir: Optional[Path] = None) -> Dict[str, Any]:
     )
     out["problems"] = v2_meta_problems(meta)
     out["usable"] = not out["problems"]
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# GBDT artefact validation                                                      #
+# --------------------------------------------------------------------------- #
+# A LightGBM text model states, in its own header, the columns it was fitted on
+# and how many scores it emits per iteration.  Reading those two lines needs no
+# lightgbm and no numpy, so the web process can answer "is the GBDT servable?"
+# the same way it already answers it for the ONNX graph.
+#
+# Advisory, and deliberately structural rather than exact: the authoritative
+# check is ``GBDTPipeline._validate_booster``, which compares the model's names
+# against ``GBDT_FEATURE_NAMES`` element for element.  This one verifies the
+# shape of the contract -- the 46 spec features first, in order, then a block of
+# well-formed rolling-aggregate names, then the right number of classes -- which
+# is everything that can be checked without owning the rollup spec.
+_ROLLUP_NAME_RE = re.compile(r"^roll(\d+)\.(.+)\.(mean|std|rate)$")
+
+
+def gbdt_model_problems(header: Dict[str, str]) -> List[str]:
+    """Every way a parsed GBDT header disagrees with the running ``feature_spec``."""
+    problems: List[str] = []
+
+    names = header.get("feature_names", "").split()
+    if not names:
+        problems.append("model file has no feature_names line")
+    else:
+        head, tail = names[: len(FEATURE_ORDER)], names[len(FEATURE_ORDER):]
+        if head != FEATURE_ORDER:
+            missing = [f for f in FEATURE_ORDER if f not in names]
+            if missing:
+                problems.append(f"per-frame features the model is missing: {missing}")
+            else:
+                first = next(
+                    (i for i, (a, b) in enumerate(zip(head, FEATURE_ORDER)) if a != b),
+                    len(head),
+                )
+                problems.append(
+                    f"the model's first {len(FEATURE_ORDER)} columns are not "
+                    f"feature_spec.FEATURE_ORDER (differs at index {first})"
+                )
+        bad = [n for n in tail if not _ROLLUP_NAME_RE.match(n)]
+        if bad:
+            problems.append(f"columns that are neither spec features nor rolling aggregates: {bad}")
+        if not tail:
+            problems.append(
+                "the model has no rolling-aggregate columns; the GBDT is trained on "
+                "per-frame features PLUS causal rollups and cannot be served without them"
+            )
+
+    n_feat = header.get("max_feature_idx")
+    if n_feat is not None and names:
+        try:
+            if int(n_feat) + 1 != len(names):
+                problems.append(
+                    f"max_feature_idx says {int(n_feat) + 1} columns, feature_names lists {len(names)}"
+                )
+        except ValueError:
+            problems.append(f"max_feature_idx is not an integer: {n_feat!r}")
+
+    n_class = header.get("num_class")
+    if n_class is None:
+        problems.append("model file has no num_class line")
+    else:
+        try:
+            if int(n_class) != len(CLASSES):
+                problems.append(
+                    f"class mismatch: model emits {int(n_class)} classes, "
+                    f"feature_spec has {len(CLASSES)}"
+                )
+        except ValueError:
+            problems.append(f"num_class is not an integer: {n_class!r}")
+
+    return problems
+
+
+def _read_gbdt_header(path: Path, max_lines: int = 40) -> Dict[str, str]:
+    """The ``key=value`` preamble of a LightGBM text model, up to the first tree."""
+    out: Dict[str, str] = {}
+    with open(path, "r", encoding="utf-8", errors="replace") as fh:
+        for i, line in enumerate(fh):
+            line = line.rstrip("\n")
+            if line.startswith("Tree=") or i >= max_lines:
+                break
+            key, sep, value = line.partition("=")
+            if sep:
+                out[key.strip()] = value
+    return out
+
+
+def gbdt_status(model_dir: Optional[Path] = None) -> Dict[str, Any]:
+    """Filesystem-only view of the GBDT artefact, for ``GET /health``.
+
+    Advisory, like :func:`v2_status`: the API process does not load the booster,
+    so this reports what the file on disk claims about itself.
+    """
+    base = Path(model_dir) if model_dir is not None else settings.MODEL_DIR
+    gbdt_path = base / settings.V2_GBDT
+    meta_path = base / settings.V2_META
+    out: Dict[str, Any] = {"present": False, "usable": False, "problems": []}
+
+    missing = [str(p) for p in (gbdt_path, meta_path) if not p.is_file()]
+    if missing:
+        out["problems"] = [f"missing: {p}" for p in missing]
+        return out
+    out["present"] = True
+
+    # The GBDT shares the meta file -- and therefore the spec version, class list
+    # and per-frame feature contract -- with the TCN.
+    try:
+        meta = json.loads(meta_path.read_text(encoding="utf-8"))
+    except Exception as exc:  # noqa: BLE001 - health must never raise
+        out["problems"] = [f"{meta_path} is not readable JSON: {exc}"]
+        return out
+    problems = v2_meta_problems(meta)
+
+    try:
+        problems += gbdt_model_problems(_read_gbdt_header(gbdt_path))
+    except Exception as exc:  # noqa: BLE001 - health must never raise
+        problems.append(f"{gbdt_path} is not readable: {exc}")
+
+    out["problems"] = problems
+    out["usable"] = not problems
     return out
 
 

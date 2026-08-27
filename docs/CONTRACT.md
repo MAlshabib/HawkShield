@@ -79,11 +79,13 @@ credentials, or thresholds anywhere in the codebase. `backend/detector/*` reads 
 | `STAGE2_MODEL` | `stage2_multiclass_bundle.joblib` | detector |
 | `STAGE1_THRESHOLD` | `0.40` | detector — v1 *and* v2 ("is it an attack") |
 | `STAGE2_THRESHOLD` | `0.80` | detector — v1 *and* v2 ("confident which class") |
-| `MODEL_VERSION` | `auto` | detector — `auto` \| `v1` \| `v2`; see §5 |
-| `V2_MODEL` | `hawkshield_v2.onnx` | detector |
-| `V2_META` | `hawkshield_v2_meta.json` | detector, `/health` |
-| `V2_BATCH_FRAMES` | `32` | detector — frames per onnxruntime call |
+| `MODEL_VERSION` | `auto` | detector — `auto` \| `v1` \| `v2-tcn` \| `v2-gbdt`; see §5. `v2` is accepted and means `v2-tcn` |
+| `V2_MODEL` | `hawkshield_v2.onnx` | detector (v2-tcn) |
+| `V2_GBDT` | `hawkshield_v2_gbdt.txt` | detector (v2-gbdt) |
+| `V2_META` | `hawkshield_v2_meta.json` | detector (both v2 targets), `/health` |
+| `V2_BATCH_FRAMES` | `32` | detector — frames per inference call, both v2 targets |
 | `V2_ORT_THREADS` | `2` | detector — onnxruntime intra-op threads (`0` = runtime default) |
+| `GBDT_NUM_THREADS` | `2` | detector — LightGBM predict threads for v2-gbdt |
 | `CAPTURE_IFACE` | `wlan1` | detector |
 | `CAPTURE_CHANNEL` | `6` | detector |
 | `TARGET_SSID` | *(empty = no filter)* | detector |
@@ -141,7 +143,7 @@ All routes are registered on the app **without** a prefix (the frontend calls `$
 | GET | `/reports/summary?days=30` | `{"period": str, "totals": {deauth,ssdp,evil_twin,reassoc,rogueap,krack,disas,kr00k,other}, "summary": {"totalAttacks","mostFrequentType","peakHour","uniqueSources"}}` |
 | POST | `/reports/export` | body `{"days": int}` → `application/pdf` stream, `Content-Disposition: attachment; filename="hawkshield_report_<days>d.pdf"` |
 | POST | `/ask` | body `{"question": str, "session_id": str?}` → `{"cached": bool, "mode": "SQL"\|"DOCS"\|"OOS"\|"ERROR", "sql": str, "answer": str, "cols": [str], "rows": [obj], "error": str?}`; **503** `{"detail": "..."}` when no `OPENROUTER_API_KEY` |
-| GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool, "v2": bool}, "model_version": "v2"\|"v1"\|"none", "spec_version": str, "artefact_spec_version": str\|null, "model_problems": [str], "version": str}` |
+| GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool, "v2": bool, "v2_gbdt": bool}, "model_version": "v2-gbdt"\|"v2-tcn"\|"v1"\|"none", "spec_version": str, "artefact_spec_version": str\|null, "model_problems": [str], "version": str}` |
 
 Label mapping used by `/reports/summary` (DB label → frontend key). **Derived, not hand-maintained** —
 `backend/app/config.py` builds it from `feature_spec.ATTACK_CLASSES` by lower-casing and dropping
@@ -164,7 +166,14 @@ define (v1 rows left in the table after a v2 upgrade land there).
 computed by the API process from `MODEL_DIR` without importing `backend.detector.pipeline`. It is
 advisory: the detector's own `ACTIVE MODEL: …` startup log is authoritative. `spec_version` is the
 contract this build of the code implements; `artefact_spec_version` is what the on-disk v2 artefact
-claims. When they differ, `models.v2` is `false` and `model_problems` says exactly why.
+claims. When they differ, `models.v2` is `false` and `model_problems` says exactly why. Both v2 targets
+share that meta file, so a stale export usually rules out both; each entry in `model_problems` is
+prefixed with the target it rules out (`v2-tcn:` / `v2-gbdt:`) so one fault does not read as two.
+
+`models.v2_gbdt` is checked without loading LightGBM: a LightGBM text model states its own
+`feature_names` and `num_class` in its header, and `/health` reads those. That check is structural
+(the 46 spec features first, in order, then well-formed rolling-aggregate names, then the right class
+count); the exact column-by-column check is the detector's, at load time.
 
 `/ask` keeps the existing TTL cache (200 entries / 600 s, key = sha256 of `session_id||question`) and the
 5-turn per-session memory.
@@ -176,18 +185,122 @@ HTTP-controlled subprocess. Do not reintroduce them.
 
 ## 5. Models
 
-HawkShield ships **two generations**. `MODEL_VERSION` (or `--model-version`) selects between them:
+HawkShield ships **three targets**: two v2 models trained on the same spec, and the v1 fallback.
+`MODEL_VERSION` (or `--model-version`) selects between them:
 
 | value | behaviour |
 |---|---|
-| `auto` *(default)* | v2 when `models/hawkshield_v2.onnx` + its meta exist **and** the meta matches the running `feature_spec`; otherwise v1, with the reason logged at ERROR |
-| `v2` | v2 or nothing — a mismatch raises `SpecMismatchError` and the process exits `2`. Never a silent downgrade |
-| `v1` | the two-stage LightGBM bundles in §5.2 |
+| `auto` *(default)* | the first of `v2-gbdt`, `v2-tcn`, `v1` whose artefacts are present **and** match the running `feature_spec`. Every skip is logged with its reason — a missing artefact at INFO, a rejected one at ERROR |
+| `v2-gbdt` | the LightGBM booster in §5.1 or nothing |
+| `v2-tcn` | the ONNX TCN in §5.2 or nothing (`v2` is accepted and means this) |
+| `v1` | the two-stage LightGBM bundles in §5.3 |
 
-Whichever loads, it logs one line — `ACTIVE MODEL: v2 (causal TCN, ONNX) spec=...` or
-`ACTIVE MODEL: v1 (two-stage LightGBM) ...` — and that line is the authoritative record of what is running.
+An explicit choice **never downgrades**: a missing artefact raises `FileNotFoundError`, a mismatch raises
+`SpecMismatchError`, and the process exits `2`. Only `auto` falls through, and only loudly.
 
-### 5.1 v2 — `models/hawkshield_v2.onnx` (current)
+Whichever loads, it logs one line — `ACTIVE MODEL: v2-gbdt (LightGBM + causal rolling aggregates) ...` —
+naming the target, the spec version and why it was chosen. That line is the authoritative record of what
+is running; `/health` reports what the *files on disk* would produce, which is not the same claim.
+
+**Why `auto` prefers the GBDT.** Both v2 models were trained on the full AWID3 archive and scored on the
+same 5,943,908 held-out frames:
+
+| | test macro-F1 | Krack | (Re)Assoc | RogueAP | Disas | size | runtime dependency |
+|---|---:|---:|---:|---:|---:|---:|---|
+| **v2-gbdt** | **0.9907** | 0.9999 | 0.9975 | 1.0000 | 0.9578 | 3.0 MB | `lightgbm` |
+| v2-tcn | 0.9856 | 0.9644 | 0.9671 | 0.9955 | **0.9738** | 348 KB | `onnxruntime` |
+
+The committed rule is that whichever model wins on measurement ships, so the GBDT is first. The TCN is
+not deprecated: it wins on `Disas`, is 9x smaller, and needs no LightGBM wheel, which is the deciding
+factor on a box where one is not available. Both consume the *same* 46-feature extractor output, so
+switching between them changes nothing upstream of the pipeline.
+
+### 5.1 v2-gbdt — `models/hawkshield_v2_gbdt.txt` (default)
+
+One LightGBM multiclass booster: 49 boosting rounds x 9 classes = 441 trees, over **82** columns.
+
+```
+input   (n, 82) float32   NaN = the frame does not carry that field
+output  (n,  9) float64   class probabilities, softmax already applied
+```
+
+The 82 columns are `feature_spec.FEATURE_ORDER` (46) **followed by 36 causal rolling aggregates**, in
+that exact order. The booster's own `feature_names=` header records them, and `GBDTPipeline` refuses to
+start unless that header equals `pipeline.GBDT_FEATURE_NAMES` element for element — which catches a
+renamed aggregate, a changed window, a feature added to or removed from the spec, and the one nothing
+else would catch: the same 82 names in a different order.
+
+**The rolling aggregates.** A tree sees one row at a time, so on its own it cannot represent "sixty
+deauths in the last second". For each window `w in {16, 64}`:
+
+```
+roll{w}.{c}.mean   c in frame.len, frame.dt_log, radio.signal_dbm,
+roll{w}.{c}.std         wlan.duration, wlan.seq_delta, radio.datarate
+roll{w}.{c}.rate   c in mgmt.has_reason, fc.retry, addr.da_broadcast,
+                        eapol.present, fc.protected, addr.da_multicast
+```
+
+Three properties are normative, and each of them is a way to silently ship a wrong model:
+
+1. **Causal.** The window for frame *i* ends at frame *i*. Nothing looks forward, because a live detector
+   has no forward to look at.
+2. **The window is `w + 1` frames, not `w`.** `roll16` aggregates rows `[i-16, i]` inclusive —
+   seventeen frames. This is what `ml/windows.py::causal_rollups` computes, so it is what the model was
+   fitted on. A live buffer holding "the last 16 frames" is off by one on every row, does not crash, and
+   does not log.
+3. **Bounded.** No aggregate spans a `block_id` in training, and none spans a detector restart or a new
+   capture file live — `RollupState.reset()` is that boundary, and `replay_pcap` calls it per file.
+
+**NaN is excluded, never zeroed.** A NaN input does not count toward the numerator or the denominator.
+`mean` is NaN when the window held no values; `std` is NaN when it held fewer than two. The model was
+fitted with those NaNs present and reads them as information.
+
+`backend/detector/pipeline.py::RollupState` builds these live, one frame at a time, and is
+**bit-for-bit identical** to `ml/windows.py::causal_rollups` — not merely close. It keeps running float64
+prefix sums and a ring of the last `max(w) + 2` prefix snapshots, and subtracts exactly the two numbers
+training subtracted; re-summing the window instead would be correct maths and different rounding, and
+`std` is computed as `E[x^2] - E[x]^2`, where a 1e-9 difference becomes 3e-5 after the square root.
+`backend/tests/test_pipeline_v2.py::test_streaming_rollups_reproduce_the_training_matrix` runs N frames
+through the training builder and through the live state and asserts `np.array_equal`. That test is the
+reason this path can be trusted; if it is ever relaxed to `allclose`, the guarantee is gone.
+
+The runtime does **not** import `ml.windows` (it pulls in pyarrow, which has no business on a capture
+box). `pipeline.py` holds its own copy of the spec, and
+`test_pipeline_v2.py::test_rollup_spec_matches_the_training_module` pins the two together.
+
+**Batching** is a pure cost decision here, with no correctness component at all: the rolling state
+advances at `push()` time, one frame at a time, so a frame's 82-column row is fixed before any prediction
+happens. `V2_BATCH_FRAMES` (32) rows go into one `Booster.predict` call; `GBDT_NUM_THREADS` (2) is passed
+to it, for the same reason `V2_ORT_THREADS` is pinned.
+
+**Measured**, 5000 frames of `data/samples/deauth_raw_decrypted.pcapng`, dev CPU, batch 32, feature
+extraction excluded so the two models are compared and not scapy:
+
+| | µs/frame | of which |
+|---|---:|---|
+| **v2-gbdt total** | **38.9** | rollup state 20.1, `Booster.predict` 5.4, vectorise 4.7, buffering/verdicts ~9 |
+| v2-tcn total | 25.9 | `onnxruntime.run` ~15, vectorise 4.7, buffering/verdicts ~6 |
+
+End to end through scapy (`replay_pcap --limit 5000`, dominated by parsing rather than inference):
+957 frame/s for the GBDT against 1013 frame/s for the TCN, inference 7.3% vs 3.7% of wall time. The GBDT
+costs ~1.5x the TCN per frame and ~6% of end-to-end throughput. Per-packet scoring (`--per-packet`) costs
+103 µs/frame for the GBDT and 467 µs/frame for the TCN — the GBDT degrades far more gracefully there,
+because a tree ensemble has no context window to re-feed.
+
+**Raspberry Pi 4 caveat.** The risk is the *wheel*, not the model. PyPI has no `manylinux aarch64` wheel
+for LightGBM, so on 64-bit Raspberry Pi OS `pip install lightgbm` falls back to piwheels (that image's
+default extra index, which usually has a prebuilt one) or to a source build — CMake plus a C++ toolchain,
+tens of minutes. **Verify `python -c "import lightgbm"` on the target before choosing `auto`.** Memory is
+a non-issue and is measured, not assumed: loading the booster costs **+7.6 MB RSS**, against **+9.7 MB**
+for the onnxruntime session — the GBDT is the *lighter* of the two at runtime despite the larger file.
+Expect 4-8x the per-frame cost above, i.e. roughly 300-600 µs/frame for the GBDT against 145-290 µs/frame
+for the TCN; at 1000 frame/s that is ~30-60% of one core against ~15-30%, on a board with four cores that
+also run scapy, the API and Postgres.
+
+**If lightgbm will not install, `--model-version v2-tcn` is the supported answer**: half a point of
+macro-F1 for a 348 KB artefact, half the CPU, and a dependency that does ship an aarch64 wheel.
+
+### 5.2 v2-tcn — `models/hawkshield_v2.onnx`
 
 One causal dilated TCN replacing both v1 stages. Contract:
 
@@ -248,11 +361,13 @@ p2    = P(label)                             compared against STAGE2_THRESHOLD
 stage = 1 when p1 < thr1, else 2; 0 when inference failed
 ```
 
-`packet_to_features_v2()` feeds v2; `packet_to_row()` feeds v1. The pipeline's `model_version` decides,
-in one place, which extractor the capture loop uses — pairing a v2 model with v1 rows must be impossible
-by construction, not by review.
+`packet_to_features_v2()` feeds **both** v2 targets; `packet_to_row()` feeds v1. The pipeline's
+`feature_space` attribute (`"v2"` / `"v1"`) decides, in one place, which extractor the capture loop uses
+— pairing a v2 model with v1 rows must be impossible by construction, not by review. It is
+`feature_space` and not `model_version` precisely because there are now two v2 models: matching on the
+model name would need an edit every time a target is added, and that edit failing is silent.
 
-### 5.2 v1 — the two-stage LightGBM bundles (fallback)
+### 5.3 v1 — the two-stage LightGBM bundles (fallback)
 
 `models/stage1_binary_bundle.joblib` (md5 `d67bfee99f1188513eb46f9c3a83f1cb`, was `binary_classifier_final.joblib`)
 
@@ -308,7 +423,8 @@ backend/
     routers/      attacks.py reports.py maps.py ask.py health.py
     rag/          packet_qa.py + knowledge/attacks.md   (RAG agent)
   detector/     Capture + inference only.  MUST NOT import backend.app.routers.*
-    pipeline.py   V2Pipeline (v2), Stage1/Stage2/TwoStagePipeline (v1), build_pipeline()
+    pipeline.py   GBDTPipeline + RollupState (v2-gbdt), V2Pipeline (v2-tcn),
+                  Stage1/Stage2/TwoStagePipeline (v1), build_pipeline()
     feature_spec.py  THE feature + class contract; stdlib-only, imported by app and ml alike
     features.py   packet_to_row() (v1), packet_to_features_v2() (v2)
     capture.py    monitor mode, sniff loop, heartbeat
@@ -346,10 +462,21 @@ def packet_to_features_v2(pkt, iface: str, state: "FrameState") -> tuple[dict, d
 # backend/detector/pipeline.py
 def build_pipeline(model_version="auto", model_dir=None, thr1=None, thr2=None,
                    batch_frames=None) -> "V2Pipeline | TwoStagePipeline":
-    """Selects per section 5 and logs ACTIVE MODEL. Both returns expose .model_version,
+    """Selects per section 5 and logs ACTIVE MODEL. Every return exposes .model_version,
     .thr1, .thr2 and .predict(row) -> Verdict."""
 
-class V2Pipeline:              # model_version == "v2"
+class GBDTPipeline:            # model_version == "v2-gbdt", feature_space == "v2"
+    def build_row(self, features) -> np.ndarray:   # (82,) = 46 spec + 36 rollups
+    def push(self, features) -> list[Verdict]      # buffers; returns on batch completion
+    def flush(self) -> list[Verdict]
+    def reset(self) -> None                        # stream boundary: clears the rollups
+    def predict(self, row) -> Verdict
+
+class RollupState:             # bit-identical to ml.windows.causal_rollups
+    def update(self, vec) -> np.ndarray            # (36,) float32, causal
+    def reset(self) -> None
+
+class V2Pipeline:              # model_version == "v2-tcn", feature_space == "v2"
     def push(self, features: dict) -> list["Verdict"]:
         """Buffer one frame; [] until the batch fills, then one verdict per buffered
         frame, oldest first. The caller keeps the matching packets."""
@@ -357,7 +484,7 @@ class V2Pipeline:              # model_version == "v2"
     def reset(self) -> None: ...              # drop the ring buffer at a stream boundary
     def predict(self, row: dict) -> "Verdict": ...   # single frame, forces a flush
 
-class TwoStagePipeline:        # model_version == "v1"
+class TwoStagePipeline:        # model_version == "v1", feature_space == "v1"
     def __init__(self, model_dir: Path, thr1: float, thr2: float) -> None: ...
     def predict(self, row: dict) -> "Verdict":
         """Verdict(is_attack: bool, label: str|None, p1: float|None, p2: float|None, stage: int)"""

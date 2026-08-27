@@ -95,8 +95,10 @@ class AskPayload(BaseModel):
 class ModelsPresent(BaseModel):
     stage1: bool
     stage2: bool
-    #: v2 ONNX artefact present *and* matching the running feature_spec.
+    #: v2 ONNX (TCN) artefact present *and* matching the running feature_spec.
     v2: bool = False
+    #: v2 LightGBM artefact present *and* matching the running feature_spec.
+    v2_gbdt: bool = False
 
 
 class HealthOut(BaseModel):
@@ -110,7 +112,7 @@ class HealthOut(BaseModel):
     packets: int
     latest_packet_ts: Optional[datetime] = None
     models: ModelsPresent
-    #: Which pipeline the detector would load: "v2", "v1" or "none".
+    #: Which pipeline the detector would load: "v2-gbdt", "v2-tcn", "v1" or "none".
     model_version: str = "none"
     #: Feature-contract version this build of the code implements.
     spec_version: Optional[str] = None

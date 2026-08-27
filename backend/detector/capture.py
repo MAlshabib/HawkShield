@@ -101,12 +101,20 @@ class Detector:
     flag here: a v2 pipeline gets ``packet_to_features_v2`` (46 spec features,
     NaN for absent fields), a v1 pipeline gets ``packet_to_row`` (31 legacy
     names).  Pairing a v2 model with v1 rows is the single worst thing this file
-    could do, so there is exactly one place -- ``model_version`` -- that decides.
+    could do, so there is exactly one place -- the pipeline's ``feature_space``
+    -- that decides.
 
-    v2 also scores in batches of ``pipeline.batch_frames`` (see ``V2Pipeline``),
-    so packets are held in ``_pending`` until their verdicts come back.  The
-    heartbeat drains that buffer, which is why the tail of a burst is never
-    stranded even when traffic stops dead.
+    ``feature_space``, not ``model_version``: there are two v2 models now,
+    ``v2-tcn`` and ``v2-gbdt``, and they eat the *same* 46-feature rows.  The
+    GBDT's extra 36 columns are causal rolling aggregates it builds itself from
+    those rows, inside the pipeline, so nothing about capture changes between the
+    two.  Matching on the model name would have needed editing every time a
+    target is added, and getting that edit wrong is silent.
+
+    Both v2 pipelines score in batches of ``pipeline.batch_frames``, so packets
+    are held in ``_pending`` until their verdicts come back.  The heartbeat drains
+    that buffer, which is why the tail of a burst is never stranded even when
+    traffic stops dead.
     """
 
     def __init__(
@@ -128,7 +136,13 @@ class Detector:
 
         self.pipeline = pipeline if pipeline is not None else build_pipeline(model_version)
         self.model_version = str(getattr(self.pipeline, "model_version", "v1"))
-        self.is_v2 = self.model_version == "v2"
+        # Fall back to the model name only for a pipeline that predates
+        # ``feature_space`` (test doubles, mostly); the attribute is authoritative.
+        self.feature_space = str(
+            getattr(self.pipeline, "feature_space", "")
+            or ("v2" if self.model_version.startswith("v2") else "v1")
+        )
+        self.is_v2 = self.feature_space == "v2"
 
         if sink is None and not self.dry_run:
             from backend.detector.sink import PacketSink
@@ -218,7 +232,7 @@ class Detector:
         return out
 
     def _flush_pipeline(self) -> None:
-        """Score whatever the v2 pipeline is still holding.  No-op for v1."""
+        """Score whatever a batching pipeline is still holding.  No-op for v1."""
         if not self.is_v2:
             return
         try:

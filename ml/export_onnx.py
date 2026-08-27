@@ -39,6 +39,7 @@ REPO_ROOT = Path(__file__).resolve().parents[1]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
+import ml.windows as W  # noqa: E402
 from ml.windows import CLASSES, FEATURE_ORDER, SPEC_VERSION  # noqa: E402
 
 DEFAULT_MODELS = REPO_ROOT / "_work" / "models_v2"
@@ -261,13 +262,33 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
               f"you are flash-bound; the int8 file is {size32 / size8:.1f}x smaller.")
 
     # ---- companion GBDT ------------------------------------------------------
+    # The GBDT is a first-class serving target (``--model-version v2-gbdt``), not a
+    # curiosity: it consumes the 46 spec features PLUS the causal rolling
+    # aggregates from ``ml/windows.py``, 82 columns in all.  The block recorded in
+    # the meta below is *informational* -- the authority on those columns is the
+    # ``feature_names=`` header LightGBM writes into the model file itself, which
+    # is what ``GBDTPipeline`` validates against.  Recording it here anyway means a
+    # reader of the meta can see that the ONNX graph is not the only thing shipped.
     gbdt_src = args.models / "gbdt.txt"
     gbdt_out = None
+    gbdt_block = None
     if gbdt_src.exists():
         gbdt_out = args.out / f"{args.name}_gbdt.txt"
         gbdt_out.write_bytes(gbdt_src.read_bytes())
+        rollups = W.rollup_names()
+        gbdt_block = {
+            "file": gbdt_out.name,
+            "n_features": len(FEATURE_ORDER) + len(rollups),
+            "rollup_windows": list(W.ROLLUP_WINDOWS),
+            "rollup_names": rollups,
+            "feature_order": list(FEATURE_ORDER) + rollups,
+            "note": "informational. The booster's own feature_names header is the "
+                    "authority, and backend/detector/pipeline.py validates against "
+                    "that, element for element, at load time.",
+        }
         print(f"  gbdt       : copied {gbdt_out.name} "
-              f"({gbdt_out.stat().st_size / 1024:.0f} KB)")
+              f"({gbdt_out.stat().st_size / 1024:.0f} KB, "
+              f"{gbdt_block['n_features']} columns)")
 
     # ---- metadata ------------------------------------------------------------
     meta = {
@@ -316,6 +337,7 @@ def main(argv: Optional[Sequence[str]] = None) -> int:
                             f"expect 4-8x on a Raspberry Pi",
         },
         "companion_gbdt": gbdt_out.name if gbdt_out else None,
+        "gbdt": gbdt_block,
         "generated": time.strftime("%Y-%m-%dT%H:%M:%S"),
     }
     meta_path = args.out / f"{args.name}_meta.json"

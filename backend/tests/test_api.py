@@ -171,8 +171,8 @@ def test_health(client: TestClient) -> None:
     assert body["database"] is True
     assert body["packets"] == 5
     assert body["latest_packet_ts"] is not None
-    assert set(body["models"]) == {"stage1", "stage2", "v2"}
-    assert body["model_version"] in ("v1", "v2", "none")
+    assert set(body["models"]) == {"stage1", "stage2", "v2", "v2_gbdt"}
+    assert body["model_version"] in ("v1", "v2-tcn", "v2-gbdt", "none")
     assert body["spec_version"] == SPEC_VERSION
     assert isinstance(body["model_problems"], list)
     assert isinstance(body["version"], str) and body["version"]

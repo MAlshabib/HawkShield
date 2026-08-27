@@ -1,8 +1,11 @@
 """Liveness / readiness endpoint.
 
 Deliberately dependency-free: it never imports ``backend.detector.*``; model
-availability is a plain filesystem check, and the v2 artefact is validated by
-reading its meta JSON, not by loading the graph.
+availability is a plain filesystem check, the ONNX artefact is validated by
+reading its meta JSON rather than loading the graph, and the GBDT by reading the
+``feature_names``/``num_class`` header LightGBM writes into its own text model
+rather than loading the booster.  ``model_version`` is therefore one of
+``v2-gbdt`` / ``v2-tcn`` / ``v1`` / ``none``.
 
 Consequence worth stating plainly: this endpoint runs in the **API** process,
 which does not do inference.  ``model_version`` is therefore what the detector
@@ -20,7 +23,14 @@ from fastapi import APIRouter, Depends
 from sqlalchemy import func
 from sqlalchemy.orm import Session
 
-from backend.app.config import APP_VERSION, SPEC_VERSION, settings, v2_status
+from backend.app.config import (
+    APP_VERSION,
+    SPEC_VERSION,
+    canonical_model_version,
+    gbdt_status,
+    settings,
+    v2_status,
+)
 from backend.app.db import get_db
 from backend.app.models import Packet
 from backend.app.schemas import HealthOut, ModelsPresent
@@ -45,27 +55,37 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
         logger.warning("Health check: database unreachable: %s", exc)
 
     v2 = v2_status()
+    gbdt = gbdt_status()
     models = ModelsPresent(
         stage1=settings.stage1_path.exists(),
         stage2=settings.stage2_path.exists(),
         v2=bool(v2["usable"]),
+        v2_gbdt=bool(gbdt["usable"]),
     )
 
-    # Mirrors backend.detector.pipeline.build_pipeline's precedence.
-    requested = str(settings.MODEL_VERSION or "auto").lower()
+    # Mirrors backend.detector.pipeline.build_pipeline's precedence, including
+    # auto's preference for the GBDT -- it won on the held-out test set
+    # (macro-F1 0.9907 vs the TCN's 0.9856), so auto serves it when it loads.
+    try:
+        requested = canonical_model_version(settings.MODEL_VERSION)
+    except ValueError as exc:
+        logger.error("MODEL_VERSION is not a valid selection: %s", exc)
+        requested = "auto"
     v1_ok = models.stage1 and models.stage2
-    if requested == "v1":
-        model_version = "v1" if v1_ok else "none"
-    elif requested == "v2":
-        model_version = "v2" if models.v2 else "none"
-    else:
-        model_version = "v2" if models.v2 else ("v1" if v1_ok else "none")
-
-    if v2["present"] and not v2["usable"]:
-        logger.warning(
-            "v2 artefact present but unusable, so the detector serves %s: %s",
-            model_version, "; ".join(v2["problems"]),
+    available = {"v2-gbdt": models.v2_gbdt, "v2-tcn": models.v2, "v1": v1_ok}
+    if requested == "auto":
+        model_version = next(
+            (name for name in ("v2-gbdt", "v2-tcn", "v1") if available[name]), "none"
         )
+    else:
+        model_version = requested if available[requested] else "none"
+
+    for name, status in (("v2-tcn", v2), ("v2-gbdt", gbdt)):
+        if status["present"] and not status["usable"]:
+            logger.warning(
+                "%s artefact present but unusable, so the detector serves %s: %s",
+                name, model_version, "; ".join(status["problems"]),
+            )
 
     healthy = database_ok and model_version != "none"
     return HealthOut(
@@ -77,6 +97,12 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
         model_version=model_version,
         spec_version=SPEC_VERSION,
         artefact_spec_version=v2["artefact_spec_version"],
-        model_problems=list(v2["problems"]) if v2["present"] else [],
+        # Both v2 artefacts share the meta file, so a stale export usually breaks
+        # both.  Tag each problem with the target it rules out; an untagged list
+        # would read as one fault when it is two.
+        model_problems=(
+            [f"v2-tcn: {p}" for p in (v2["problems"] if v2["present"] else [])]
+            + [f"v2-gbdt: {p}" for p in (gbdt["problems"] if gbdt["present"] else [])]
+        ),
         version=APP_VERSION,
     )

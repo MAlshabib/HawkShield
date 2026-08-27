@@ -22,7 +22,11 @@ if str(_REPO_ROOT) not in sys.path:  # allow `python backend/detector/cli.py` to
 
 from backend.detector._config import get_settings  # noqa: E402
 from backend.detector.capture import Detector  # noqa: E402
-from backend.detector.pipeline import MODEL_VERSIONS, build_pipeline  # noqa: E402
+from backend.detector.pipeline import (  # noqa: E402
+    MODEL_VERSION_ALIASES,
+    MODEL_VERSIONS,
+    build_pipeline,
+)
 
 logger = logging.getLogger("hawkshield.detector")
 
@@ -46,12 +50,16 @@ def build_parser() -> argparse.ArgumentParser:
     ap.add_argument("--model-dir", default=None,
                     help="override MODEL_DIR for this run")
     ap.add_argument("--model-version", default=getattr(s, "MODEL_VERSION", "auto"),
-                    choices=list(MODEL_VERSIONS),
-                    help="auto = v2 (causal TCN) when its ONNX artefact is present and "
-                         "matches feature_spec, else the v1 LightGBM bundles; "
-                         "v2 refuses to start on a mismatch (default: %(default)s)")
+                    choices=list(MODEL_VERSIONS) + sorted(MODEL_VERSION_ALIASES),
+                    metavar="{" + ",".join(MODEL_VERSIONS) + "}",
+                    help="auto = v2-gbdt (LightGBM + causal rolling aggregates, the "
+                         "best measured model: test macro-F1 0.9907), else v2-tcn "
+                         "(causal TCN, ONNX, 0.9856), else the v1 bundles - taking the "
+                         "first whose artefact matches feature_spec. An explicit choice "
+                         "refuses to start on a mismatch rather than downgrading. "
+                         "'v2' is accepted and means v2-tcn (default: %(default)s)")
     ap.add_argument("--batch-frames", type=int, default=None,
-                    help="v2 only: frames scored per onnxruntime call "
+                    help="v2 only: frames scored per inference call "
                          "(default: V2_BATCH_FRAMES, 32)")
     ap.add_argument("--dry-run", action="store_true",
                     help="classify and log, but never write to the database")

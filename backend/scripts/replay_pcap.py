@@ -3,10 +3,14 @@
 
 Uses the *same* extractor and pipeline the detector uses, so whatever this prints
 is what the Pi would have done with the same frames.  That includes the model
-choice: ``--model-version auto`` (the default) replays through v2's
-``packet_to_features_v2`` + ring buffer when the ONNX artefact is present and
-matches ``feature_spec``, and through v1's ``packet_to_row`` + two-stage LightGBM
-otherwise.
+choice: ``--model-version auto`` (the default) replays through ``v2-gbdt`` when
+its LightGBM artefact matches ``feature_spec``, else ``v2-tcn``, else v1 -- see
+``docs/CONTRACT.md`` section 5.  Both v2 targets share ``packet_to_features_v2``
+and the ``push``/``flush`` batching path, so the reported per-frame inference cost
+is directly comparable between them; v1 uses ``packet_to_row``.
+
+Each file is a fresh stream: ``pipe.reset()`` is called per file, so neither the
+TCN's ring buffer nor the GBDT's rolling aggregates ever span two captures.
 
     python -m backend.scripts.replay_pcap data/samples/deauth_raw_decrypted.pcapng
     python -m backend.scripts.replay_pcap data/samples/*.pcapng --limit 5000 --json
@@ -40,7 +44,9 @@ from backend.detector.features import (  # noqa: E402
     packet_to_row,
 )
 from backend.detector.pipeline import (  # noqa: E402
+    MODEL_VERSION_ALIASES,
     MODEL_VERSIONS,
+    GBDTPipeline,
     TwoStagePipeline,
     V2Pipeline,
     Verdict,
@@ -101,7 +107,7 @@ def _score_chunk(
 # ---------------------------------------------------------------------------
 def replay_file_v2(
     path: Path,
-    pipe: "V2Pipeline",
+    pipe: "V2Pipeline | GBDTPipeline",
     iface: str,
     limit: Optional[int],
     sink: Any = None,
@@ -178,7 +184,8 @@ def replay_file_v2(
     coverage = {k: (100.0 * non_null[k] / n if n else 0.0) for k in FEATURE_ORDER_V2}
     return {
         "file": str(path),
-        "model_version": "v2",
+        "model_version": getattr(pipe, "model_version", "v2-tcn"),
+        "feature_space": "v2",
         "packets": n,
         "seconds": round(elapsed, 2),
         "pps": round(n / elapsed, 1) if elapsed > 0 else None,
@@ -260,6 +267,7 @@ def replay_file(
     return {
         "file": str(path),
         "model_version": "v1",
+        "feature_space": "v1",
         "packets": n,
         "seconds": round(elapsed, 2),
         "pps": round(n / elapsed, 1) if elapsed > 0 else None,
@@ -278,7 +286,7 @@ def replay_file(
 
 # ---------------------------------------------------------------------------
 def _print_report(res: Dict[str, Any], thr1: float, thr2: float) -> None:
-    is_v2 = res.get("model_version") == "v2"
+    is_v2 = res.get("feature_space", "v1") == "v2"
     print("=" * 78)
     print(f"FILE  {res['file']}   [model {res.get('model_version', 'v1')}]")
     print(
@@ -323,11 +331,13 @@ def main(argv: Optional[List[str]] = None) -> int:
     ap.add_argument("pcap", nargs="+", help="capture file(s)")
     ap.add_argument("--model-dir", default=None, help="directory holding the model artefacts")
     ap.add_argument("--model-version", default=getattr(s, "MODEL_VERSION", "auto"),
-                    choices=list(MODEL_VERSIONS),
-                    help="auto = v2 when its ONNX artefact matches feature_spec, "
-                         "else v1 (default: %(default)s)")
+                    choices=list(MODEL_VERSIONS) + sorted(MODEL_VERSION_ALIASES),
+                    metavar="{" + ",".join(MODEL_VERSIONS) + "}",
+                    help="auto = v2-gbdt, else v2-tcn, else v1 - the first whose "
+                         "artefact matches feature_spec ('v2' means v2-tcn) "
+                         "(default: %(default)s)")
     ap.add_argument("--batch-frames", type=int, default=None,
-                    help="v2 only: frames scored per onnxruntime call (default 32)")
+                    help="v2 only: frames scored per inference call (default 32)")
     ap.add_argument("--threshold1", type=float, default=None)
     ap.add_argument("--threshold2", type=float, default=None)
     ap.add_argument("--iface", default=getattr(s, "CAPTURE_IFACE", "wlan1"),
@@ -373,7 +383,7 @@ def main(argv: Optional[List[str]] = None) -> int:
               file=sys.stderr)
         return 2
 
-    is_v2 = getattr(pipe, "model_version", "v1") == "v2"
+    is_v2 = getattr(pipe, "feature_space", "v1") == "v2"
     space = FEATURE_ORDER_V2 if is_v2 else FEATURE_ORDER
     bad = [f for f in (args.null_feature or []) if f not in space]
     if bad:
