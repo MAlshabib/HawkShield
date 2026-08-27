@@ -9,6 +9,7 @@
  */
 import { attackColors, attackLabels, type AttackType } from "@/lib/colors"
 import { ApiError, apiPostJson } from "@/lib/api"
+import type { TranslationKey, TranslationVars } from "@/lib/i18n/types"
 
 /**
  * Classes the backend can craft individually. `Normal` is never persisted, and
@@ -112,9 +113,29 @@ export function totalPersisted(summary: SimulateSummary | null): number {
   return summaryRows(summary).reduce((n, r) => n + r.persisted, 0)
 }
 
+/**
+ * A localisable message: a key from the dictionary plus whatever it interpolates.
+ *
+ * The status -> outcome mapping below is the part worth keeping, and it is
+ * unchanged. What used to travel with it was English prose, which meant the
+ * simulate panel was the one surface in the product that could not speak Arabic.
+ * Outcomes now carry keys, and the page calls `useT()` on them like everything
+ * else. `detail` stays a raw string on purpose: it is FastAPI's own words about
+ * what it rejected, and inventing an Arabic translation of a server message we
+ * did not write would be fabrication.
+ */
+export type SimulateMessage = { key: TranslationKey; vars?: TranslationVars }
+
 export type SimulateOutcome =
-  | { ok: true; summary: SimulateSummary; note: string | null }
-  | { ok: false; title: string; message: string; retryable: boolean }
+  | { ok: true; summary: SimulateSummary; note: SimulateMessage | null }
+  | {
+      ok: false
+      title: SimulateMessage
+      message: SimulateMessage
+      /** Verbatim `detail` from the server, when it sent one. Never translated. */
+      detail: string | null
+      retryable: boolean
+    }
 
 /**
  * Pull FastAPI's `{"detail": ...}` out of an error body without throwing.
@@ -154,49 +175,54 @@ export async function runSimulation(req: SimulateRequest): Promise<SimulateOutco
   try {
     const summary = await apiPostJson<SimulateSummary>("/simulate", { ...req, count })
     const served = Number(summary?.count_per_class)
-    const note =
+    const note: SimulateMessage | null =
       Number.isFinite(served) && served > 0 && served < count
-        ? `Backend capped this run at ${served} of ${count} requested.`
+        ? { key: "admin.simulate.capped", vars: { served, requested: count } }
         : null
     return { ok: true, summary: summary ?? {}, note }
   } catch (e) {
     if (e instanceof ApiError) {
-      const detail = detailOf(e.body)
+      const detail = detailOf(e.body) || null
       if (e.status === 503) {
         return {
           ok: false,
-          title: "Detector has no model loaded",
-          message: detail || "The backend is up but no detection model is serving. Simulation needs the real model.",
+          title: { key: "admin.simulate.error.noModel.title" },
+          message: { key: "admin.simulate.error.noModel.body" },
+          detail,
           retryable: true,
         }
       }
       if (e.status === 403 || e.status === 404) {
         return {
           ok: false,
-          title: "Simulation is switched off",
-          message: detail || "This backend was started with simulation disabled.",
+          title: { key: "admin.simulate.error.disabled.title" },
+          message: { key: "admin.simulate.error.disabled.body" },
+          detail,
           retryable: false,
         }
       }
       if (e.status === 400 || e.status === 422) {
         return {
           ok: false,
-          title: "Request rejected",
-          message: detail || `Adjust the selection or lower the count (max ${SIMULATE_MAX_COUNT}).`,
+          title: { key: "admin.simulate.error.rejected.title" },
+          message: { key: "admin.simulate.error.rejected.body", vars: { n: SIMULATE_MAX_COUNT } },
+          detail,
           retryable: false,
         }
       }
       return {
         ok: false,
-        title: `Simulation failed (HTTP ${e.status})`,
-        message: detail || e.statusText || "The backend returned an unexpected response.",
+        title: { key: "admin.simulate.error.http.title", vars: { status: e.status } },
+        message: { key: "admin.simulate.error.http.body" },
+        detail: detail || e.statusText || null,
         retryable: true,
       }
     }
     return {
       ok: false,
-      title: "Backend unreachable",
-      message: "Could not reach the API. It will work again as soon as the service is back.",
+      title: { key: "admin.simulate.error.unreachable.title" },
+      message: { key: "admin.simulate.error.unreachable.body" },
+      detail: null,
       retryable: true,
     }
   }

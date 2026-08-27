@@ -1,22 +1,55 @@
 "use client"
 
-import { useMemo, useState } from "react"
+/**
+ * The Leaflet canvas: access points, the estimated origin, and the links
+ * between them.
+ *
+ * Three things about this component are deliberate and easy to undo by accident.
+ *
+ * **The map is pinned `dir="ltr"`, the chrome around it is not.** Leaflet's own
+ * stylesheet is physically left/right — the zoom control is `.leaflet-top
+ * .leaflet-left`, the attribution is bottom-right, and the pane transforms are
+ * computed in screen pixels. Under `dir="rtl"` the control column detached from
+ * the corner it belongs to and the attribution collided with the zoom buttons.
+ * Mirroring is also the wrong fix conceptually: a map is a spatial artefact, and
+ * north-up/east-right does not flip with the reading direction. So the container
+ * is LTR and only the *text inside popups* is handed back its real direction.
+ *
+ * **Colours come from CSS, never from `pathOptions.color`.** Leaflet writes
+ * path colours as SVG presentation attributes, and `var(--sev-critical)` in an
+ * attribute does not resolve — it silently renders black. Every path therefore
+ * carries a `className` and is painted by the scoped rules below, which means
+ * the map re-themes with the rest of the page instead of freezing at whatever
+ * the palette was on mount.
+ *
+ * **Tiles are treated, not replaced.** OSM ships one light basemap; a white
+ * rectangle inside the dark console is unreadable next to it. The dark theme
+ * inverts the tile pane, which is a rendering treatment of the same tiles — no
+ * geometry, label or coordinate changes.
+ */
+import * as React from "react"
 import {
-  MapContainer,
-  TileLayer,
-  Marker,
-  Popup,
-  Tooltip,
-  CircleMarker,
-  Polyline,
   Circle,
+  CircleMarker,
+  MapContainer,
+  Marker,
+  Polyline,
+  Popup,
+  TileLayer,
+  Tooltip,
 } from "react-leaflet"
 import L from "leaflet"
 import "leaflet/dist/leaflet.css"
 
-// Leaflet's default icon URLs are resolved relative to the CSS bundle, which
-// breaks under Next.js. Point them at the copies in `public/leaflet/` so the map
-// keeps working with no internet access (offline Pi demo).
+import { Quantity } from "@/components/quantity"
+import { useFormatters } from "@/lib/format"
+import { useLocale, useT } from "@/lib/i18n"
+
+/**
+ * Leaflet resolves its default icon URLs relative to the CSS bundle, which
+ * breaks under Next. These point at `public/leaflet/`, vendored so the Pi demo
+ * works with no internet at all.
+ */
 const DefaultIcon = L.icon({
   iconUrl: "/leaflet/marker-icon.png",
   iconRetinaUrl: "/leaflet/marker-icon-2x.png",
@@ -26,195 +59,242 @@ const DefaultIcon = L.icon({
   popupAnchor: [1, -34],
   shadowSize: [41, 41],
 })
-// Leaflet exposes the prototype default icon at runtime.
 L.Marker.prototype.options.icon = DefaultIcon
 
-type LatLng = { lat: number; lng: number }
+export type LatLng = { lat: number; lng: number }
+export type AP = { bssid: string; name?: string | null; lat: number; lng: number }
+export type RSSIPoint = { bssid: string; avg_rssi: number; n: number }
 
-type AP = {
-  bssid: string
-  name?: string
-  lat: number | string
-  lng: number | string
+/** Riyadh, used only when there is nothing at all to centre on. */
+const FALLBACK_CENTRE: LatLng = { lat: 24.7136, lng: 46.6753 }
+
+/**
+ * Scoped Leaflet overrides. A `<style>` element rather than an edit to
+ * `app/globals.css`: these rules exist only where a map is mounted, and the
+ * design system's stylesheet should not carry a third-party library's reset.
+ */
+const MAP_CSS = `
+.hs-map .leaflet-container {
+  background: var(--surface-sunken);
+  font-family: var(--font-body);
+  font-size: 0.75rem;
 }
+/* The one raster treatment: same tiles, inverted so they sit on the dark
+   substrate instead of glaring off it. */
+.dark .hs-map .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.88) saturate(0.7);
+}
+.hs-map .leaflet-bar,
+.hs-map .leaflet-bar a {
+  background: var(--surface);
+  color: var(--ink);
+  border-color: var(--hairline-strong);
+  border-radius: 2px;
+}
+.hs-map .leaflet-bar a:hover { background: var(--surface-raised); color: var(--ink); }
+.hs-map .leaflet-control-attribution {
+  background: color-mix(in oklab, var(--surface) 88%, transparent);
+  color: var(--ink-faint);
+  border-start-start-radius: 2px;
+}
+.hs-map .leaflet-control-attribution a { color: var(--hs-azure); }
+.hs-map .leaflet-popup-content-wrapper,
+.hs-map .leaflet-popup-tip {
+  background: var(--surface-raised);
+  color: var(--ink);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 2px;
+  box-shadow: none;
+}
+.hs-map .leaflet-popup-content { margin: 0.5rem 0.625rem; }
+.hs-map .leaflet-popup-close-button { color: var(--ink-dim); }
+.hs-map .leaflet-tooltip {
+  background: var(--surface);
+  color: var(--ink);
+  border: 1px solid var(--hairline-strong);
+  border-radius: 2px;
+  box-shadow: none;
+  font-family: var(--font-mono);
+  font-size: 0.6875rem;
+  padding: 1px 5px;
+}
+.hs-map .leaflet-tooltip-top::before { border-top-color: var(--hairline-strong); }
 
-type RSSIPoint = {
-  bssid: string
-  avg_rssi: number
-  n: number
+/* Paths are painted here because Leaflet writes colours as SVG presentation
+   attributes, where a custom property does not resolve. */
+.hs-map .hs-path-estimate { stroke: var(--sev-critical); fill: var(--sev-critical); }
+.hs-map .hs-path-uncertainty { stroke: var(--sev-critical); fill: var(--sev-critical); }
+.hs-map .hs-path-link { stroke: var(--hs-azure); }
+`
+
+/** One label/value line inside a popup. */
+function PopupLine({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="flex items-baseline justify-between gap-3">
+      <span className="hs-label">{label}</span>
+      <span className="text-ink text-xs">{children}</span>
+    </div>
+  )
 }
 
 export default function LeafletMap({
-  center,
+  centre,
   aps = [],
   points = [],
-  height = 480,
+  height = 460,
   zoom = 17,
-  confidence = 0, // 0..1
+  uncertaintyMetres = 0,
 }: {
-  center?: Partial<LatLng> | null
+  /** The estimated origin, or `null` when the sensor could not compute one. */
+  centre?: LatLng | null
   aps?: AP[]
   points?: RSSIPoint[]
   height?: number
   zoom?: number
-  confidence?: number
+  /** Radius of the uncertainty ring in metres. `0` draws no ring. */
+  uncertaintyMetres?: number
 }) {
-  // OSM basemap tiles need internet. Track failures so we can degrade
-  // gracefully instead of showing a silently blank map.
-  // Once a tile has loaded we never flip back to the degraded state.
-  const [tileState, setTileState] = useState<"pending" | "ok" | "failed">("pending")
-  const tilesFailed = tileState === "failed"
+  const t = useT()
+  const f = useFormatters()
+  const { dir } = useLocale()
 
-  // Coerce AP coordinates to numbers and drop invalid entries.
-  const apsNorm = useMemo(() => {
-    return (aps || [])
-      .map((a) => ({
-        ...a,
-        lat: Number(a.lat),
-        lng: Number(a.lng),
-      }))
-      .filter((a) => Number.isFinite(a.lat) && Number.isFinite(a.lng))
-  }, [aps])
+  // Once a tile has landed we never flip back: a single failed tile at the edge
+  // of a pan is not the same as having no basemap.
+  const [tiles, setTiles] = React.useState<"pending" | "ok" | "failed">("pending")
 
-  // BSSID -> RSSI reading
-  const rssiByBssid = useMemo(() => {
+  const rssiByBssid = React.useMemo(() => {
     const m = new Map<string, RSSIPoint>()
-    for (const p of points || []) {
-      if (p?.bssid) m.set(String(p.bssid).toUpperCase(), p)
-    }
+    for (const p of points) if (p?.bssid) m.set(String(p.bssid).toUpperCase(), p)
     return m
   }, [points])
 
-  // Safe map centre: estimate -> first AP -> Riyadh.
-  const safeCenter: LatLng = useMemo(() => {
-    const cLat = Number((center as any)?.lat)
-    const cLng = Number((center as any)?.lng)
-    if (Number.isFinite(cLat) && Number.isFinite(cLng)) {
-      return { lat: cLat, lng: cLng }
-    }
-    if (apsNorm.length > 0) {
-      return { lat: apsNorm[0].lat, lng: apsNorm[0].lng }
-    }
-    return { lat: 24.7136, lng: 46.6753 } // fallback
-  }, [center, apsNorm])
-
-  // Only draw the estimated origin when the centre is valid.
-  const showEstimated =
-    Number.isFinite(Number((center as any)?.lat)) &&
-    Number.isFinite(Number((center as any)?.lng))
-
-  // Uncertainty circle radius (metres) derived from the confidence score.
-  const radiusMeters =
-    confidence >= 0.8 ? 25 :
-    confidence >= 0.5 ? 50 :
-    confidence >  0   ? 100 :
-                        0
-
-  if (apsNorm.length === 0) {
-    return (
-      <div className="text-center text-red-400 py-10">
-        No access points to display. Check /map/ap-locations.
-      </div>
-    )
-  }
+  /** Estimate first, then the first access point, then Riyadh. */
+  const view: LatLng = centre ?? aps[0] ?? FALLBACK_CENTRE
+  const hasEstimate = centre !== null && centre !== undefined
 
   return (
-    <div className="relative rounded-2xl overflow-hidden border border-white/10" style={{ height }}>
-      {tilesFailed && (
-        <div className="pointer-events-none absolute inset-x-0 top-0 z-[1000] px-3 py-2 text-center text-xs text-amber-300 bg-amber-950/80 border-b border-amber-500/40">
-          Basemap tiles unavailable (no internet). Access points and the estimated
-          origin are still plotted to scale.
-        </div>
-      )}
-
-      <MapContainer
-        center={[safeCenter.lat, safeCenter.lng]}
-        zoom={zoom}
-        style={{ height: "100%", width: "100%", background: "#0b1220" }}
-        scrollWheelZoom
+    <>
+      <style>{MAP_CSS}</style>
+      {/* `dir="ltr"` stops here. Everything outside this box mirrors normally. */}
+      <div
+        dir="ltr"
+        className="hs-map border-hairline bg-surface-sunken relative overflow-hidden rounded-md border"
+        style={{ blockSize: height }}
+        role="img"
+        aria-label={t("map.mapLabel")}
       >
-        <TileLayer
-          // Dark alternative: https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png
-          url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
-          attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OSM</a>'
-          eventHandlers={{
-            tileload: () => setTileState("ok"),
-            tileerror: () => setTileState((s) => (s === "ok" ? s : "failed")),
-          }}
-        />
-
-        {/* APs */}
-        {apsNorm.map((ap) => {
-          const key = String(ap.bssid || "").toUpperCase()
-          const p = rssiByBssid.get(key)
-          return (
-            <Marker key={ap.bssid + ap.lat + ap.lng} position={[ap.lat, ap.lng]}>
-              {/* Permanent label so APs stay identifiable without a basemap. */}
-              <Tooltip direction="top" offset={[0, -38]} permanent>
-                {ap.name || ap.bssid}
-              </Tooltip>
-              <Popup>
-                <div className="space-y-1">
-                  <div><strong>{ap.name || "AP"}</strong></div>
-                  <div className="text-xs">BSSID: {ap.bssid}</div>
-                  {p ? (
-                    <>
-                      <div className="text-xs">avg RSSI: {p.avg_rssi.toFixed(1)} dBm</div>
-                      <div className="text-xs">samples: {p.n}</div>
-                    </>
-                  ) : (
-                    <div className="text-xs text-gray-500">No RSSI samples for this access point.</div>
-                  )}
-                </div>
-              </Popup>
-            </Marker>
-          )
-        })}
-
-        {/* Estimated source */}
-        {showEstimated && (
-          <CircleMarker
-            center={[Number((center as any).lat), Number((center as any).lng)]}
-            radius={10}
-            pathOptions={{ weight: 2 }}
+        {tiles === "failed" && (
+          <div
+            // `dir` is restored here because this is prose, not geography.
+            dir={dir}
+            className="border-hairline bg-surface pointer-events-none absolute inset-x-0 top-0 z-[1000] border-b px-3 py-1.5 text-center"
           >
-            <Popup>
-              <div className="space-y-1">
-                <div><strong>Estimated Source</strong></div>
-                <div className="text-xs">
-                  lat: {Number((center as any).lat).toFixed(6)}, lng: {Number((center as any).lng).toFixed(6)}
-                </div>
-              </div>
-            </Popup>
-          </CircleMarker>
+            <span className="hs-label text-sev-high">{t("map.tilesOffline")}</span>
+          </div>
         )}
 
-        {/* Uncertainty circle */}
-        {showEstimated && radiusMeters > 0 && (
-          <Circle
-            center={[Number((center as any).lat), Number((center as any).lng)]}
-            radius={radiusMeters}
-            pathOptions={{ weight: 1, fillOpacity: 0.15 }}
+        <MapContainer
+          center={[view.lat, view.lng]}
+          zoom={zoom}
+          scrollWheelZoom
+          style={{ height: "100%", width: "100%" }}
+        >
+          <TileLayer
+            url="https://{s}.tile.openstreetmap.org/{z}/{x}/{y}.png"
+            attribution='&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a>'
+            eventHandlers={{
+              tileload: () => setTiles("ok"),
+              tileerror: () => setTiles((s) => (s === "ok" ? s : "failed")),
+            }}
           />
-        )}
 
-        {/* Lines from the estimated source to every AP that has an RSSI reading */}
-        {showEstimated &&
-          apsNorm.map((ap) => {
-            const p = rssiByBssid.get(String(ap.bssid || "").toUpperCase())
-            if (!p) return null
+          {aps.map((ap) => {
+            const reading = rssiByBssid.get(ap.bssid.toUpperCase())
             return (
-              <Polyline
-                key={"ln-" + ap.bssid}
-                positions={[
-                  [Number((center as any).lat), Number((center as any).lng)],
-                  [ap.lat, ap.lng],
-                ]}
-                pathOptions={{ weight: 1.5, opacity: 0.7 }}
-              />
+              <Marker key={`${ap.bssid}-${ap.lat}-${ap.lng}`} position={[ap.lat, ap.lng]}>
+                {/* Permanent, so the access points stay identifiable even with
+                    no basemap under them. A name or a BSSID is Latin either
+                    way, so this label needs no direction of its own. */}
+                <Tooltip direction="top" offset={[0, -38]} permanent>
+                  {ap.name || ap.bssid}
+                </Tooltip>
+                <Popup>
+                  <div dir={dir} className="flex min-w-44 flex-col gap-1">
+                    <span className="text-ink text-sm font-medium">
+                      {ap.name ? <span className="hs-ltr">{ap.name}</span> : t("map.apLocations")}
+                    </span>
+                    <PopupLine label={t("threats.detail.bssid")}>
+                      <span className="hs-num">{ap.bssid.toUpperCase()}</span>
+                    </PopupLine>
+                    {reading ? (
+                      <>
+                        <PopupLine label={t("map.avgRssi")}>
+                          {/* The figure is isolated, the unit is not — see
+                              `components/quantity.tsx`. */}
+                          <Quantity
+                            value={f.number(Math.round(reading.avg_rssi))}
+                            unit={t("units.dbm")}
+                          />
+                        </PopupLine>
+                        <PopupLine label={t("map.samples")}>
+                          <span className="hs-num">{f.number(reading.n)}</span>
+                        </PopupLine>
+                      </>
+                    ) : (
+                      <span className="text-ink-faint text-xs">{t("map.rssiEmpty")}</span>
+                    )}
+                  </div>
+                </Popup>
+              </Marker>
             )
           })}
-      </MapContainer>
-    </div>
+
+          {hasEstimate && (
+            <>
+              <CircleMarker
+                center={[centre.lat, centre.lng]}
+                radius={9}
+                pathOptions={{ className: "hs-path-estimate", weight: 2, fillOpacity: 0.55 }}
+              >
+                <Popup>
+                  <div dir={dir} className="flex min-w-44 flex-col gap-1">
+                    <span className="text-ink text-sm font-medium">{t("map.estimatedSource")}</span>
+                    <PopupLine label={t("map.latitude")}>
+                      <span className="hs-num">{centre.lat.toFixed(6)}</span>
+                    </PopupLine>
+                    <PopupLine label={t("map.longitude")}>
+                      <span className="hs-num">{centre.lng.toFixed(6)}</span>
+                    </PopupLine>
+                  </div>
+                </Popup>
+              </CircleMarker>
+
+              {uncertaintyMetres > 0 && (
+                <Circle
+                  center={[centre.lat, centre.lng]}
+                  radius={uncertaintyMetres}
+                  pathOptions={{ className: "hs-path-uncertainty", weight: 1, fillOpacity: 0.1 }}
+                />
+              )}
+
+              {/* One link per access point that actually contributed a reading —
+                  drawing a line to an AP with no samples would imply it did. */}
+              {aps.map((ap) =>
+                rssiByBssid.has(ap.bssid.toUpperCase()) ? (
+                  <Polyline
+                    key={`link-${ap.bssid}`}
+                    positions={[
+                      [centre.lat, centre.lng],
+                      [ap.lat, ap.lng],
+                    ]}
+                    pathOptions={{ className: "hs-path-link", weight: 1.5, opacity: 0.7 }}
+                  />
+                ) : null
+              )}
+            </>
+          )}
+        </MapContainer>
+      </div>
+    </>
   )
 }

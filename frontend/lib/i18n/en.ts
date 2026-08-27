@@ -143,6 +143,8 @@ export const en = {
   "units.frequency": "Frequency",
   "units.packets": "packets",
   "units.events": "events",
+  "units.bytes": "bytes",
+  "units.mbps": "Mbps",
 
   /* ── Severity ──────────────────────────────────────────────────────── */
   "severity.label": "Severity",
@@ -227,6 +229,31 @@ export const en = {
   "threats.detail.confidence": "Model confidence",
   "threats.detail.bssid": "BSSID",
   "threats.detail.ssid": "SSID",
+  "threats.detail.description": "Everything the sensor stored for this detection.",
+  "threats.detail.anomaly": "Anomaly score",
+  "threats.detail.origin": "Origin",
+  "threats.detail.live": "Live capture",
+  "threats.detail.interface": "Interface",
+  "threats.detail.frameLength": "Frame length",
+  "threats.detail.dataRate": "Data rate",
+  "threats.detail.frameType": "Frame type / subtype",
+  "threats.detail.retry": "Retry flag",
+  "threats.detail.frequency": "Frequency",
+  "threats.detail.channel": "Channel",
+  "threats.detail.rssi": "RSSI",
+  "threats.detail.severity": "Severity",
+  "threats.detail.class": "Class",
+
+  "threats.filter.timeRange": "Time range",
+  "threats.filter.classesAll": "All classes",
+  "threats.filter.severitiesAll": "All severities",
+  "threats.filter.selected": "{n} selected",
+  "threats.filter.sourceMac": "Source MAC",
+  "threats.filter.sourcePlaceholder": "Filter by source MAC",
+  "threats.error.load": "Could not read detections from the sensor.",
+  "threats.window": "Filters run over the most recent {n} detections the sensor returned.",
+  "threats.stored": "{n} stored in total.",
+  "threats.open": "Open detection {id}",
 
   /* ── Report ────────────────────────────────────────────────────────── */
   "report.open": "Generate report",
@@ -245,6 +272,11 @@ export const en = {
   "report.downloadFailed": "Export failed",
   "report.loadFailed": "Could not load the report summary",
   "report.email": "Send by email",
+  "report.description": "The sensor compiles this from everything it stored in the selected period.",
+  "report.range": "Reporting period",
+  "report.byClass": "By class",
+  "report.empty": "The sensor stored no detections in this period.",
+  "report.notReported": "Not reported",
 
   /* ── Map ───────────────────────────────────────────────────────────── */
   "map.title": "Map",
@@ -257,6 +289,38 @@ export const en = {
   "map.accuracy": "Estimated accuracy",
   "map.legend": "Legend",
   "map.recenter": "Recentre",
+  "map.source": "Source MAC",
+  "map.sourcePick": "Choose a source the sensor has seen",
+  "map.sourceEmpty": "The sensor has reported no source MAC addresses yet.",
+  "map.window": "Window",
+  "map.controls": "Selection",
+  "map.apLocations": "Access points",
+  "map.apConfigured": "{n} configured",
+  "map.noApLocations": "No access-point locations are configured.",
+  "map.noApDetail":
+    "The sensor reads these from a configuration file. Until it lists at least one access point with coordinates, there are no anchors to trilaterate against and nothing to place on a map.",
+  "map.readout": "Estimate",
+  "map.method": "Method",
+  "map.apsUsed": "Access points used",
+  "map.coordinates": "Coordinates",
+  "map.latitude": "Latitude",
+  "map.longitude": "Longitude",
+  "map.noEstimate": "No position could be estimated.",
+  "map.noEstimateDetail":
+    "None of the configured access points appear as a BSSID in this source's frames within the window, so there is nothing to trilaterate from.",
+  "map.rejected": "The sensor rejected the request.",
+  "map.samples": "Samples",
+  "map.avgRssi": "Average RSSI",
+  "map.rssiTitle": "Signal per access point",
+  "map.rssiEmpty": "No RSSI readings for this source in this window.",
+  "map.tilesOffline":
+    "Basemap tiles are unavailable. Access points and any estimate are still plotted to scale.",
+  "map.mapLabel": "Estimated positions",
+  "map.error.load": "Could not read this from the sensor.",
+  "map.estimatedSource": "Estimated source",
+  "map.uncertainty": "Uncertainty radius",
+  "map.metres": "m",
+  "map.spatial": "The map itself is drawn left-to-right in both languages — it is a spatial artefact, not text.",
 
   /* ── Saqr console ──────────────────────────────────────────────────── */
   "saqr.title": "Saqr",
@@ -267,6 +331,13 @@ export const en = {
   "saqr.stop": "Stop",
   "saqr.clear": "Clear conversation",
   "saqr.newSession": "New conversation",
+  "saqr.console": "Run trace",
+  "saqr.retry": "Ask again",
+  "saqr.enterHint": "Enter sends · Shift+Enter for a new line",
+  "saqr.jumpToLatest": "Jump to latest",
+  "saqr.moved": "The assistant now lives at Saqr. Redirecting…",
+  "saqr.status.tools": "{n} tools available",
+  "saqr.status.offline": "Tool catalogue unavailable",
   "saqr.you": "You",
   "saqr.assistant": "Saqr",
   "saqr.thinking": "Thinking…",
@@ -276,6 +347,20 @@ export const en = {
   "saqr.suggested.q2": "Which source MAC appears most often?",
   "saqr.suggested.q3": "Show me every Evil_Twin detection this week.",
   "saqr.suggested.q4": "Which channel carries the most attack traffic?",
+  "saqr.suggested.q5": "What is a KRACK attack and how do I defend against it?",
+  /* `{mac}` is filled from the busiest source the sensor has actually stored,
+     so the chip never names an address that is not in the database. */
+  "saqr.suggested.q6": "What has {mac} been doing, and where is it?",
+  "saqr.suggested.otherLang": "Or ask in the other language",
+
+  /* Empty state. */
+  "saqr.empty.who":
+    "Saqr is HawkShield's analyst. It answers by querying the detection database directly — reading the same rows the dashboard reads — and shows every step it took.",
+  "saqr.empty.how":
+    "Ask in English or Arabic. Each answer is preceded by the tools Saqr called, their arguments, the SQL that ran, and the rows that came back.",
+  "saqr.empty.reach": "What Saqr can reach",
+  "saqr.empty.reachFailed": "The sensor did not report a tool catalogue.",
+  "saqr.empty.reachLoading": "Reading the tool catalogue…",
 
   /* Tool trace. Keys mirror the tool names the agent reports verbatim. */
   "saqr.trace.title": "Trace",
@@ -286,6 +371,20 @@ export const en = {
   "saqr.trace.result": "Result",
   "saqr.trace.duration": "Took {ms} ms",
   "saqr.trace.rows": "{n} rows",
+  /* Aggregations leave `row_count` null and report `group_count` instead. */
+  "saqr.trace.groups": "{n} groups",
+  "saqr.trace.started": "Run started",
+  "saqr.trace.toolsAvailable": "{n} tools offered",
+  "saqr.trace.running": "Running…",
+  "saqr.trace.failed": "Tool failed",
+  "saqr.trace.mutating": "Writes data",
+  "saqr.trace.cached": "Cached",
+  "saqr.trace.sql": "SQL executed",
+  "saqr.trace.previewOf": "Preview of {n} rows",
+  "saqr.trace.truncated": "the tool returned more than it reported here",
+  "saqr.trace.omitted": "The result was too large to send with the trace; it is in the answer.",
+  "saqr.trace.noData": "The tool returned no data to preview.",
+  "saqr.trace.gap": "Part of this trace was lost in transit and is not shown.",
   "saqr.tool.query_threats": "Querying detections",
   "saqr.tool.aggregate_threats": "Aggregating detections",
   "saqr.tool.threat_overview": "Reading the current picture",
@@ -295,6 +394,27 @@ export const en = {
   "saqr.tool.run_simulation": "Replaying held-out attack traffic",
   "saqr.tool.run_sql": "Running a read-only query",
   "saqr.tool.unknown": "Running a tool",
+
+  /* Answer pane. */
+  "saqr.answer.title": "Answer",
+  "saqr.answer.copy": "Copy",
+  "saqr.answer.copied": "Copied",
+  "saqr.answer.usedTools": "Answered using",
+  "saqr.answer.none": "The run ended without an answer.",
+
+  /* Run footer. */
+  "saqr.footer.elapsed": "{s}s",
+  "saqr.footer.toolCalls": "{n} tool calls",
+  "saqr.footer.events": "{n} events",
+
+  /* `stop_reason` from the `done` event. */
+  "saqr.stop.answered": "Answered",
+  "saqr.stop.step_limit": "Stopped at the step limit",
+  "saqr.stop.call_limit": "Stopped at the tool-call limit",
+  "saqr.stop.timeout": "Stopped on the run timeout",
+  "saqr.stop.error": "Stopped by an error",
+  "saqr.stop.cancelled": "Stopped by you",
+  "saqr.stop.unknown": "Run ended",
 
   /* Agent phases. */
   "saqr.phase.calling_model": "Consulting the model…",
@@ -310,6 +430,16 @@ export const en = {
   "saqr.error.step_limit": "Saqr reached its step limit before finishing. Ask something narrower.",
   "saqr.error.timeout": "Saqr took too long to answer and was stopped.",
   "saqr.error.internal": "An internal error occurred. Nothing was changed.",
+
+  /* Transport failures. These are HTTP, not agent error codes: the server
+     decides every refusal before the stream opens, so they arrive as JSON. */
+  "saqr.error.rate_limited": "Too many questions at once. Wait a moment and ask again.",
+  "saqr.error.bad_request": "The sensor rejected the question. Try rephrasing it.",
+  "saqr.error.unavailable": "The sensor refused the request.",
+  "saqr.error.network": "Could not reach the sensor. Check that it is running.",
+  "saqr.error.disconnected":
+    "The connection dropped mid-run. What is shown above is real but incomplete.",
+  "saqr.error.retryAfter": "Retry in {s}s.",
 
   /* ── Admin (URL-only, deliberately absent from the nav) ────────────── */
   "admin.title": "Control",
@@ -345,6 +475,35 @@ export const en = {
   "admin.simulate.column.class": "Class",
   "admin.simulate.column.detected": "Detected",
   "admin.simulate.column.stored": "Stored",
+  "admin.simulate.column.topLabel": "Model called it",
+  "admin.simulate.subtitle": "Crafted traffic through the live detection model",
+  "admin.simulate.backendPicks": "the sensor picks",
+  "admin.simulate.allNote":
+    "“All classes” lets the sensor decide which classes it can actually produce — the summary below is the source of truth.",
+  "admin.simulate.max": "max {n}",
+  /* Label-colon form on purpose. "1 classes" is wrong in English and Arabic
+     has six plural forms, so these are phrased so no word has to agree with a
+     number — the same dodge `time.ago.*` uses. */
+  "admin.simulate.selection": "Classes: {classes} · Frames: {count} · {intensity}",
+  "admin.simulate.storedDetail": "Detections stored: {n}",
+  "admin.simulate.capped": "The sensor capped this run at {served} of {requested} requested.",
+  "admin.simulate.stillWorks": "Simulation still works while the API is reachable.",
+  "admin.simulate.error.noModel.title": "No model in service",
+  "admin.simulate.error.noModel.body":
+    "The sensor is up but no detection model is serving. Simulation needs the real model.",
+  "admin.simulate.error.disabled.title": "Simulation is switched off",
+  "admin.simulate.error.disabled.body": "This sensor was started with simulation disabled.",
+  "admin.simulate.error.rejected.title": "Request rejected",
+  "admin.simulate.error.rejected.body": "Adjust the selection or lower the count (max {n}).",
+  "admin.simulate.error.http.title": "Simulation failed (HTTP {status})",
+  "admin.simulate.error.http.body": "The sensor returned an unexpected response.",
+  "admin.simulate.error.unreachable.title": "Sensor unreachable",
+  "admin.simulate.error.unreachable.body":
+    "Could not reach the API. This will work again as soon as the service is back.",
+  "admin.urlOnly": "Reachable by URL only — deliberately absent from the navigation.",
+  "admin.specVersion": "Feature spec",
+  "admin.latestPacket": "Last packet",
+  "admin.connection": "Connection",
 
   /* ── Weekday short names (heatmap row headers) ─────────────────────── */
   "day.sun": "Sun",

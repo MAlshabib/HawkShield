@@ -1,38 +1,36 @@
-import { Card, CardContent } from "@/components/ui/card";
-import { Bot, Brain } from "lucide-react";
-import RagChat from "@/components/RagChat";
+"use client"
 
-export default function RAGSystemPage() {
+/**
+ * `/rag` is gone; Saqr replaced it. This is the forwarding stub.
+ *
+ * A client-side redirect rather than a `redirects` entry in `next.config.ts`:
+ * the build is `output: "export"` and is served by FastAPI's `StaticFiles`, so
+ * there is no Next server left to honour a config redirect at runtime. The
+ * anchor is not decoration — it is what a reader with JavaScript disabled, or
+ * an indexer, actually follows.
+ */
+import * as React from "react"
+import Link from "next/link"
+import { useRouter } from "next/navigation"
+
+import { useT } from "@/lib/i18n"
+
+export default function RagRedirectPage() {
+  const router = useRouter()
+  const t = useT()
+
+  React.useEffect(() => {
+    // `replace`, not `push`: Back should return to wherever the stale link was
+    // followed from, not bounce through this page again.
+    router.replace("/saqr")
+  }, [router])
+
   return (
-    <div className="min-h-screen p-6">
-      <div className="max-w-3xl mx-auto space-y-6">
-        {/* Header */}
-        <div className="text-center space-y-4">
-          <div className="flex justify-center">
-            <div className="relative">
-              <div className="w-16 h-16 rounded-full bg-gradient-to-br from-cyan-500/20 to-blue-500/20 flex items-center justify-center cyber-glow-blue">
-                <Bot className="w-8 h-8 text-cyan-400" />
-              </div>
-              <div className="absolute -top-1 -right-1 w-5 h-5 bg-gradient-to-br from-cyan-500 to-blue-500 rounded-full flex items-center justify-center">
-                <Brain className="w-2.5 h-2.5 text-white" />
-              </div>
-            </div>
-          </div>
-          <div>
-            <h1 className="text-3xl font-bold text-white mb-2">RAG Assistant</h1>
-            <p className="text-gray-300">
-              Intelligent security assistant powered by Retrieval-Augmented Generation
-            </p>
-          </div>
-        </div>
-
-        {/* Chat Interface */}
-        <Card className="glassmorphism border-cyan-500/20 cyber-glow">
-          <CardContent className="p-6">
-            <RagChat />
-          </CardContent>
-        </Card>
-      </div>
+    <div className="mx-auto flex max-w-5xl flex-col gap-2 px-4 py-6 lg:px-8">
+      <p className="text-ink-dim text-sm">{t("saqr.moved")}</p>
+      <Link href="/saqr" className="text-hs-azure text-sm underline underline-offset-4">
+        {t("saqr.title")}
+      </Link>
     </div>
-  );
+  )
 }
