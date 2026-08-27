@@ -7,7 +7,6 @@ import { apiFetchSafe } from "@/lib/api"
 import { useHealth } from "@/hooks/use-health"
 import { useEventSource } from "@/hooks/use-event-source"
 import { ConnectionBanner, ConnectionStatus } from "@/components/connection-status"
-import { SimulatePanel } from "@/components/simulate-panel"
 import { classColor, classLabel } from "@/lib/simulate"
 
 // Declared locally to avoid a cross-module type import.
@@ -279,15 +278,6 @@ export default function DashboardPage() {
       </div>
 
       <ConnectionBanner state={connState} lastOkAt={lastOkAt} />
-
-      {/* Operator control: works off the API alone, so it stays usable even when
-          the capture source or the database is not reporting. */}
-      <SimulatePanel
-        onSimulated={() => {
-          refreshData()
-          refreshHealth()
-        }}
-      />
 
       {firstLoad ? (
         <div className="text-center text-gray-400">Loading dashboard…</div>

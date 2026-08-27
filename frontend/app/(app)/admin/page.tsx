@@ -1,9 +1,9 @@
 "use client"
 
 /**
- * Operator console. The dashboard carries the same simulate panel inline, but
- * during a live demo it helps to have one page that is nothing but the lever
- * and the backend's own account of itself.
+ * Hidden operator console at /admin. Deliberately unlinked from the navbar and
+ * every page — reachable only by typing the URL. Hosts the simulate lever and
+ * the backend's own account of itself, kept off the public dashboard.
  */
 import { useState } from "react"
 import Link from "next/link"
@@ -28,7 +28,7 @@ function Row({ label, value, tone }: { label: string; value: string; tone?: "ok"
   )
 }
 
-export default function ControlPage() {
+export default function AdminPage() {
   const { state, health, lastOkAt, refresh } = useHealth()
   const [runs, setRuns] = useState(0)
 
