@@ -21,6 +21,7 @@ import * as React from "react"
 import { Hairline } from "@/components/hs/hairline"
 import { StatusPill } from "@/components/hs/status-pill"
 import { Quantity } from "@/components/quantity"
+import { Moment, Readout, ReadoutRow, Unreported } from "@/components/console/frame"
 import {
   Sheet,
   SheetContent,
@@ -29,24 +30,9 @@ import {
   SheetTitle,
 } from "@/components/ui/sheet"
 import { attackColorVar, attackLabels } from "@/lib/colors"
-import { Mac, Timestamp, useFormatters } from "@/lib/format"
+import { Mac, useFormatters } from "@/lib/format"
 import { useLocale, useT } from "@/lib/i18n"
 import type { Detection } from "@/components/threats/detection"
-
-/** "Not reported" in words. Never a dash that could be read as a zero. */
-function Unreported() {
-  const t = useT()
-  return <span className="text-ink-faint text-xs">{t("landing.notReported")}</span>
-}
-
-function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div className="border-hairline flex items-baseline justify-between gap-4 border-b py-1.5 last:border-0">
-      <span className="hs-label shrink-0">{label}</span>
-      <span className="text-ink min-w-0 text-end text-sm break-words">{children}</span>
-    </div>
-  )
-}
 
 export function DetectionDrawer({
   detection,
@@ -97,53 +83,53 @@ export function DetectionDrawer({
             <div className="flex flex-col gap-5 p-4">
               <section className="flex flex-col gap-2">
                 <Hairline label={t("threats.detail.overview")} />
-                <div className="flex flex-col">
-                  <Field label={t("threats.detail.eventId")}>
+                <Readout>
+                  <ReadoutRow label={t("threats.detail.eventId")}>
                     <span className="hs-num">{d.id || <Unreported />}</span>
-                  </Field>
-                  <Field label={t("threats.detail.timestamp")}>
-                    {d.ms === null ? <Unreported /> : <Timestamp value={d.ms} />}
-                  </Field>
-                  <Field label={t("threats.detail.class")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.timestamp")}>
+                    {d.ms === null ? <Unreported /> : <Moment value={d.ms} className="text-sm" />}
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.class")}>
                     {/* The raw label, not our narrowed key: the drawer is where
                         an operator checks what the model actually said. */}
                     {d.rawLabel ? <span className="hs-ltr font-mono">{d.rawLabel}</span> : <Unreported />}
-                  </Field>
-                  <Field label={t("threats.detail.confidence")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.confidence")}>
                     {d.confidence === null ? <Unreported /> : <span className="hs-num">{f.percent(d.confidence, 1)}</span>}
-                  </Field>
-                  <Field label={t("threats.detail.anomaly")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.anomaly")}>
                     {d.anomaly === null ? <Unreported /> : <span className="hs-num">{f.percent(d.anomaly, 1)}</span>}
-                  </Field>
-                  <Field label={t("threats.detail.origin")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.origin")}>
                     {d.sim ? (
                       <StatusPill tone="neutral">{t("common.simulated")}</StatusPill>
                     ) : (
-                      <span className="text-ink-dim text-sm">{t("threats.detail.live")}</span>
+                      <span className="text-ink-1 text-sm">{t("threats.detail.live")}</span>
                     )}
-                  </Field>
-                </div>
+                  </ReadoutRow>
+                </Readout>
               </section>
 
               <section className="flex flex-col gap-2">
                 <Hairline label={t("threats.detail.network")} />
-                <div className="flex flex-col">
-                  <Field label={t("threats.column.sourceMac")}>
+                <Readout>
+                  <ReadoutRow label={t("threats.column.sourceMac")}>
                     {d.srcMac ? <Mac value={d.srcMac} className="text-sm" /> : <Unreported />}
-                  </Field>
-                  <Field label={t("threats.column.destMac")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.column.destMac")}>
                     {d.dstMac ? <Mac value={d.dstMac} className="text-sm" /> : <Unreported />}
-                  </Field>
-                  <Field label={t("threats.detail.bssid")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.bssid")}>
                     {d.bssid ? <Mac value={d.bssid} className="text-sm" /> : <Unreported />}
-                  </Field>
-                  <Field label={t("threats.detail.ssid")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.ssid")}>
                     {d.ssid ? <span className="hs-ltr font-mono text-sm">{d.ssid}</span> : <Unreported />}
-                  </Field>
-                  <Field label={t("threats.detail.interface")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.interface")}>
                     {d.iface ? <span className="hs-ltr font-mono text-sm">{d.iface}</span> : <Unreported />}
-                  </Field>
-                  <Field label={t("threats.detail.frameType")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.frameType")}>
                     {d.wlanType === null && d.wlanSubtype === null ? (
                       <Unreported />
                     ) : (
@@ -151,51 +137,51 @@ export function DetectionDrawer({
                         {f.number(d.wlanType)} / {f.number(d.wlanSubtype)}
                       </span>
                     )}
-                  </Field>
-                  <Field label={t("threats.detail.frameLength")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.frameLength")}>
                     {d.frameLen === null ? (
                       <Unreported />
                     ) : (
                       <Quantity value={f.number(d.frameLen)} unit={t("units.bytes")} />
                     )}
-                  </Field>
-                  <Field label={t("threats.detail.retry")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.retry")}>
                     {d.retry === null ? <Unreported /> : d.retry ? t("common.yes") : t("common.no")}
-                  </Field>
-                </div>
+                  </ReadoutRow>
+                </Readout>
               </section>
 
               <section className="flex flex-col gap-2">
                 <Hairline label={t("threats.detail.signal")} />
-                <div className="flex flex-col">
-                  <Field label={t("threats.detail.channel")}>
+                <Readout>
+                  <ReadoutRow label={t("threats.detail.channel")}>
                     {d.channel === null ? <Unreported /> : <span className="hs-num">{f.number(d.channel)}</span>}
-                  </Field>
-                  <Field label={t("threats.detail.frequency")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.frequency")}>
                     {d.freq === null ? (
                       <Unreported />
                     ) : (
                       <Quantity value={f.number(d.freq)} unit={t("units.mhz")} />
                     )}
-                  </Field>
-                  <Field label={t("threats.detail.rssi")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.rssi")}>
                     {d.rssi === null ? (
                       <Unreported />
                     ) : (
                       <Quantity value={f.number(d.rssi)} unit={t("units.dbm")} />
                     )}
-                  </Field>
-                  <Field label={t("threats.detail.dataRate")}>
+                  </ReadoutRow>
+                  <ReadoutRow label={t("threats.detail.dataRate")}>
                     {d.dataRate === null ? (
                       <Unreported />
                     ) : (
                       <Quantity value={f.number(d.dataRate)} unit={t("units.mbps")} />
                     )}
-                  </Field>
-                </div>
+                  </ReadoutRow>
+                </Readout>
               </section>
 
-              <p className="text-ink-faint text-xs">{t("time.timezone")}</p>
+              <p className="hs-label">{t("time.timezone")}</p>
             </div>
           </>
         )}

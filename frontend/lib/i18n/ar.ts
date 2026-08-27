@@ -252,6 +252,9 @@ export const ar: Dictionary = {
   "threats.error.load": "تعذّرت قراءة الاكتشافات من المستشعر.",
   "threats.window": "تُطبَّق عوامل التصفية على أحدث {n} اكتشافًا أعادها المستشعر.",
   "threats.stored": "{n} مخزَّنة إجمالًا.",
+  "threats.head.lead": "كل اكتشاف ",
+  "threats.head.accent": "بالترتيب.",
+  "threats.tableScroll": "على الشاشات الضيّقة يُخفي الجدول أعرض أعمدته ويُمرَّر ما تبقّى أفقيًّا. افتح أي صف لعرض كل ما خزّنه المستشعر عنه.",
   "threats.open": "فتح الاكتشاف {id}",
 
   /* ── Report ────────────────────────────────────────────────────────── */
@@ -320,10 +323,18 @@ export const ar: Dictionary = {
   "map.uncertainty": "نصف قطر عدم اليقين",
   "map.metres": "م",
   "map.spatial": "تُرسم الخريطة نفسها من اليسار إلى اليمين في كلتا اللغتين، فهي أثر مكاني لا نص.",
+  "map.head.lead": "إلى أين تشير ",
+  "map.head.accent": "الإشارة.",
+  "map.panel": "الموقع",
+  "map.sensorNote": "ملاحظة المستشعر",
+  "map.anchorsUnmatched": "لا يظهر أيّ من نقاط الوصول المهيّأة ضمن معرّفات BSSID التي سُمع عليها هذا المصدر، فلا توجد مرتكزات للتثليث ولا يُرسم أي موقع.",
 
   /* ── Saqr console ──────────────────────────────────────────────────── */
   "saqr.title": "صقر",
   "saqr.subtitle": "اسأل عن الاكتشافات والتصنيفات والحزم التي تقف خلفها.",
+  /* عنوان الصفحة مقسوم ليُضبط الجزء المميّز بلون ووزن مختلفين، لا بميل. */
+  "saqr.head.lead": "اسأل المستشعر",
+  "saqr.head.accent": "بكلماتك أنت",
   "saqr.greeting": "أنا صقر. اسألني عن الاكتشافات أو تصنيفات الهجمات أو الحزم التي تقف خلفها.",
   "saqr.placeholder": "اسأل عن اكتشاف أو تصنيف أو عنوان MAC…",
   "saqr.send": "إرسال",
@@ -358,6 +369,19 @@ export const ar: Dictionary = {
   "saqr.empty.reach": "ما الذي يصل إليه صقر",
   "saqr.empty.reachFailed": "لم يُبلّغ المستشعر عن قائمة أدوات.",
   "saqr.empty.reachLoading": "جارٍ قراءة قائمة الأدوات…",
+
+  /* التنفيذ مقروءًا كوثيقة: السؤال، ثم العمل المنفَّذ، ثم الإجابة. */
+  "saqr.doc.question": "السؤال",
+  "saqr.doc.work": "كيف أجاب صقر",
+  "saqr.doc.noWork": "أجاب صقر دون استدعاء أي أداة.",
+  "saqr.doc.showWork": "إظهار الخطوات",
+  "saqr.doc.hideWork": "إخفاء الخطوات",
+  "saqr.doc.earlier": "سابقًا في هذه المحادثة",
+  "saqr.doc.model": "النموذج",
+  "saqr.doc.reported": "ما أبلغت به الأداة",
+  "saqr.doc.awaiting": "في انتظار أن يبدأ صقر…",
+  "saqr.doc.calledWith": "استُدعيت بـ",
+  "saqr.doc.defaults": "استُدعيت بقيمها الافتراضية",
 
   "saqr.trace.title": "التتبّع",
   "saqr.trace.show": "إظهار التتبّع",
@@ -487,6 +511,8 @@ export const ar: Dictionary = {
   "admin.simulate.error.unreachable.body":
     "تعذّر الوصول إلى الواجهة البرمجية. سيعود هذا للعمل فور عودة الخدمة.",
   "admin.urlOnly": "يُفتح عبر الرابط فقط — وهو غائب عن قائمة التنقل عن قصد.",
+  "admin.head.lead": "حركة عبر ",
+  "admin.head.accent": "النموذج الحقيقي.",
   "admin.specVersion": "إصدار مواصفة الخصائص",
   "admin.latestPacket": "آخر حزمة",
   "admin.connection": "الاتصال",
@@ -516,6 +542,104 @@ export const ar: Dictionary = {
   "landing.unreachable": "المستشعر لا يستجيب، فلا توجد أرقام يمكن عرضها.",
   "landing.notReported": "غير مُبلَّغ عنه",
 
+  /* الواجهة الرئيسية. العنوان مقسّم إلى ثلاثة مفاتيح ليحمل `AccentWord`
+     كلمة واحدة بالضبط، وليُعاد ترتيب الجملة العربية حول كلمتها المميّزة
+     بدل ترجمة شذرة في موضعها. */
+  "landing.hero.lead": "هجمات ",
+  "landing.hero.term": "Wi-Fi",
+  "landing.hero.mid": " ",
+  "landing.hero.accent": "يُسمّيها",
+  "landing.hero.tail": " المستشعر إطارًا بإطار.",
+  "landing.hero.lede":
+    "يستمع HawkShield إلى إطارات 802.11 عبر حسّاس Raspberry Pi، ويصنّف كل إطار ضمن ثمانية أنواع من الهجمات، ثم يبلّغ عمّا رصده. لا يحجب، ولا يزعم أبدًا أن الشبكة نظيفة.",
+  "landing.fineprint.model": "النموذج",
+  "landing.fineprint.spec": "مواصفة الخصائص",
+  "landing.fineprint.timezone": "التوقيت",
+
+  /* بطاقة البيانات في الواجهة الرئيسية. كل صف قراءة حقيقية، والملاحظتان
+     تبيّنان أيّ قيم الالتقاط قيست وأيّها أُبلغ عنها فحسب. */
+  "landing.capture.title": "ما خزّنه المستشعر",
+  "landing.capture.iface": "الواجهة",
+  "landing.capture.channel": "القناة",
+  "landing.capture.frames": "الإطارات المخزَّنة",
+  "landing.capture.classes": "التصنيفات المرصودة",
+  "landing.capture.total": "المصنَّفة",
+  "landing.capture.unit": "إطار",
+  "landing.capture.severity": "توزيع الإطارات المصنَّفة حسب الخطورة",
+  "landing.capture.noteMeasured":
+    "الواجهة والقناة مقيستان على مضيف الالتقاط. وكل رقم هنا عدد مخزَّن.",
+  "landing.capture.noteConfigured":
+    "تعذّر على هذا المضيف قياس الراديو، فالواجهة والقناة كما أبلغ عنهما المستشعر. وكل رقم هنا عدد مخزَّن لا عيّنة.",
+
+  /* شريط التغطية — التصنيفات الثمانية وما أُحصي فعليًا لكل منها. والصفر هنا
+     نتيجة لا فجوة: التصنيف بُحث عنه. */
+  "landing.coverage.eyebrow": "التغطية · ثمانية تصنيفات",
+  "landing.coverage.seen": "رُصد {seen} من {total} حتى الآن",
+  "landing.coverage.notSeen": "بُحث عنه ولم يُرصد",
+
+  /* كيف يعمل — نصّ، لا رسم تخطيطي. */
+  "landing.how.eyebrow": "كيف يعمل",
+  "landing.how.lead": "أربع خطوات، جميعها قابلة ",
+  "landing.how.accent": "للفحص",
+  "landing.how.tail": ".",
+  "landing.how.body":
+    "لا يوجد نموذج ثانٍ خلف الأول، ولا طبقة قواعد تحته. وما يلي هو المسار كاملًا، بالترتيب الذي يمرّ به الإطار.",
+  "landing.how.step1": "الالتقاط",
+  "landing.how.step1.title": "وضع المراقبة على Raspberry Pi",
+  "landing.how.step1.body":
+    "تُثبَّت بطاقة Wi-Fi في وضع المراقبة وتقرأ إطارات 802.11 من الهواء مباشرة: إطارات الإدارة والتحكم والبيانات على السواء. لا يُحقن شيء ولا يُسقط شيء.",
+  "landing.how.step2": "الخصائص",
+  "landing.how.step2.title": "46 حقلًا لكل إطار",
+  "landing.how.step2.body":
+    "يُختزل كل إطار إلى 46 حقلًا تُحدّدها مواصفة الخصائص: النوع والنوع الفرعي، والطول، ومعدّل البيانات، وقوة الإشارة، وأعلام إعادة الإرسال وأعلام DS، والمدة، والعناوين.",
+  "landing.how.step3": "التصنيف",
+  "landing.how.step3.title": "نموذج LightGBM واحد",
+  "landing.how.step3.body":
+    "يُقيّم النموذج الإطار ويعيد أحد التصنيفات الثمانية مع احتمال. لا رأي ثانٍ ولا طبقة قواعد خلفه.",
+  "landing.how.step4": "التخزين",
+  "landing.how.step4.title": "يُخزَّن ثم يُقدَّم",
+  "landing.how.step4.body":
+    "يُكتب كل إطار مصنَّف في قاعدة البيانات مع طابعه الزمني واحتمالاته، ويُقدَّم عبر واجهة HTTP نفسها التي تقرأ منها هذه الصفحة.",
+  "landing.how.note":
+    "لا تحجب أيّ خطوة أعلاه إطارًا، ولا تفصل عميلًا، ولا تغيّر الشبكة. يكتشف HawkShield ويصنّف ويبلّغ؛ وهو ليس نظام منع.",
+
+  /* أرقام مباشرة. */
+  "landing.numbers.eyebrow": "أرقام مباشرة",
+  "landing.numbers.lead": "كل رقم هنا ",
+  "landing.numbers.accent": "مقيس",
+  "landing.numbers.tail": "، وليس مُعدًّا للعرض.",
+  "landing.numbers.body":
+    "تقرأ هذه الصفحة النقاط الطرفية نفسها التي تقرأها لوحة التحكم، وتُحدَّث كل ثلاثين ثانية. وإذا لم تستجب نقطة طرفية، يُحجب الرقم بدل أن يُملأ.",
+  "landing.stat.sources": "المصادر الفريدة",
+  "landing.stat.busiest": "التصنيف الأكثر تكرارًا",
+  "landing.stat.window": "آخر {days} أيام",
+  "landing.stat.trend": "الاكتشافات يوميًا · آخر {days} أيام",
+
+  /* صقر. */
+  "landing.saqr.eyebrow": "الوكيل",
+  "landing.saqr.lead": "اسأل ",
+  "landing.saqr.accent": "صقر",
+  "landing.saqr.tail": " عمّا خزّنه المستشعر.",
+  "landing.saqr.body":
+    "يجيب صقر عن الأسئلة المتعلّقة بالاكتشافات بالعربية أو الإنجليزية، ويطبع كل استدعاء أداة يجريه لحظة إجرائه — حتى يمكن تتبّع أيّ إجابة إلى الصفوف التي جاءت منها.",
+  "landing.saqr.cta": "افتح صقر",
+  "landing.saqr.p1": "مستند إلى البيانات",
+  "landing.saqr.p1.body":
+    "يستعلم من قاعدة البيانات نفسها التي تقرأ منها هذه الصفحة. لا مصدر آخر لديه، ولا يجيب من الذاكرة.",
+  "landing.saqr.p2": "قابل للتدقيق",
+  "landing.saqr.p2.body":
+    "يُبثّ كل استدعاء أداة، مع وسائطه وعدد صفوفه، إلى الشاشة أثناء تكوين الإجابة.",
+  "landing.saqr.p3": "ثنائي اللغة",
+  "landing.saqr.p3.body":
+    "اسأل بالعربية تُجب بالعربية، واسأل بالإنجليزية تُجب بالإنجليزية. وتبقى المعرّفات التقنية لاتينية في الحالتين.",
+
+  /* تذييل البيان — آخر حجّة في الصفحة، وحدّ الفارق بين الكشف والمنع. */
+  "landing.footer.lead": "يُبلّغ عمّا رصده، ولا ",
+  "landing.footer.accent": "يزعم",
+  "landing.footer.tail": " أنه منع شيئًا.",
+  "landing.footer.linksLabel": "روابط التذييل",
+  "landing.footer.meta": "الكشف فقط · لا يحجب HawkShield حركة الشبكة ولا يُرشّحها ولا يغيّرها",
+
   /* ── وحدات لوحة التحكم ─────────────────────────────────────────────── */
   "dashboard.error.load": "تعذّرت قراءة هذه البيانات من المستشعر.",
 
@@ -543,6 +667,16 @@ export const ar: Dictionary = {
 
   "dashboard.tape.title": "الشريط المباشر",
   "dashboard.tape.subtitle": "أحدث الاكتشافات أولًا",
+  "dashboard.tape.aria": "أحدث الاكتشافات فور ورودها",
+
+  "dashboard.head.lead": "ما ",
+  "dashboard.head.accent": "رصده المستشعر.",
+  "dashboard.section.capture": "الالتقاط",
+  "dashboard.section.classification": "التصنيف",
+  "dashboard.section.rhythm": "الإيقاع",
+  "dashboard.section.sources": "المصادر والطيف",
+  "dashboard.card.split": "كيف تتوزّع اكتشافات هذه الفترة حسب الخطورة",
+  "dashboard.card.note": "كل رقم في هذه البطاقة ورد من المستشعر، وما لم يبلّغ عنه مُعلَّم بذلك.",
 
   "dashboard.ledger.title": "سجل الخطورة",
   "dashboard.ledger.total": "الاكتشافات",
@@ -562,6 +696,7 @@ export const ar: Dictionary = {
   "dashboard.heatmap.cell": "{day} {hour}:00 — {n} اكتشافًا",
   "dashboard.heatmap.legendLow": "لا شيء",
   "dashboard.heatmap.legendHigh": "الأكثر ازدحامًا",
+  "dashboard.heatmap.scrollHint": "مرّر الشبكة أفقيًّا للوصول إلى كل الساعات.",
 
   "dashboard.channels.share": "النسبة",
 }

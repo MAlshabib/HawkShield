@@ -51,9 +51,19 @@ import { cn } from "@/lib/utils"
  * the first Arabic character and Arabic prose is never captured. Requiring the
  * match to *end* on a letter, digit or closing bracket keeps the trailing space
  * before an Arabic word outside the island, where it belongs.
+ *
+ * The optional leading operator is the second half of the same bug, and it is
+ * worth spelling out because it survived the first fix. A minus is a *neutral*
+ * character, so an island that starts at the digit leaves the sign outside it —
+ * where the paragraph's RTL direction moves it to the far end of the run, and
+ * `-60 dBm` renders as `60 dBm-`. Every RSSI reading in this product is
+ * negative, so this was not an edge case, and the same happens to the `~` in
+ * `(~99.38%)` and the `<` in `<10 ms`. All of them are only allowed to open an
+ * island when a digit follows immediately, so a dash between two Arabic words
+ * is still ordinary punctuation and never starts a Latin run.
  */
 const latinIslandScanner = () =>
-  /[([{]?[A-Za-z0-9_](?:[A-Za-z0-9_ .,:;'"()[\]<>=+\-/*%&#!?@~$^|≈×·]*[A-Za-z0-9_)\]%])?/g
+  /[([{]?(?:[-−+~≈<>≤≥](?=\d))?[A-Za-z0-9_](?:[A-Za-z0-9_ .,:;'"()[\]<>=+\-/*%&#!?@~$^|≈×·]*[A-Za-z0-9_)\]%])?/g
 
 /**
  * Inside an island the direction is already settled, so this picks out only the
@@ -66,7 +76,7 @@ const latinIslandScanner = () =>
  * figure and the comma is punctuation, exactly as written.
  */
 const islandTokenScanner = () =>
-  /[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|\d{1,3}(?:,\d{3})+(?:\.\d+)?%?|\d+(?:\.\d+)?%?/g
+  /[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}|[-−+]?\d{1,3}(?:,\d{3})+(?:\.\d+)?%?|[-−+]?\d+(?:\.\d+)?%?/g
 
 const MAC_TOKEN = /^[0-9A-Fa-f]{2}(?::[0-9A-Fa-f]{2}){5}$/
 /**
@@ -210,7 +220,7 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
         ) : (
           <Code
             key={key}
-            className="bg-surface-sunken border-hairline rounded-sm border px-1 py-px text-[0.9em]"
+            className="bg-paper-2 border-rule rounded-sm border px-1 py-px text-[0.9em]"
           >
             {body}
           </Code>
@@ -218,7 +228,7 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
       )
     } else if (boldStar !== undefined || boldUnder !== undefined) {
       out.push(
-        <strong key={key} className="text-ink font-semibold">
+        <strong key={key} className="text-ink-0 font-semibold">
           {renderInline(boldStar ?? boldUnder ?? "", key)}
         </strong>
       )
@@ -277,15 +287,19 @@ export interface SaqrMarkdownProps {
 /**
  * Render Saqr's answer.
  *
- * `dir` is deliberately not set: the answer inherits the page direction, and
- * every technical run inside it is individually isolated. Forcing a direction
- * here would make an English answer read wrongly on an Arabic page, and vice
- * versa, whenever the operator's language and Saqr's disagree.
+ * Every block below carries `dir="auto"` rather than inheriting the page
+ * direction, and that is not a detail. Saqr answers in the locale it was asked
+ * in, but the two can disagree — the operator switches language mid-session, or
+ * reads back an earlier run — and an English paragraph inheriting `rtl` is
+ * re-ordered wholesale: the sentence renders end-first with every word intact,
+ * which looks like a model failure rather than a layout one. `auto` resolves
+ * each block from its own first strong character, so an Arabic answer reads
+ * right-to-left and an English one reads left-to-right on the same page.
  */
 export function SaqrMarkdown({ text, className }: SaqrMarkdownProps) {
   const blocks = React.useMemo(() => parseBlocks(text), [text])
   return (
-    <div className={cn("text-ink flex flex-col gap-3 text-sm leading-relaxed", className)}>
+    <div className={cn("text-ink-0 flex flex-col gap-3 text-base leading-relaxed", className)}>
       {blocks}
     </div>
   )
@@ -323,9 +337,9 @@ function parseBlocks(text: string): React.ReactNode[] {
         <pre
           key={key}
           dir="ltr"
-          className="bg-surface-sunken border-hairline overflow-x-auto rounded-sm border p-3"
+          className="bg-paper-2 border-rule overflow-x-auto rounded-md border p-3"
         >
-          <Code className="text-ink-dim text-xs whitespace-pre">{body.join("\n")}</Code>
+          <Code className="text-ink-2 text-xs whitespace-pre">{body.join("\n")}</Code>
         </pre>
       )
       continue
@@ -338,11 +352,12 @@ function parseBlocks(text: string): React.ReactNode[] {
       out.push(
         <p
           key={key}
+          dir="auto"
           role="heading"
           aria-level={Math.min(6, depth + 2)}
           className={cn(
-            "text-ink font-display font-medium",
-            depth <= 2 ? "text-base" : "text-sm"
+            "text-ink-0 font-display font-medium",
+            depth <= 2 ? "text-lg" : "text-base"
           )}
         >
           {renderInline(heading[2], key)}
@@ -354,7 +369,7 @@ function parseBlocks(text: string): React.ReactNode[] {
 
     /* horizontal rule --------------------------------------------------- */
     if (RULE.test(line)) {
-      out.push(<hr key={key} className="border-hairline border-t" />)
+      out.push(<hr key={key} className="border-rule border-t" />)
       i += 1
       continue
     }
@@ -371,13 +386,14 @@ function parseBlocks(text: string): React.ReactNode[] {
       out.push(
         // Prose tables are the one thing in an answer that can exceed the
         // column; it scrolls inside its own box rather than widening the page.
-        <div key={key} className="border-hairline overflow-x-auto rounded-sm border">
-          <table className="w-full border-collapse text-xs">
+        <div key={key} className="border-rule overflow-x-auto rounded-md border">
+          <table dir="auto" className="w-full border-collapse text-sm">
             <thead>
-              <tr className="border-hairline border-b">
+              <tr className="border-rule border-b">
                 {header.map((cell, c) => (
                   <th
                     key={`${key}-h${c}`}
+                    dir="auto"
                     scope="col"
                     className="hs-label px-2.5 py-1.5 text-start whitespace-nowrap"
                   >
@@ -388,9 +404,13 @@ function parseBlocks(text: string): React.ReactNode[] {
             </thead>
             <tbody>
               {body.map((row, r) => (
-                <tr key={`${key}-r${r}`} className="border-hairline border-b last:border-b-0">
+                <tr key={`${key}-r${r}`} className="border-rule border-b last:border-b-0">
                   {header.map((_, c) => (
-                    <td key={`${key}-r${r}c${c}`} className="text-ink-dim px-2.5 py-1.5 text-start">
+                    <td
+                      key={`${key}-r${r}c${c}`}
+                      dir="auto"
+                      className="text-ink-2 px-2.5 py-1.5 text-start"
+                    >
                       {renderInline(row[c] ?? "", `${key}-r${r}c${c}`)}
                     </td>
                   ))}
@@ -417,7 +437,8 @@ function parseBlocks(text: string): React.ReactNode[] {
         // directions. A `border-l` would land on the wrong side in Arabic.
         <blockquote
           key={key}
-          className="border-hairline-strong text-ink-dim border-s-2 ps-3 text-sm"
+          dir="auto"
+          className="border-rule-soft text-ink-1 border-s-2 ps-3"
         >
           {withBreaks(body, key)}
         </blockquote>
@@ -447,12 +468,12 @@ function parseBlocks(text: string): React.ReactNode[] {
             key,
             start: ordered ? start : undefined,
             className: cn(
-              "flex flex-col gap-1 ps-5 text-sm",
+              "flex flex-col gap-1.5 ps-5",
               ordered ? "list-decimal" : "list-disc"
             ),
           },
           items.map((item, index) => (
-            <li key={`${key}-li${index}`} className="marker:text-ink-faint ps-1">
+            <li key={`${key}-li${index}`} dir="auto" className="marker:text-ink-3 ps-1">
               {renderInline(item, `${key}-li${index}`)}
             </li>
           ))
@@ -479,14 +500,14 @@ function parseBlocks(text: string): React.ReactNode[] {
     }
     if (paragraph.length > 0) {
       out.push(
-        <p key={key} className="text-ink">
+        <p key={key} dir="auto" className="text-ink-0">
           {withBreaks(paragraph, key)}
         </p>
       )
     } else {
       // Defensive: a line that matched nothing and consumed nothing would spin.
       out.push(
-        <p key={key} className="text-ink">
+        <p key={key} dir="auto" className="text-ink-0">
           {renderInline(line, key)}
         </p>
       )

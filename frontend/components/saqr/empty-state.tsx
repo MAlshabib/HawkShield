@@ -1,19 +1,26 @@
 "use client"
 
 /**
- * What the console says before it has been asked anything.
+ * What the page says before it has been asked anything.
  *
  * Three jobs: say who Saqr is, say what it can actually reach, and give a way
  * in. The middle one is the reason the catalogue is fetched rather than listed
  * here — with the shipped configuration `run_sql` is gated off and the agent
  * has **seven** tools, not the eight in the source, and both gates are settings
  * an operator can change without a frontend rebuild. A hardcoded list would
- * start lying the first time one moved.
+ * start lying the first time one moved, which is exactly the kind of quiet
+ * untruth this product does not get to tell.
+ *
+ * The starter questions are offered in both languages at once. Saqr answers in
+ * the language of the interface, so the second block is how a judge sees it
+ * read Arabic without first switching the whole console — and how they see it
+ * read English from an Arabic one.
  */
 import * as React from "react"
 
-import { TechnicalText } from "@/components/saqr/markdown"
+import { Eyebrow } from "@/components/hs/eyebrow"
 import { StatusPill } from "@/components/hs/status-pill"
+import { TechnicalText } from "@/components/saqr/markdown"
 import { Code } from "@/lib/format"
 import { useLocale, useT, type Locale, type TranslationKey } from "@/lib/i18n"
 import { ar } from "@/lib/i18n/ar"
@@ -22,10 +29,10 @@ import { toolLabelKey, type SaqrToolInfo } from "@/lib/saqr"
 import { cn } from "@/lib/utils"
 
 /**
- * The starter questions, chosen to reach four different tools rather than four
- * phrasings of the same one: a broad opener (`threat_overview`), a conceptual
- * question (`explain_attack_class`), a bounded listing (`query_threats`), an
- * aggregation (`aggregate_threats`) and a time bucket.
+ * Chosen to reach five different tools rather than five phrasings of one: a
+ * broad opener (`threat_overview`), a conceptual question
+ * (`explain_attack_class`), a bounded listing (`query_threats`), an aggregation
+ * (`aggregate_threats`) and a second aggregation over a different dimension.
  */
 const SUGGESTIONS: readonly TranslationKey[] = [
   "saqr.suggested.q1",
@@ -40,21 +47,41 @@ const MAC_SUGGESTION: TranslationKey = "saqr.suggested.q6"
 
 const DICTIONARIES: Record<Locale, Record<string, string>> = { en, ar }
 
+/**
+ * A paper slip, not a pill: a starter question is a whole sentence and wraps to
+ * two lines on a 320px viewport, where a fully rounded capsule reads as a
+ * mistake rather than as a control.
+ */
 function Chip({ text, onPick }: { text: string; onPick: (text: string) => void }) {
   return (
     <button
       type="button"
       onClick={() => onPick(text)}
       className={cn(
-        "border-hairline bg-surface-sunken text-ink-dim rounded-sm border px-2.5 py-1.5 text-start text-xs",
-        "hover:border-hairline-strong hover:text-ink transition-colors",
-        "focus-visible:outline-hs-azure focus-visible:outline-2 focus-visible:outline-offset-2"
+        "border-rule-soft bg-paper-1 text-ink-1 hs-elev max-w-full min-w-0 rounded-lg border",
+        "px-3.5 py-2 text-start text-sm transition-colors",
+        "hover:bg-paper-2 hover:text-ink-0"
       )}
     >
-      {/* A starter question can name a MAC. Unisolated, its octets are
-          reordered on screen inside Arabic text while the DOM stays correct. */}
+      {/* A starter question can name a MAC. Unisolated, its octets are visually
+          reordered inside Arabic text while the DOM stays perfectly correct. */}
       <TechnicalText text={text} />
     </button>
+  )
+}
+
+function Block({
+  label,
+  children,
+  ...props
+}: { label: React.ReactNode; children: React.ReactNode } & React.ComponentPropsWithoutRef<"section">) {
+  return (
+    <section className="flex min-w-0 flex-col gap-4" {...props}>
+      <header className="border-rule border-b pb-2">
+        <Eyebrow>{label}</Eyebrow>
+      </header>
+      {children}
+    </section>
   )
 }
 
@@ -86,60 +113,51 @@ export function SaqrEmptyState({
   }, [locale, other, topMac])
 
   return (
-    <div className={cn("flex flex-col gap-5", className)}>
-      <section className="flex flex-col gap-2">
-        <p className="text-ink text-sm leading-relaxed">{t("saqr.empty.who")}</p>
-        <p className="text-ink-dim text-sm leading-relaxed">{t("saqr.empty.how")}</p>
-      </section>
+    <div className={cn("flex min-w-0 flex-col gap-10", className)}>
+      <div className="flex max-w-[64ch] flex-col gap-4">
+        <p className="text-ink-1 text-md">{t("saqr.empty.who")}</p>
+        <p className="text-ink-2 text-sm">{t("saqr.empty.how")}</p>
+      </div>
 
-      <section className="flex flex-col gap-2">
-        <h2 className="hs-label">{t("saqr.empty.reach")}</h2>
+      <Block label={t("saqr.empty.reach")}>
         {catalogueFailed ? (
-          <p className="text-ink-dim text-xs">{t("saqr.empty.reachFailed")}</p>
+          <p className="text-ink-2 text-sm">{t("saqr.empty.reachFailed")}</p>
         ) : tools.length === 0 ? (
-          <p className="text-ink-faint text-xs">{t("saqr.empty.reachLoading")}</p>
+          <p className="text-ink-3 text-sm">{t("saqr.empty.reachLoading")}</p>
         ) : (
-          <ul className="flex flex-col gap-1.5">
+          <ul className="grid min-w-0 gap-x-8 gap-y-3 sm:grid-cols-2">
             {tools.map((tool) => (
-              <li key={tool.name} className="flex flex-wrap items-baseline gap-x-2 gap-y-1 text-xs">
-                <Code className="text-hs-azure">{tool.name}</Code>
-                <span className="text-ink-dim">{t(toolLabelKey(tool.label_key))}</span>
+              <li key={tool.name} className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
+                <span className="text-ink-0 text-sm">{t(toolLabelKey(tool.label_key))}</span>
+                {/* The wire name beside the localised one: it is what appears in
+                    every step below, so the two have to be introduced together. */}
+                <Code className="text-ink-2 text-xs">{tool.name}</Code>
                 {tool.mutating && (
-                  <StatusPill tone="high" className="text-[10px]">
-                    {t("saqr.trace.mutating")}
-                  </StatusPill>
+                  <StatusPill tone="high">{t("saqr.trace.mutating")}</StatusPill>
                 )}
               </li>
             ))}
           </ul>
         )}
-      </section>
+      </Block>
 
-      <section className="flex flex-col gap-2">
-        <h2 className="hs-label">{t("saqr.suggested.title")}</h2>
-        <div className="flex flex-wrap gap-1.5">
+      <Block label={t("saqr.suggested.title")}>
+        <div className="flex flex-wrap gap-2">
           {questions.here.map((question) => (
             <Chip key={question} text={question} onPick={onPick} />
           ))}
         </div>
-      </section>
+      </Block>
 
-      <section className="flex flex-col gap-2">
-        {/* The same questions in the other language. Saqr answers in the
-            language of the interface, so this is a way to see it read Arabic
-            without changing the whole UI first — and a way to see it read
-            English from an Arabic console. */}
-        <h2 className="hs-label">{t("saqr.suggested.otherLang")}</h2>
-        <div
-          className="flex flex-wrap gap-1.5"
-          dir={other === "ar" ? "rtl" : "ltr"}
-          lang={other}
-        >
+      <Block label={t("saqr.suggested.otherLang")}>
+        {/* `dir` and `lang` on the container, not on each chip: the block is a
+            run of text in the other language and its punctuation belongs to it. */}
+        <div className="flex flex-wrap gap-2" dir={other === "ar" ? "rtl" : "ltr"} lang={other}>
           {questions.there.map((question) => (
             <Chip key={question} text={question} onPick={onPick} />
           ))}
         </div>
-      </section>
+      </Block>
     </div>
   )
 }

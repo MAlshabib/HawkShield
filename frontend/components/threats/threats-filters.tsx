@@ -85,14 +85,14 @@ function Option({
       aria-checked={checked}
       onClick={onToggle}
       className={cn(
-        "hover:bg-surface-sunken flex w-full items-center gap-2 rounded-sm px-2 py-1.5 text-start text-sm transition-colors",
-        checked && "text-ink"
+        "hover:bg-paper-2 flex w-full items-center gap-2 rounded-md px-2 py-1.5 text-start text-sm transition-colors",
+        checked && "text-ink-0"
       )}
     >
       {/* Fixed-width gutter so the labels form a column whether or not the
           check is present — a check that shifts the label reads as a jitter. */}
       <span className="grid w-4 shrink-0 place-items-center">
-        {checked && <Check className="text-hs-azure size-3.5" strokeWidth={3} aria-hidden="true" />}
+        {checked && <Check className="text-accent-cta size-3.5" strokeWidth={3} aria-hidden="true" />}
       </span>
       {children}
     </button>
@@ -114,14 +114,14 @@ function MultiSelect({
   return (
     <Popover>
       <PopoverTrigger asChild>
-        <Button variant="secondary" size="sm" className="justify-between gap-2">
+        <Button variant="outline" className="justify-between gap-2">
           <span className="hs-label">{label}</span>
-          <span className="text-ink text-xs">
+          <span className="text-ink-0 text-xs">
             {count === 0 ? allLabel : t("threats.filter.selected", { n: count })}
           </span>
         </Button>
       </PopoverTrigger>
-      <PopoverContent align="start" className="w-56 p-1">
+      <PopoverContent align="start" className="w-60 p-1.5">
         <div role="menu" className="flex flex-col">
           {children}
         </div>
@@ -217,7 +217,7 @@ export function ThreatsFilters({
         {/* `start-2` and `ps-8`, so the icon sits on the reading edge in both
             directions with no `[dir]` override. */}
         <Search
-          className="text-ink-faint pointer-events-none absolute start-2 top-1/2 size-3.5 -translate-y-1/2"
+          className="text-ink-2 pointer-events-none absolute start-3 top-1/2 size-3.5 -translate-y-1/2"
           aria-hidden="true"
         />
         <Input
@@ -227,14 +227,14 @@ export function ThreatsFilters({
           aria-label={t("threats.filter.sourceMac")}
           // `hs-num` pins the field's own content LTR: a MAC being typed inside
           // an Arabic page must not reorder under the caret.
-          className="hs-num ps-8 pe-8"
+          className="hs-num ps-9 pe-9"
         />
         {filters.search && (
           <button
             type="button"
             onClick={() => onChange({ ...filters, search: "" })}
             aria-label={t("common.clear")}
-            className="text-ink-faint hover:text-ink absolute end-2 top-1/2 -translate-y-1/2 transition-colors"
+            className="text-ink-2 hover:text-ink-0 absolute end-3 top-1/2 -translate-y-1/2 transition-colors"
           >
             <X className="size-3.5" aria-hidden="true" />
           </button>

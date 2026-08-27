@@ -1,7 +1,7 @@
 "use client"
 
 /**
- * The map, promoted off the dashboard onto a route of its own.
+ * The map, on a route of its own.
  *
  * It was a widget wedged under eight other instruments, where a 480px map got
  * about a third of the attention it needs and none of the controls it wanted.
@@ -13,7 +13,10 @@
  */
 import * as React from "react"
 
+import { AccentWord } from "@/components/hs/accent-word"
+import { SectionHead } from "@/components/hs/section-head"
 import { StatusPill } from "@/components/hs/status-pill"
+import { ControlSpacer, ControlStrip, PageFrame } from "@/components/console/frame"
 import MapTrilateration from "@/components/MapTrilateration"
 import { useHealth, type ConnectionState } from "@/hooks/use-health"
 import { useT, type TranslationKey } from "@/lib/i18n"
@@ -37,23 +40,36 @@ export default function MapPage() {
   const { state } = useHealth()
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-6 sm:gap-4 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <h1 className="text-ink font-display text-2xl leading-none font-medium sm:text-3xl">
-            {t("map.title")}
-          </h1>
-          <p className="text-ink-dim max-w-prose text-sm">{t("map.subtitle")}</p>
-        </div>
+    <PageFrame>
+      <SectionHead
+        as="h1"
+        eyebrow={t("map.title")}
+        title={
+          <>
+            {t("map.head.lead")}
+            <AccentWord>{t("map.head.accent")}</AccentWord>
+          </>
+        }
+        body={t("map.subtitle")}
+      />
 
+      <ControlStrip>
         <StatusPill tone={STATE_TONE[state]} dot>
           {t(STATE_KEY[state])}
         </StatusPill>
-      </header>
+        <ControlSpacer />
+        {/* The map is drawn LTR in both languages; this is the one place the
+            page says so out loud rather than leaving it to be noticed. Set as
+            prose, not as an eyebrow — `hs-label` is uppercase mono and this is
+            a sentence. */}
+        <span className="text-ink-2 hidden max-w-[56ch] text-end text-xs lg:inline">
+          {t("map.spatial")}
+        </span>
+      </ControlStrip>
 
       <MapTrilateration />
 
-      <p className="text-ink-faint max-w-prose text-xs">{t("map.spatial")}</p>
-    </div>
+      <p className="text-ink-2 max-w-[72ch] text-xs lg:hidden">{t("map.spatial")}</p>
+    </PageFrame>
   )
 }

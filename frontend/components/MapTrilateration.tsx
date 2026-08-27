@@ -4,23 +4,31 @@
  * RSSI trilateration: pick a source the sensor has seen, and place it against
  * the configured access points.
  *
- * Three failure modes are handled explicitly here, because each of them used to
- * render as a success.
+ * Four failure modes are handled explicitly here, because each of them has
+ * rendered as a success at least once.
  *
  * 1. **`/map/ap-locations` can be empty.** It reads a configuration file that
  *    may not exist. V1 drew the map anyway, centred on Riyadh, which looked
  *    exactly like "we searched and found nothing" rather than "nothing was ever
- *    configured". An empty list now says so in words and the map is not drawn.
+ *    configured". An empty list says so in words and the map is not drawn.
  *
  * 2. **`POST /map/estimate-origin` answers `{"detail": "..."}` with HTTP 200.**
  *    Not 400, not 422 — a 200 carrying an error object. Anything that only
  *    checks `res.ok` renders a success state over a failure, which is how V1
  *    showed "Confidence: 0%" instead of "the request was rejected". The shape
- *    is discriminated below before anything is read off it.
+ *    is discriminated on `method` before anything is read off it.
  *
  * 3. **A valid response can still carry `used: 0, center: null`.** That is the
  *    normal answer when none of the configured BSSIDs appear in the source's
- *    frames, and it is a finding, not an error. It gets its own copy.
+ *    frames, and it is a finding, not an error. It gets its own copy, and the
+ *    sensor's own `note` is printed verbatim beside it.
+ *
+ * 4. **The configured anchors may not be anchors at all.** On this deployment
+ *    `/map/ap-locations` returns placeholder BSSIDs that no captured frame ever
+ *    names, so a fix is arithmetically impossible. Rather than leaving that to
+ *    be inferred from an empty readout, the page compares the two BSSID sets
+ *    itself and states the mismatch. **No position is ever drawn that the sensor
+ *    did not compute.**
  *
  * The V1 "Confidence: 62%" readout is gone. It was `min(1, used / 5)` — the
  * number of contributing access points, rescaled and relabelled as a
@@ -31,9 +39,10 @@ import * as React from "react"
 import dynamic from "next/dynamic"
 
 import { DataTable, type DataTableColumn } from "@/components/hs/data-table"
-import { Module, ModuleGrid } from "@/components/hs/module"
-import { Quantity } from "@/components/quantity"
+import { Panel, PanelGrid } from "@/components/hs/panel"
 import { StatusPill } from "@/components/hs/status-pill"
+import { LoadError, Readout, ReadoutRow, Unreported } from "@/components/console/frame"
+import { Quantity } from "@/components/quantity"
 import {
   Select,
   SelectContent,
@@ -52,10 +61,7 @@ const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
   loading: function MapLoading() {
     return (
-      <div
-        className="hs-scan border-hairline bg-surface-sunken grid place-items-center rounded-md border"
-        style={{ blockSize: MAP_HEIGHT }}
-      />
+      <div className="hs-scan bg-paper-0 grid place-items-center" style={{ blockSize: MAP_HEIGHT }} />
     )
   },
 })
@@ -79,7 +85,7 @@ type EstimateAny = EstimateOk & { detail?: string }
 
 /** What the readout renders, once the response has been interpreted. */
 type Estimate =
-  | { kind: "ok"; method: string | null; used: number; centre: LatLng | null }
+  | { kind: "ok"; method: string | null; used: number; centre: LatLng | null; note: string | null }
   | { kind: "rejected"; detail: string | null }
   | { kind: "failed" }
 
@@ -113,15 +119,6 @@ function uncertaintyFor(used: number): number {
   if (used === 3) return 50
   if (used >= 1) return 100
   return 0
-}
-
-function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div className="border-hairline flex items-baseline justify-between gap-4 border-b py-1.5 last:border-0">
-      <span className="hs-label shrink-0">{label}</span>
-      <span className="text-ink min-w-0 text-end text-sm">{children}</span>
-    </div>
-  )
 }
 
 export default function MapTrilateration() {
@@ -223,7 +220,13 @@ export default function MapTrilateration() {
         const lng = coord(res.center?.lng)
         const centre = lat !== null && lng !== null ? { lat, lng } : null
 
-        setEstimate({ kind: "ok", method: res.method ? String(res.method) : null, used, centre })
+        setEstimate({
+          kind: "ok",
+          method: res.method ? String(res.method) : null,
+          used,
+          centre,
+          note: res.note ? String(res.note) : null,
+        })
       } catch {
         if (alive) setEstimate({ kind: "failed" })
       } finally {
@@ -236,6 +239,18 @@ export default function MapTrilateration() {
     }
   }, [sa, minutes, aps])
 
+  /**
+   * Whether any configured anchor appears among the BSSIDs this source was
+   * actually heard on. When it does not, no arithmetic can produce a fix, and
+   * saying that plainly is more useful than an empty readout the reader has to
+   * interpret.
+   */
+  const anchorsMatch = React.useMemo(() => {
+    if (!aps || aps.length === 0 || !rssi || rssi.length === 0) return null
+    const heard = new Set(rssi.map((p) => p.bssid.toUpperCase()))
+    return aps.some((ap) => heard.has(ap.bssid.toUpperCase()))
+  }, [aps, rssi])
+
   /* ---- readings table ---------------------------------------------------- */
 
   const rssiColumns: DataTableColumn<RSSIPoint>[] = React.useMemo(
@@ -243,14 +258,17 @@ export default function MapTrilateration() {
       {
         id: "bssid",
         header: t("threats.detail.bssid"),
-        cell: (p) => <Mac value={p.bssid} className="text-ink text-xs" />,
+        cell: (p) => <Mac value={p.bssid} className="text-ink-0 text-xs" />,
       },
       {
         id: "rssi",
         header: t("map.avgRssi"),
         numeric: true,
         width: "8rem",
-        cell: (p) => `${f.number(Math.round(p.avg_rssi))} ${t("units.dbm")}`,
+        // Figure isolated, unit not — see `components/quantity.tsx`.
+        cell: (p) => (
+          <Quantity value={f.number(Math.round(p.avg_rssi))} unit={t("units.dbm")} />
+        ),
       },
       {
         id: "n",
@@ -269,18 +287,17 @@ export default function MapTrilateration() {
   // default coordinate reads as a result, and it is not one.
   if (aps !== null && aps.length === 0) {
     return (
-      <Module label={t("map.apLocations")}>
-        <p className="text-ink text-sm">{t("map.noApLocations")}</p>
-        <p className="text-ink-dim mt-2 max-w-prose text-sm">{t("map.noApDetail")}</p>
-      </Module>
+      <Panel label={t("map.apLocations")} title={t("map.noApLocations")}>
+        <p className="text-ink-1 max-w-[72ch] text-sm">{t("map.noApDetail")}</p>
+      </Panel>
     )
   }
 
   if (apsFailed && aps === null) {
     return (
-      <Module label={t("map.apLocations")}>
-        <p className="text-sev-critical hs-label py-4">{t("map.error.load")}</p>
-      </Module>
+      <Panel label={t("map.apLocations")}>
+        <LoadError>{t("map.error.load")}</LoadError>
+      </Panel>
     )
   }
 
@@ -288,8 +305,8 @@ export default function MapTrilateration() {
   const used = estimate?.kind === "ok" ? estimate.used : 0
 
   return (
-    <div className="flex flex-col gap-3 sm:gap-4">
-      <Module
+    <div className="flex min-w-0 flex-col gap-4">
+      <Panel
         label={t("map.controls")}
         actions={
           <StatusPill tone="neutral">
@@ -298,10 +315,10 @@ export default function MapTrilateration() {
         }
       >
         <div className="flex flex-wrap items-end gap-3">
-          <div className="flex min-w-56 flex-col gap-1.5">
+          <div className="flex min-w-0 flex-1 basis-56 flex-col gap-1.5">
             <span className="hs-label">{t("map.source")}</span>
             {sources !== null && sources.length === 0 ? (
-              <span className="text-ink-faint text-xs">{t("map.sourceEmpty")}</span>
+              <span className="text-ink-2 text-xs">{t("map.sourceEmpty")}</span>
             ) : (
               <Select dir={dir} value={sa} onValueChange={setSa}>
                 <SelectTrigger className="w-full" aria-label={t("map.sourcePick")}>
@@ -314,7 +331,7 @@ export default function MapTrilateration() {
                           is a plain figure in the reader's own direction. */}
                       <span className="flex items-center gap-2">
                         <span className="hs-num">{row.wlan_sa.toUpperCase()}</span>
-                        <span className="text-ink-faint hs-num text-xs">{f.number(row.count)}</span>
+                        <span className="hs-num text-ink-2 text-xs">{f.number(row.count)}</span>
                       </span>
                     </SelectItem>
                   ))}
@@ -323,13 +340,9 @@ export default function MapTrilateration() {
             )}
           </div>
 
-          <div className="flex min-w-44 flex-col gap-1.5">
+          <div className="flex min-w-0 flex-1 basis-44 flex-col gap-1.5">
             <span className="hs-label">{t("map.window")}</span>
-            <Select
-              dir={dir}
-              value={String(minutes)}
-              onValueChange={(v) => setMinutes(Number(v))}
-            >
+            <Select dir={dir} value={String(minutes)} onValueChange={(v) => setMinutes(Number(v))}>
               <SelectTrigger className="w-full" aria-label={t("map.window")}>
                 <SelectValue />
               </SelectTrigger>
@@ -343,73 +356,94 @@ export default function MapTrilateration() {
             </Select>
           </div>
         </div>
-      </Module>
 
-      <LeafletMap
-        centre={centre}
-        aps={aps ?? []}
-        points={rssi ?? []}
-        height={MAP_HEIGHT}
-        uncertaintyMetres={uncertaintyFor(used)}
-      />
+        {/* The plainest statement this page can make, and the true one today. */}
+        {anchorsMatch === false && (
+          <p className="text-sev-high mt-4 max-w-[72ch] text-sm">{t("map.anchorsUnmatched")}</p>
+        )}
+      </Panel>
 
-      <ModuleGrid className="lg:grid-cols-2">
-        <Module label={t("map.readout")} loading={busy && estimate === null}>
+      {/* The map lives inside a panel like every other instrument, flush to the
+          hairline so the canvas meets the paper edge with nothing between. */}
+      <Panel label={t("map.panel")} title={t("map.mapLabel")} flush>
+        <LeafletMap
+          centre={centre}
+          aps={aps ?? []}
+          points={rssi ?? []}
+          height={MAP_HEIGHT}
+          uncertaintyMetres={uncertaintyFor(used)}
+        />
+      </Panel>
+
+      <PanelGrid className="lg:grid-cols-2">
+        <Panel label={t("map.readout")} loading={busy && estimate === null}>
           {estimate === null ? (
             <p className="hs-label py-4">{t("map.loadingData")}</p>
           ) : estimate.kind === "failed" ? (
-            <p className="text-sev-critical hs-label py-4">{t("map.error.load")}</p>
+            <LoadError>{t("map.error.load")}</LoadError>
           ) : estimate.kind === "rejected" ? (
-            <div className="flex flex-col gap-2 py-1">
+            <div className="flex flex-col gap-2">
               <p className="text-sev-high text-sm">{t("map.rejected")}</p>
               {/* The sensor's own words, verbatim and untranslated — inventing
                   an Arabic rendering of a server message we did not write would
-                  be putting words in its mouth. */}
+                  be putting words in its mouth. Pinned LTR: machine prose. */}
               {estimate.detail && (
-                <p className="hs-ltr text-ink-dim font-mono text-xs">{estimate.detail}</p>
+                <p className="hs-ltr text-ink-2 font-mono text-xs">{estimate.detail}</p>
               )}
             </div>
           ) : (
-            <div className="flex flex-col">
-              <Field label={t("map.source")}>
-                <Mac value={sa} className="text-sm" />
-              </Field>
-              <Field label={t("map.method")}>
-                {estimate.method ? (
-                  <span className="hs-ltr font-mono text-sm">{estimate.method}</span>
-                ) : (
-                  <span className="text-ink-faint text-xs">{t("landing.notReported")}</span>
+            <>
+              <Readout>
+                <ReadoutRow label={t("map.source")}>
+                  <Mac value={sa} className="text-sm" />
+                </ReadoutRow>
+                <ReadoutRow label={t("map.method")}>
+                  {estimate.method ? (
+                    <span className="hs-ltr font-mono text-sm">{estimate.method}</span>
+                  ) : (
+                    <Unreported />
+                  )}
+                </ReadoutRow>
+                <ReadoutRow label={t("map.apsUsed")}>
+                  <span className="hs-num">{f.number(estimate.used)}</span>
+                </ReadoutRow>
+                {estimate.centre && (
+                  <>
+                    <ReadoutRow label={t("map.latitude")}>
+                      <span className="hs-num">{estimate.centre.lat.toFixed(6)}</span>
+                    </ReadoutRow>
+                    <ReadoutRow label={t("map.longitude")}>
+                      <span className="hs-num">{estimate.centre.lng.toFixed(6)}</span>
+                    </ReadoutRow>
+                    <ReadoutRow label={t("map.uncertainty")}>
+                      <Quantity
+                        value={f.number(uncertaintyFor(estimate.used))}
+                        unit={t("map.metres")}
+                      />
+                    </ReadoutRow>
+                  </>
                 )}
-              </Field>
-              <Field label={t("map.apsUsed")}>
-                <span className="hs-num">{f.number(estimate.used)}</span>
-              </Field>
-              {estimate.centre ? (
-                <>
-                  <Field label={t("map.latitude")}>
-                    <span className="hs-num">{estimate.centre.lat.toFixed(6)}</span>
-                  </Field>
-                  <Field label={t("map.longitude")}>
-                    <span className="hs-num">{estimate.centre.lng.toFixed(6)}</span>
-                  </Field>
-                  <Field label={t("map.uncertainty")}>
-                    <Quantity
-                      value={f.number(uncertaintyFor(estimate.used))}
-                      unit={t("map.metres")}
-                    />
-                  </Field>
-                </>
-              ) : (
-                <div className="flex flex-col gap-2 py-2">
-                  <p className="text-ink text-sm">{t("map.noEstimate")}</p>
-                  <p className="text-ink-dim max-w-prose text-sm">{t("map.noEstimateDetail")}</p>
+              </Readout>
+
+              {!estimate.centre && (
+                <div className="mt-4 flex flex-col gap-2">
+                  <p className="text-ink-0 text-sm font-medium">{t("map.noEstimate")}</p>
+                  <p className="text-ink-1 max-w-[72ch] text-sm">{t("map.noEstimateDetail")}</p>
                 </div>
               )}
-            </div>
-          )}
-        </Module>
 
-        <Module label={t("map.rssiTitle")} flush>
+              {/* Whatever the sensor said about this answer, in its own words. */}
+              {estimate.note && (
+                <p className="border-rule mt-4 flex flex-col gap-1 border-t pt-3">
+                  <span className="hs-label">{t("map.sensorNote")}</span>
+                  <span className="hs-ltr text-ink-2 font-mono text-xs">{estimate.note}</span>
+                </p>
+              )}
+            </>
+          )}
+        </Panel>
+
+        <Panel label={t("map.rssiTitle")} flush>
           <DataTable
             columns={rssiColumns}
             rows={rssi ?? []}
@@ -419,8 +453,8 @@ export default function MapTrilateration() {
             loadingLabel={t("map.loadingData")}
             errorLabel={t("map.error.load")}
           />
-        </Module>
-      </ModuleGrid>
+        </Panel>
+      </PanelGrid>
     </div>
   )
 }

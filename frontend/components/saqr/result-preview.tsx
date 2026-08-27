@@ -37,14 +37,40 @@ const ISO_RE = /^\d{4}-\d{2}-\d{2}[T ]\d{2}:\d{2}:\d{2}/
 /** Printable ASCII only: an identifier, an interface name, hex, a SQL fragment. */
 const ASCII_RE = /^[\x20-\x7E]*$/
 
+/**
+ * Past this many characters a string stops being a value and starts being a
+ * document. `explain_attack_class` returns a whole knowledge-base section —
+ * around two thousand characters of Markdown with newlines — in a single field,
+ * and rendered inline it swallows the step it belongs to.
+ */
+const LONG_TEXT_CHARS = 160
+
+/**
+ * A long value in a box that scrolls itself.
+ *
+ * Nothing is truncated: the whole value is present and selectable, and the
+ * document around it keeps its shape. `span` rather than `div` because this can
+ * land inside an inline run (an argument value), where a block-level element
+ * would be invalid nesting; `display: block` gives the same box either way.
+ * `bdi` lets the run pick its own direction — a knowledge-base section is
+ * English, an SSID may not be — while isolating it from the paragraph around it.
+ */
+function LongText({ value }: { value: string }) {
+  return (
+    <span className="border-rule bg-paper-2 block max-h-48 min-w-0 overflow-auto rounded-md border p-2.5">
+      <bdi className="text-ink-1 block text-xs leading-relaxed whitespace-pre-wrap">{value}</bdi>
+    </span>
+  )
+}
+
 /* ── One scalar ──────────────────────────────────────────────────────────── */
 
 export function SaqrValue({ value }: { value: unknown }) {
   if (value === null || value === undefined) {
-    return <span className="text-ink-faint">—</span>
+    return <span className="text-ink-3">—</span>
   }
   if (typeof value === "boolean") {
-    return <Code className="text-ink-dim">{value ? "true" : "false"}</Code>
+    return <Code className="text-ink-2">{value ? "true" : "false"}</Code>
   }
   if (typeof value === "number") {
     /*
@@ -64,19 +90,21 @@ export function SaqrValue({ value }: { value: unknown }) {
   if (typeof value === "string") {
     if (MAC_RE.test(value)) return <Mac value={value} />
     if (ISO_RE.test(value)) return <Timestamp value={value} />
+    // Checked before the ASCII branch: a knowledge-base section is pure ASCII
+    // apart from its newlines, and `<Code>` would set the whole of it as one
+    // unwrapped monospace line running out of the card.
+    if (value.length > LONG_TEXT_CHARS || value.includes("\n")) return <LongText value={value} />
     // Pure-ASCII strings out of the database are technical literals — class
     // identifiers, interface names, SSIDs, hex. Anything else (an Arabic SSID,
     // a knowledge-base sentence) gets `bdi`: isolated, but free to pick its own
     // direction rather than being forced left-to-right.
-    if (ASCII_RE.test(value)) return <Code className="text-ink-dim">{value}</Code>
+    if (ASCII_RE.test(value)) return <Code className="text-ink-2">{value}</Code>
     return <bdi>{value}</bdi>
   }
   // An object or array nested inside a cell. Compact JSON keeps the row height
   // stable; the full structure is one `sql_preview` or one answer away.
   return (
-    <Code className="text-ink-faint">
-      {truncate(JSON.stringify(value), 120)}
-    </Code>
+    <Code className="text-ink-3">{truncate(JSON.stringify(value), 120)}</Code>
   )
 }
 
@@ -143,12 +171,12 @@ export function SaqrResultPreview({
   if (isOmitted(data)) {
     const reason = typeof data["reason"] === "string" ? (data["reason"] as string) : ""
     return (
-      <p className={cn("text-ink-dim text-xs", className)}>
+      <p className={cn("text-ink-1 text-sm", className)}>
         {t("saqr.trace.omitted")}
         {reason ? (
           <>
             {" "}
-            <Ltr className="text-ink-faint">({reason})</Ltr>
+            <Ltr className="text-ink-2">({reason})</Ltr>
           </>
         ) : null}
       </p>
@@ -160,7 +188,7 @@ export function SaqrResultPreview({
   if (!list) {
     const entries = Object.entries(data)
     if (entries.length === 0) {
-      return <p className={cn("text-ink-faint text-xs", className)}>{t("saqr.trace.noData")}</p>
+      return <p className={cn("text-ink-3 text-sm", className)}>{t("saqr.trace.noData")}</p>
     }
     return (
       <div className={cn("text-xs", className)}>
@@ -192,8 +220,9 @@ export function SaqrResultPreview({
 
   return (
     <div className={cn("flex flex-col gap-2", className)}>
-      {/* The table owns the horizontal overflow; the trace column never widens. */}
-      <div className="border-hairline overflow-x-auto rounded-sm border">
+      {/* `Table` owns its own `overflow-x-auto` container, so a wide result
+          scrolls inside this card and the document column never widens. */}
+      <div className="border-rule min-w-0 overflow-hidden rounded-md border">
         <DataTable
           columns={columns}
           rows={rows}
@@ -202,7 +231,7 @@ export function SaqrResultPreview({
         />
       </div>
 
-      <p className="text-ink-faint text-xs">
+      <p className="text-ink-2 text-xs">
         {t("saqr.trace.previewOf", { n: rows.length })}
         {result.truncated ? ` · ${t("saqr.trace.truncated")}` : ""}
       </p>

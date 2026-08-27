@@ -13,17 +13,35 @@
  * here on `StatusPill` and the existing `conn.*` copy: one page uses them, and a
  * two-function file of bespoke chip markup was exactly the thing the primitives
  * exist to delete.
+ *
+ * The backend readout is a `DataCard` rather than a panel of rows. It is the
+ * one genuinely printed-slip object on this page — a handful of facts about a
+ * running process, read top to bottom — and it lets the page open with the
+ * answer to "is this thing alive" instead of with a lever.
  */
 import * as React from "react"
 import Link from "next/link"
 import { ArrowRight, RefreshCw } from "lucide-react"
 
-import { Module, ModuleGrid } from "@/components/hs/module"
+import { AccentWord } from "@/components/hs/accent-word"
+import { DataCard, DataCardNote, DataCardRow, DataCardRows } from "@/components/hs/data-card"
+import { Panel, PanelGrid } from "@/components/hs/panel"
+import { SectionHead } from "@/components/hs/section-head"
 import { StatusPill } from "@/components/hs/status-pill"
+import {
+  ControlSpacer,
+  ControlStrip,
+  Moment,
+  PageFrame,
+  Phrase,
+  Readout,
+  ReadoutRow,
+  Unreported,
+} from "@/components/console/frame"
 import { SimulatePanel } from "@/components/simulate-panel"
 import { Button } from "@/components/ui/button"
 import { useHealth, type ConnectionState } from "@/hooks/use-health"
-import { Timestamp, useFormatters } from "@/lib/format"
+import { useFormatters } from "@/lib/format"
 import { apiTimeMs } from "@/lib/detections"
 import { useLocale, useT, type TranslationKey } from "@/lib/i18n"
 
@@ -40,21 +58,6 @@ const STATE_TONE = {
   degraded: "high",
   offline: "critical",
 } as const
-
-/** "Not reported" rather than a dash that reads as a zero. */
-function Unreported() {
-  const t = useT()
-  return <span className="text-ink-faint text-xs">{t("landing.notReported")}</span>
-}
-
-function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
-  return (
-    <div className="border-hairline flex items-baseline justify-between gap-4 border-b py-1.5 last:border-0">
-      <span className="hs-label shrink-0">{label}</span>
-      <span className="text-ink min-w-0 text-end text-sm">{children}</span>
-    </div>
-  )
-}
 
 export default function AdminPage() {
   const t = useT()
@@ -74,100 +77,122 @@ export default function AdminPage() {
   const settled = state !== "online" && state !== "unknown"
 
   return (
-    <div className="mx-auto flex max-w-4xl flex-col gap-3 px-4 py-6 sm:gap-4 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <h1 className="text-ink font-display text-2xl leading-none font-medium sm:text-3xl">
-            {t("admin.title")}
-          </h1>
-          <p className="text-ink-dim max-w-prose text-sm">{t("admin.subtitle")}</p>
-        </div>
+    <PageFrame className="max-w-[980px]">
+      <SectionHead
+        as="h1"
+        eyebrow={t("admin.title")}
+        title={
+          <>
+            {t("admin.head.lead")}
+            <AccentWord>{t("admin.head.accent")}</AccentWord>
+          </>
+        }
+        body={t("admin.subtitle")}
+      />
 
-        <div className="flex items-center gap-2">
-          <StatusPill tone={STATE_TONE[state]} dot>
-            {t(STATE_KEY[state])}
-          </StatusPill>
-          <Button size="sm" variant="secondary" onClick={refresh}>
-            <RefreshCw aria-hidden="true" />
-            {t("common.refresh")}
-          </Button>
-        </div>
-      </header>
+      <ControlStrip>
+        <StatusPill tone={STATE_TONE[state]} dot>
+          {t(STATE_KEY[state])}
+        </StatusPill>
+        <span className="hs-label hidden sm:inline">{t("admin.urlOnly")}</span>
+        <ControlSpacer />
+        <Button size="sm" variant="outline" onClick={refresh}>
+          <RefreshCw aria-hidden="true" />
+          {t("common.refresh")}
+        </Button>
+      </ControlStrip>
 
       {/* The calm banner: it explains why the figures stopped moving, and never
-          blanks the page or invents a value to fill the gap. */}
+          blanks the page or invents a value to fill the gap. The tinted edge is
+          the same colour-mix the status pill uses, so the two agree. */}
       {settled && (
-        <div className="border-hairline bg-surface flex flex-wrap items-center gap-2 rounded-md border px-3 py-2">
-          <StatusPill tone={STATE_TONE[state]} dot>
-            {t(STATE_KEY[state])}
-          </StatusPill>
-          <span className="text-ink-dim min-w-0 flex-1 text-sm">
-            {state === "degraded"
-              ? t("conn.bannerDegraded")
-              : t("conn.bannerOffline", {
-                  ago: lastOkAt ? f.relative(lastOkAt) : t("conn.noDataYet"),
-                })}{" "}
-            <span className="text-ink-faint">{t("admin.simulate.stillWorks")}</span>
-          </span>
-        </div>
+        <Panel
+          label={t("admin.connection")}
+          className={
+            state === "degraded"
+              ? "border-[color-mix(in_oklch,var(--sev-high)_38%,transparent)]"
+              : "border-[color-mix(in_oklch,var(--sev-critical)_38%,transparent)]"
+          }
+        >
+          <div className="flex flex-wrap items-baseline gap-x-3 gap-y-1">
+            <span className="text-ink-1 min-w-0 flex-1 text-sm">
+              {state === "degraded"
+                ? t("conn.bannerDegraded")
+                : t("conn.bannerOffline", {
+                    ago: lastOkAt ? f.relative(lastOkAt) : t("conn.noDataYet"),
+                  })}
+            </span>
+            <span className="text-ink-2 text-xs">{t("admin.simulate.stillWorks")}</span>
+          </div>
+        </Panel>
       )}
 
-      <SimulatePanel onSimulated={() => { setRuns((n) => n + 1); refresh() }} />
+      {/* ---- what is running ---------------------------------------------- */}
+      <PanelGrid className="lg:grid-cols-[minmax(0,1fr)_minmax(0,1.15fr)]">
+        <DataCard
+          label={health?.status ?? t("admin.unreachable")}
+          title={t("admin.backend")}
+          status={
+            <StatusPill tone={STATE_TONE[state]} dot>
+              {t(STATE_KEY[state])}
+            </StatusPill>
+          }
+          className="h-fit"
+        >
+          <DataCardRows>
+            <DataCardRow
+              label={t("admin.database")}
+              value={
+                health?.database === true ? (
+                  <Phrase>{t("admin.reachable")}</Phrase>
+                ) : health?.database === false ? (
+                  <Phrase>{t("admin.notAnswering")}</Phrase>
+                ) : (
+                  "—"
+                )
+              }
+              tone={health?.database === false ? "critical" : "default"}
+            />
+            <DataCardRow
+              label={t("admin.storedPackets")}
+              value={typeof health?.packets === "number" ? f.number(health.packets) : "—"}
+            />
+            <DataCardRow
+              label={t("admin.latestPacket")}
+              value={
+                lastPacketMs === null ? (
+                  "—"
+                ) : (
+                  <Moment value={lastPacketMs} format="relative" className="text-sm" />
+                )
+              }
+            />
+            <DataCardRow label={t("admin.apiVersion")} value={health?.version ?? "—"} />
+          </DataCardRows>
+          <DataCardNote>{t("time.timezone")}</DataCardNote>
+        </DataCard>
 
-      <ModuleGrid className="lg:grid-cols-2">
-        <Module label={t("admin.backend")}>
-          <div className="flex flex-col">
-            <Field label={t("admin.status")}>
-              {health?.status ? (
-                <span className="hs-ltr font-mono">{health.status}</span>
-              ) : state === "offline" ? (
-                <span className="text-sev-critical text-sm">{t("admin.unreachable")}</span>
-              ) : (
-                <Unreported />
-              )}
-            </Field>
-            <Field label={t("admin.database")}>
-              {health?.database === true ? (
-                <StatusPill tone="info">{t("admin.reachable")}</StatusPill>
-              ) : health?.database === false ? (
-                <StatusPill tone="high">{t("admin.notAnswering")}</StatusPill>
-              ) : (
-                <Unreported />
-              )}
-            </Field>
-            <Field label={t("admin.storedPackets")}>
-              {typeof health?.packets === "number" ? (
-                <span className="hs-num">{f.number(health.packets)}</span>
-              ) : (
-                <Unreported />
-              )}
-            </Field>
-            <Field label={t("admin.latestPacket")}>
-              {lastPacketMs === null ? <Unreported /> : <Timestamp value={lastPacketMs} />}
-            </Field>
-            <Field label={t("admin.apiVersion")}>
-              {health?.version ? <span className="hs-num">{health.version}</span> : <Unreported />}
-            </Field>
-          </div>
-        </Module>
-
-        <Module label={t("admin.modelInService")}>
-          <div className="flex flex-col">
-            <Field label={t("admin.modelInService")}>
-              {health?.model_version && health.model_version !== "none" ? (
-                <span className="hs-ltr font-mono">{health.model_version}</span>
-              ) : (
-                <Unreported />
-              )}
-            </Field>
-            <Field label={t("admin.specVersion")}>
+        {/* The version is the panel's subject, so it sits in the header rather
+            than as a first row repeating the panel's own label back at it. */}
+        <Panel
+          label={t("admin.modelInService")}
+          title={
+            health?.model_version && health.model_version !== "none" ? (
+              <span className="hs-ltr font-mono">{health.model_version}</span>
+            ) : (
+              <Unreported />
+            )
+          }
+        >
+          <Readout>
+            <ReadoutRow label={t("admin.specVersion")}>
               {health?.spec_version ? (
                 <span className="hs-num">{health.spec_version}</span>
               ) : (
                 <Unreported />
               )}
-            </Field>
-            <Field label={t("admin.modelArtefacts")}>
+            </ReadoutRow>
+            <ReadoutRow label={t("admin.modelArtefacts")}>
               {models === null ? (
                 <Unreported />
               ) : present.length === 0 ? (
@@ -183,28 +208,36 @@ export default function AdminPage() {
                   ))}
                 </span>
               )}
-            </Field>
-          </div>
+            </ReadoutRow>
+          </Readout>
 
           {runs > 0 && (
-            <p className="text-ink-faint mt-3 text-xs">
+            <p className="text-ink-2 mt-4 text-xs">
               {t("admin.runsThisSession", { n: f.number(runs) })}
             </p>
           )}
-        </Module>
-      </ModuleGrid>
+        </Panel>
+      </PanelGrid>
 
-      <div className="flex flex-wrap items-center justify-between gap-3">
-        <p className="text-ink-faint text-xs">{t("admin.urlOnly")}</p>
+      {/* ---- the lever ----------------------------------------------------- */}
+      <SimulatePanel
+        onSimulated={() => {
+          setRuns((n) => n + 1)
+          refresh()
+        }}
+      />
+
+      <div className="border-rule flex flex-wrap items-center justify-between gap-3 border-t pt-4">
+        <p className="text-ink-2 text-xs sm:hidden">{t("admin.urlOnly")}</p>
         <Link
           href="/dashboard"
-          className="text-hs-azure hover:text-ink inline-flex items-center gap-1.5 text-sm transition-colors"
+          className="text-accent-cta hover:text-ink-0 ms-auto inline-flex items-center gap-1.5 text-sm transition-colors"
         >
           {t("admin.openDashboard")}
           {/* The arrow points along the reading direction, so it flips. */}
           <ArrowRight className={isRTL ? "size-3.5 rotate-180" : "size-3.5"} aria-hidden="true" />
         </Link>
       </div>
-    </div>
+    </PageFrame>
   )
 }

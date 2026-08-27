@@ -3,26 +3,41 @@
 /**
  * The detection ledger.
  *
- * One thing shapes every decision on this page: `GET /attacks` takes `limit`
- * and `offset` and nothing else. There is no `?type=`, no `?since=`, no `?sa=`
- * and no count of matching rows — so time range, class, severity and MAC search
- * cannot be pushed to the sensor, and paging cannot be either. The page pulls
- * one bounded window and filters it in the browser.
+ * One thing shapes every data decision on this page: `GET /attacks` takes
+ * `limit` and `offset` and nothing else. There is no `?type=`, no `?since=`, no
+ * `?sa=` and no count of matching rows — so time range, class, severity and MAC
+ * search cannot be pushed to the sensor, and paging cannot be either. The page
+ * pulls one bounded window and filters it in the browser.
  *
  * That is a compromise, and it is stated on screen rather than hidden: the
  * footer says how many rows the filters actually ran over and how many the
  * sensor holds in total. V1 pulled 5000 rows every fifteen seconds and said
  * nothing; this pulls a smaller window on a slower clock and tells the operator
  * what it is looking at. If a `GET /attacks?since=&label=&sa=` ever lands, the
- * `filtered` memo below collapses into query parameters.
+ * `filtered` memo collapses into query parameters.
+ *
+ * The layout is a printed ledger, not a terminal grid. The filter controls sit
+ * in a *sunken* panel — the page's own paper, the one nesting case the system
+ * allows — so they read as a control tray resting on the page rather than as a
+ * second card competing with the table. The table itself is the only card here,
+ * and it is flush to its hairline because a table carries its own cell rhythm.
  */
 import * as React from "react"
 import { RefreshCw } from "lucide-react"
 
+import { AccentWord } from "@/components/hs/accent-word"
 import { DataTable, type DataTableColumn, type DataTableSort } from "@/components/hs/data-table"
-import { Module } from "@/components/hs/module"
+import { Panel } from "@/components/hs/panel"
 import { Radar } from "@/components/hs/radar"
+import { SectionHead } from "@/components/hs/section-head"
 import { StatusPill } from "@/components/hs/status-pill"
+import {
+  ControlSpacer,
+  ControlStrip,
+  Moment,
+  PageFrame,
+  Unreported,
+} from "@/components/console/frame"
 import { Button } from "@/components/ui/button"
 import { DetectionDrawer } from "@/components/threats/detection-drawer"
 import { ReportDialog } from "@/components/threats/report-dialog"
@@ -38,7 +53,7 @@ import { useEventSource } from "@/hooks/use-event-source"
 import { useHealth, type ConnectionState } from "@/hooks/use-health"
 import { apiFetchJson } from "@/lib/api"
 import { attackColorVar, attackLabels } from "@/lib/colors"
-import { Mac, Timestamp, useFormatters } from "@/lib/format"
+import { Mac, useFormatters } from "@/lib/format"
 import { useT, type TranslationKey, type Translate } from "@/lib/i18n"
 
 /* ── Cadence ─────────────────────────────────────────────────────────────── */
@@ -47,9 +62,9 @@ const POLL_OK_MS = 20_000
 const POLL_RETRY_MS = 8_000
 
 /**
- * The window the filters run over. A quarter of V1's 5000: the sensor holds
- * ~1200 rows today, the page is honest about the ceiling in its footer, and the
- * whole thing has to stay comfortable over Wi-Fi to a Pi 4B.
+ * The window the filters run over. A quarter of V1's 5000: the sensor holds a
+ * few thousand rows today, the page is honest about the ceiling in its footer,
+ * and the whole thing has to stay comfortable over Wi-Fi to a Pi 4B.
  */
 const FETCH_LIMIT = 1500
 
@@ -75,11 +90,6 @@ const idle = <T,>(): Res<T> => ({ data: null, failed: false })
 
 /** Strip separators and case so `5a:11` and `5A11` both match a stored MAC. */
 const squash = (s: string) => s.toLowerCase().replace(/[^a-z0-9]/g, "")
-
-function Unreported() {
-  const t = useT()
-  return <span className="text-ink-faint text-xs">{t("landing.notReported")}</span>
-}
 
 export default function ThreatsPage() {
   const t: Translate = useT()
@@ -197,6 +207,12 @@ export default function ThreatsPage() {
 
   /* ---- columns ----------------------------------------------------------- */
 
+  /**
+   * Nine columns is more than a phone can carry, so the table sheds the widest
+   * ones as the viewport narrows and says so under the table. At 320px what
+   * survives is time, class and severity — the three questions a ledger is read
+   * for — and the row itself opens the drawer, which holds everything.
+   */
   const columns: DataTableColumn<Detection>[] = React.useMemo(
     () => [
       {
@@ -205,7 +221,7 @@ export default function ThreatsPage() {
         sortable: true,
         width: "11rem",
         cell: (d) =>
-          d.ms === null ? <Unreported /> : <Timestamp value={d.ms} className="text-ink-dim text-xs" />,
+          d.ms === null ? <Unreported /> : <Moment value={d.ms} className="text-ink-2 text-xs" />,
       },
       {
         id: "class",
@@ -218,7 +234,7 @@ export default function ThreatsPage() {
               style={{ background: attackColorVar(d.type) }}
             />
             {/* Latin in both locales — this is what the model emits. */}
-            <span className="text-ink hs-ltr">{attackLabels[d.type]}</span>
+            <span className="hs-ltr text-ink-0 text-sm">{attackLabels[d.type]}</span>
           </span>
         ),
       },
@@ -232,13 +248,13 @@ export default function ThreatsPage() {
         id: "source",
         header: t("threats.column.sourceMac"),
         hideBelow: "sm",
-        cell: (d) => (d.srcMac ? <Mac value={d.srcMac} className="text-ink-dim text-xs" /> : <Unreported />),
+        cell: (d) => (d.srcMac ? <Mac value={d.srcMac} className="text-ink-2 text-xs" /> : <Unreported />),
       },
       {
         id: "dest",
         header: t("threats.column.destMac"),
         hideBelow: "lg",
-        cell: (d) => (d.dstMac ? <Mac value={d.dstMac} className="text-ink-dim text-xs" /> : <Unreported />),
+        cell: (d) => (d.dstMac ? <Mac value={d.dstMac} className="text-ink-2 text-xs" /> : <Unreported />),
       },
       {
         id: "channel",
@@ -257,7 +273,9 @@ export default function ThreatsPage() {
         width: "6.5rem",
         hideBelow: "md",
         // `hs-num` on the cell (via `numeric`) isolates the run, so a negative
-        // dBm figure cannot render as `64-` inside the Arabic page.
+        // dBm figure cannot render as `64-` inside the Arabic page. `rssi` is
+        // already `null` rather than `0` where the sensor reported nothing —
+        // see the `num()` guard in `components/threats/detection.ts`.
         cell: (d) => (d.rssi === null ? <Unreported /> : f.number(d.rssi)),
       },
       {
@@ -273,6 +291,7 @@ export default function ThreatsPage() {
         id: "origin",
         header: "",
         width: "6rem",
+        hideBelow: "sm",
         cell: (d) => (d.sim ? <StatusPill tone="neutral">{t("common.simulated")}</StatusPill> : null),
       },
     ],
@@ -286,51 +305,57 @@ export default function ThreatsPage() {
   const windowSize = detections.length
 
   return (
-    <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-6 sm:gap-4 lg:px-8">
-      <header className="flex flex-wrap items-end justify-between gap-4">
-        <div className="flex flex-col gap-1">
-          <h1 className="text-ink font-display text-2xl leading-none font-medium sm:text-3xl">
-            {t("threats.title")}
-          </h1>
-          <p className="text-ink-dim text-sm">{t("threats.subtitle")}</p>
-        </div>
+    <PageFrame>
+      <SectionHead
+        as="h1"
+        eyebrow={t("threats.title")}
+        title={
+          <>
+            {t("threats.head.lead")}
+            <AccentWord>{t("threats.head.accent")}</AccentWord>
+          </>
+        }
+        body={t("threats.subtitle")}
+      />
 
-        <div className="flex flex-wrap items-center gap-2">
-          <StatusPill tone={STATE_TONE[connState]} dot>
-            {t(STATE_KEY[connState])}
-          </StatusPill>
-          <ReportDialog />
-          <Button
-            size="sm"
-            variant="secondary"
-            onClick={() => {
-              refreshHealth()
-              refresh()
-            }}
-          >
-            <RefreshCw aria-hidden="true" />
-            {t("common.refresh")}
-          </Button>
-        </div>
-      </header>
+      <ControlStrip>
+        <StatusPill tone={STATE_TONE[connState]} dot>
+          {t(STATE_KEY[connState])}
+        </StatusPill>
+        <Radar size={12} active={streamState === "open"} label={t("conn.streaming")} />
+        <span className="hs-label hidden sm:inline">
+          {streamState === "open" ? t("conn.streaming") : t("conn.polling")}
+        </span>
 
-      <ThreatsFilters filters={filters} onChange={setFilters} />
+        <ControlSpacer />
 
-      <Module
+        <ReportDialog />
+        <Button
+          size="sm"
+          variant="outline"
+          onClick={() => {
+            refreshHealth()
+            refresh()
+          }}
+        >
+          <RefreshCw aria-hidden="true" />
+          {t("common.refresh")}
+        </Button>
+      </ControlStrip>
+
+      {/* The control tray. `sunken` drops it to the page paper so it reads as
+          the page's own furniture rather than as a card of its own. */}
+      <Panel label={t("common.filters")} surface="sunken">
+        <ThreatsFilters filters={filters} onChange={setFilters} />
+      </Panel>
+
+      <Panel
         label={t("threats.title")}
         title={t("common.showing", {
           shown: f.number(sorted.length),
           total: f.number(windowSize),
         })}
         flush
-        actions={
-          <>
-            <Radar size={11} active={streamState === "open"} label={t("conn.streaming")} />
-            <StatusPill tone={streamState === "open" ? "info" : "neutral"}>
-              {streamState === "open" ? t("conn.streaming") : t("conn.polling")}
-            </StatusPill>
-          </>
-        }
       >
         <DataTable
           columns={columns}
@@ -347,10 +372,10 @@ export default function ThreatsPage() {
           tintOf={(d) => attackColorVar(d.type)}
         />
 
-        {/* Paging lives inside the module, under the table's own hairline, so it
+        {/* Paging lives inside the panel, under the table's own hairline, so it
             reads as part of the instrument rather than as page furniture. */}
         {tableState === "ready" && sorted.length > 0 && (
-          <div className="border-hairline flex flex-wrap items-center justify-between gap-3 border-t px-3 py-2">
+          <div className="border-rule flex flex-wrap items-center justify-between gap-3 border-t px-4 py-2.5">
             <span className="hs-label">
               {t("common.pageOf", { page: f.number(currentPage), total: f.number(totalPages) })}
             </span>
@@ -374,14 +399,18 @@ export default function ThreatsPage() {
             </div>
           </div>
         )}
-      </Module>
+      </Panel>
 
-      <p className="text-ink-faint text-xs">
-        {t("threats.window", { n: f.number(windowSize) })}{" "}
-        {stored !== null && t("threats.stored", { n: f.number(stored) })} {t("time.timezone")}
-      </p>
+      <div className="text-ink-2 flex max-w-[86ch] flex-col gap-1 text-xs">
+        <p>
+          {t("threats.window", { n: f.number(windowSize) })}{" "}
+          {stored !== null && t("threats.stored", { n: f.number(stored) })}
+        </p>
+        <p className="lg:hidden">{t("threats.tableScroll")}</p>
+        <p className="hs-label mt-1">{t("time.timezone")}</p>
+      </div>
 
       <DetectionDrawer detection={selected} onClose={() => setSelected(null)} />
-    </div>
+    </PageFrame>
   )
 }

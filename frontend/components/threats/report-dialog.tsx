@@ -13,7 +13,7 @@
 import * as React from "react"
 import { Download, FileText, Loader2 } from "lucide-react"
 
-import { Module } from "@/components/hs/module"
+import { Panel } from "@/components/hs/panel"
 import { StatusPill } from "@/components/hs/status-pill"
 import { Button } from "@/components/ui/button"
 import {
@@ -57,9 +57,9 @@ const REPORT_RANGES: readonly { days: number; key: TranslationKey }[] = [
 
 function Line({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
   return (
-    <div className="border-hairline flex items-baseline justify-between gap-4 border-b py-1.5 last:border-0">
+    <div className="border-rule flex items-baseline justify-between gap-4 border-b py-2 last:border-0">
       <span className="hs-label shrink-0">{label}</span>
-      <span className="text-ink min-w-0 text-end text-sm">{children}</span>
+      <span className="text-ink-0 min-w-0 text-end text-sm">{children}</span>
     </div>
   )
 }
@@ -151,7 +151,7 @@ export function ReportDialog() {
       {/* Not a DialogTrigger: the button also lives in a toolbar whose other
           controls are plain buttons, and asChild-wrapping changes its focus
           order relative to them. */}
-      <Button variant="secondary" size="sm" onClick={() => setOpen(true)}>
+      <Button variant="outline" size="sm" onClick={() => setOpen(true)}>
         <FileText aria-hidden="true" />
         {t("report.open")}
       </Button>
@@ -179,7 +179,7 @@ export function ReportDialog() {
             </Select>
           </div>
 
-          <Module label={t("report.summary")} loading={loading && !data}>
+          <Panel label={t("report.summary")} loading={loading && !data}>
             {failed && !data ? (
               <p className="text-sev-critical hs-label py-4">{t("report.loadFailed")}</p>
             ) : (
@@ -198,7 +198,7 @@ export function ReportDialog() {
                 </Line>
                 <Line label={t("dashboard.peakHours")}>
                   {peak === null ? (
-                    <span className="text-ink-faint text-xs">{t("report.notReported")}</span>
+                    <span className="text-ink-2 text-xs">{t("report.notReported")}</span>
                   ) : (
                     // `18:00` is a clock reading; isolated so it cannot flip.
                     <span className="hs-num">{String(peak).padStart(2, "0")}:00</span>
@@ -206,7 +206,7 @@ export function ReportDialog() {
                 </Line>
                 <Line label={t("dashboard.classes.title")}>
                   {frequent === null ? (
-                    <span className="text-ink-faint text-xs">{t("report.notReported")}</span>
+                    <span className="text-ink-2 text-xs">{t("report.notReported")}</span>
                   ) : (
                     <span className="inline-flex items-center gap-2">
                       <span
@@ -220,9 +220,9 @@ export function ReportDialog() {
                 </Line>
               </div>
             )}
-          </Module>
+          </Panel>
 
-          <Module label={t("report.byClass")} loading={loading && !data}>
+          <Panel label={t("report.byClass")} loading={loading && !data}>
             {classRows.length === 0 ? (
               <p className="hs-label py-4 text-center">
                 {failed && !data ? t("report.loadFailed") : t("report.empty")}
@@ -232,7 +232,7 @@ export function ReportDialog() {
                 {classRows.map((row) => (
                   <li
                     key={row.key}
-                    className="border-hairline flex items-center justify-between gap-3 border-b py-1.5 last:border-0"
+                    className="border-rule flex items-center justify-between gap-3 border-b py-2 last:border-0"
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       <span
@@ -240,19 +240,19 @@ export function ReportDialog() {
                         className="size-2 shrink-0 rounded-full"
                         style={{ background: attackColorVar(row.type) }}
                       />
-                      <span className="hs-ltr text-ink truncate text-sm">
+                      <span className="hs-ltr text-ink-0 truncate text-sm">
                         {attackLabels[row.type]}
                       </span>
                       <StatusPill tone={severityOf(row.type)}>
                         {t(`severity.${severityOf(row.type)}`)}
                       </StatusPill>
                     </span>
-                    <span className="hs-num text-ink shrink-0 text-sm">{f.number(row.value)}</span>
+                    <span className="hs-num text-ink-0 shrink-0 text-sm">{f.number(row.value)}</span>
                   </li>
                 ))}
               </ul>
             )}
-          </Module>
+          </Panel>
         </div>
 
         <DialogFooter>

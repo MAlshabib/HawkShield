@@ -253,6 +253,9 @@ export const en = {
   "threats.error.load": "Could not read detections from the sensor.",
   "threats.window": "Filters run over the most recent {n} detections the sensor returned.",
   "threats.stored": "{n} stored in total.",
+  "threats.head.lead": "Every detection, ",
+  "threats.head.accent": "in order.",
+  "threats.tableScroll": "On a narrow screen the table sheds its widest columns and the rest scroll sideways. Open a row for everything the sensor stored about it.",
   "threats.open": "Open detection {id}",
 
   /* ── Report ────────────────────────────────────────────────────────── */
@@ -321,10 +324,19 @@ export const en = {
   "map.uncertainty": "Uncertainty radius",
   "map.metres": "m",
   "map.spatial": "The map itself is drawn left-to-right in both languages — it is a spatial artefact, not text.",
+  "map.head.lead": "Where the signal ",
+  "map.head.accent": "points.",
+  "map.panel": "Position",
+  "map.sensorNote": "Sensor note",
+  "map.anchorsUnmatched": "None of the configured access points appear among the BSSIDs this source was heard on, so there are no anchors to trilaterate from and no position is drawn.",
 
   /* ── Saqr console ──────────────────────────────────────────────────── */
   "saqr.title": "Saqr",
   "saqr.subtitle": "Ask about detections, classes and the packets behind them.",
+  /* The page headline, split so the accent word can be set separately. There
+     are no italics in this system; emphasis is weight and colour. */
+  "saqr.head.lead": "Ask the sensor",
+  "saqr.head.accent": "in your own words",
   "saqr.greeting": "I am Saqr. Ask me about detections, attack classes, or the packets behind them.",
   "saqr.placeholder": "Ask about detections, classes or a MAC address…",
   "saqr.send": "Send",
@@ -361,6 +373,19 @@ export const en = {
   "saqr.empty.reach": "What Saqr can reach",
   "saqr.empty.reachFailed": "The sensor did not report a tool catalogue.",
   "saqr.empty.reachLoading": "Reading the tool catalogue…",
+
+  /* The run, read as a document: question, then the work, then the answer. */
+  "saqr.doc.question": "Question",
+  "saqr.doc.work": "How Saqr answered",
+  "saqr.doc.noWork": "Saqr answered without calling a tool.",
+  "saqr.doc.showWork": "Show the steps",
+  "saqr.doc.hideWork": "Hide the steps",
+  "saqr.doc.earlier": "Earlier in this conversation",
+  "saqr.doc.model": "Model",
+  "saqr.doc.reported": "Tool reported",
+  "saqr.doc.awaiting": "Waiting for Saqr to begin…",
+  "saqr.doc.calledWith": "Called with",
+  "saqr.doc.defaults": "Called with its defaults",
 
   /* Tool trace. Keys mirror the tool names the agent reports verbatim. */
   "saqr.trace.title": "Trace",
@@ -501,6 +526,8 @@ export const en = {
   "admin.simulate.error.unreachable.body":
     "Could not reach the API. This will work again as soon as the service is back.",
   "admin.urlOnly": "Reachable by URL only — deliberately absent from the navigation.",
+  "admin.head.lead": "Traffic through the ",
+  "admin.head.accent": "real model.",
   "admin.specVersion": "Feature spec",
   "admin.latestPacket": "Last packet",
   "admin.connection": "Connection",
@@ -533,6 +560,104 @@ export const en = {
   "landing.unreachable": "The sensor is not answering, so there are no figures to report.",
   "landing.notReported": "Not reported",
 
+  /* Hero. The headline is three keys so `AccentWord` can carry exactly one of
+     them; splitting it that way is also what lets Arabic reorder the sentence
+     around its own accent word instead of translating a fragment in place. */
+  "landing.hero.lead": "",
+  "landing.hero.term": "Wi-Fi",
+  "landing.hero.mid": " attacks, ",
+  "landing.hero.accent": "named",
+  "landing.hero.tail": " frame by frame.",
+  "landing.hero.lede":
+    "HawkShield listens to 802.11 frames from a Raspberry Pi sensor, classifies each one against eight attack types, and reports what it found. It does not block, and it never claims a network is clean.",
+  "landing.fineprint.model": "Model",
+  "landing.fineprint.spec": "Feature spec",
+  "landing.fineprint.timezone": "Timestamps",
+
+  /* The hero data card. Every row is a real reading; the two notes say which
+     of the capture values were measured and which were only reported. */
+  "landing.capture.title": "What the sensor has stored",
+  "landing.capture.iface": "Interface",
+  "landing.capture.channel": "Channel",
+  "landing.capture.frames": "Frames stored",
+  "landing.capture.classes": "Classes seen",
+  "landing.capture.total": "Classified",
+  "landing.capture.unit": "frames",
+  "landing.capture.severity": "How the classified frames split by severity",
+  "landing.capture.noteMeasured":
+    "Interface and channel were measured on the capture host. Every figure here is a stored count.",
+  "landing.capture.noteConfigured":
+    "This host cannot measure the radio, so interface and channel are what the sensor reported. Every figure here is a stored count, not a sample.",
+
+  /* Coverage strip — the eight classes and what has actually been counted for
+     each. A zero here is a result, not a gap: the class was looked for. */
+  "landing.coverage.eyebrow": "coverage · eight classes",
+  "landing.coverage.seen": "{seen} of {total} seen so far",
+  "landing.coverage.notSeen": "Looked for, not seen",
+
+  /* How it works — prose, not a drawn diagram. */
+  "landing.how.eyebrow": "how it works",
+  "landing.how.lead": "Four steps, all of them ",
+  "landing.how.accent": "inspectable",
+  "landing.how.tail": ".",
+  "landing.how.body":
+    "There is no second model behind the first and no rule layer under it. What follows is the whole pipeline, in the order a frame meets it.",
+  "landing.how.step1": "capture",
+  "landing.how.step1.title": "Monitor mode, on a Raspberry Pi",
+  "landing.how.step1.body":
+    "A Wi-Fi adapter is held in monitor mode and reads 802.11 frames straight off the air — management, control and data alike. Nothing is injected and nothing is dropped.",
+  "landing.how.step2": "features",
+  "landing.how.step2.title": "46 fields per frame",
+  "landing.how.step2.body":
+    "Each frame is reduced to the 46 fields the feature contract names: type and subtype, length, data rate, signal, retry and DS flags, duration, and the addresses.",
+  "landing.how.step3": "classification",
+  "landing.how.step3.title": "One LightGBM model",
+  "landing.how.step3.body":
+    "The model scores the frame and returns one of the eight classes with a probability. There is no second opinion and no rule layer behind it.",
+  "landing.how.step4": "storage",
+  "landing.how.step4.title": "Stored, then served",
+  "landing.how.step4.body":
+    "Every classified frame is written to the database with its timestamp and its probabilities, and served over the same HTTP API this page is reading.",
+  "landing.how.note":
+    "No step above blocks a frame, disconnects a client or changes the network. HawkShield detects, classifies and reports; it is not a prevention system.",
+
+  /* Live numbers. */
+  "landing.numbers.eyebrow": "live numbers",
+  "landing.numbers.lead": "Every figure here was ",
+  "landing.numbers.accent": "measured",
+  "landing.numbers.tail": ", never staged.",
+  "landing.numbers.body":
+    "This page reads the same endpoints the console does, refreshed every thirty seconds. When an endpoint does not answer, the figure is withheld rather than filled in.",
+  "landing.stat.sources": "Unique sources",
+  "landing.stat.busiest": "Most frequent class",
+  "landing.stat.window": "Last {days} days",
+  "landing.stat.trend": "Detections per day · last {days} days",
+
+  /* Saqr. */
+  "landing.saqr.eyebrow": "the agent",
+  "landing.saqr.lead": "Ask ",
+  "landing.saqr.accent": "Saqr",
+  "landing.saqr.tail": " what the sensor stored.",
+  "landing.saqr.body":
+    "Saqr answers questions about the detections in English or Arabic, and prints every tool call it makes while it makes it — so an answer can be traced back to the rows it came from.",
+  "landing.saqr.cta": "Open Saqr",
+  "landing.saqr.p1": "grounded",
+  "landing.saqr.p1.body":
+    "It queries the same database this page reads. It has no other source, and it does not answer from memory.",
+  "landing.saqr.p2": "auditable",
+  "landing.saqr.p2.body":
+    "Each tool call, its arguments and its row count are streamed to the screen as the answer is composed.",
+  "landing.saqr.p3": "bilingual",
+  "landing.saqr.p3.body":
+    "Ask in Arabic, get Arabic. Ask in English, get English. Technical identifiers stay Latin either way.",
+
+  /* Ft5 statement footer — the page's last argument, and the IDS/IPS line. */
+  "landing.footer.lead": "It reports what it saw, and never ",
+  "landing.footer.accent": "claims",
+  "landing.footer.tail": " it stopped anything.",
+  "landing.footer.linksLabel": "Footer links",
+  "landing.footer.meta": "Detection only · HawkShield does not block, filter or alter traffic",
+
   /* ── Dashboard modules ─────────────────────────────────────────────── */
   "dashboard.error.load": "Could not read this from the sensor.",
 
@@ -560,6 +685,16 @@ export const en = {
 
   "dashboard.tape.title": "Live tape",
   "dashboard.tape.subtitle": "Newest detections first",
+  "dashboard.tape.aria": "Newest detections, as they arrive",
+
+  "dashboard.head.lead": "What the sensor ",
+  "dashboard.head.accent": "saw.",
+  "dashboard.section.capture": "Capture",
+  "dashboard.section.classification": "Classification",
+  "dashboard.section.rhythm": "Rhythm",
+  "dashboard.section.sources": "Sources and spectrum",
+  "dashboard.card.split": "How the detections in this window split by severity",
+  "dashboard.card.note": "Every figure on this card came from the sensor; anything it did not report is marked as such.",
 
   "dashboard.ledger.title": "Severity ledger",
   "dashboard.ledger.total": "Detections",
@@ -579,6 +714,7 @@ export const en = {
   "dashboard.heatmap.cell": "{day} {hour}:00 — {n} detections",
   "dashboard.heatmap.legendLow": "None",
   "dashboard.heatmap.legendHigh": "Busiest",
+  "dashboard.heatmap.scrollHint": "Scroll the grid sideways to reach every hour.",
 
   "dashboard.channels.share": "Share",
 }

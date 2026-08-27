@@ -20,7 +20,7 @@
 import * as React from "react"
 import { Loader2, Zap } from "lucide-react"
 
-import { Module } from "@/components/hs/module"
+import { Panel } from "@/components/hs/panel"
 import { StatusPill } from "@/components/hs/status-pill"
 import { Button } from "@/components/ui/button"
 import { Checkbox } from "@/components/ui/checkbox"
@@ -123,7 +123,7 @@ export function SimulatePanel({
   })
 
   return (
-    <Module
+    <Panel
       label={t("admin.simulate.title")}
       title={t("admin.simulate.subtitle")}
       aria-label={t("admin.simulate.aria")}
@@ -134,16 +134,20 @@ export function SimulatePanel({
         <div className="flex flex-col gap-2">
           <div className="flex items-center justify-between gap-3">
             <span className="hs-label">{t("admin.simulate.classes")}</span>
-            <label className="text-ink flex cursor-pointer items-center gap-2 text-sm">
+            <label className="text-ink-0 flex cursor-pointer items-center gap-2 text-sm">
               <Checkbox checked={all} onCheckedChange={(v) => setAll(v === true)} />
               {t("admin.simulate.allClasses")}
-              <span className="text-ink-faint text-xs">({t("admin.simulate.backendPicks")})</span>
+              <span className="text-ink-2 text-xs">({t("admin.simulate.backendPicks")})</span>
             </label>
           </div>
 
           <div
             className={cn(
-              "grid grid-cols-2 gap-2 transition-opacity sm:grid-cols-3",
+              // One column on a phone. At two columns a 320px viewport left
+              // about 70px for the label and `Disassociation` truncated to
+              // `Disassocia…`, which is the one word on this panel an operator
+              // has to be able to tell apart from `Deauth`.
+              "grid grid-cols-1 gap-2 transition-opacity sm:grid-cols-2 lg:grid-cols-3",
               all && "pointer-events-none opacity-40"
             )}
             aria-disabled={all}
@@ -154,8 +158,8 @@ export function SimulatePanel({
                 <label
                   key={cls}
                   className={cn(
-                    "border-hairline flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 transition-colors",
-                    active ? "border-hairline-strong bg-surface-sunken" : "hover:border-hairline-strong"
+                    "border-rule flex cursor-pointer items-center gap-2 rounded-md border px-2.5 py-1.5 transition-colors",
+                    active ? "border-rule-soft bg-paper-2" : "hover:border-rule-soft"
                   )}
                 >
                   <Checkbox checked={active} disabled={all} onCheckedChange={() => toggle(cls)} />
@@ -165,13 +169,13 @@ export function SimulatePanel({
                     style={{ background: attackColorVar(cls) }}
                   />
                   {/* Class identifiers are Latin in both locales. */}
-                  <span className="text-ink hs-ltr truncate text-sm">{attackLabels[cls]}</span>
+                  <span className="text-ink-0 hs-ltr truncate text-sm">{attackLabels[cls]}</span>
                 </label>
               )
             })}
           </div>
 
-          {all && <p className="text-ink-faint max-w-prose text-xs">{t("admin.simulate.allNote")}</p>}
+          {all && <p className="text-ink-2 max-w-[68ch] text-xs">{t("admin.simulate.allNote")}</p>}
         </div>
 
         {/* ---- count + intensity ------------------------------------------ */}
@@ -205,7 +209,7 @@ export function SimulatePanel({
               // keeps it agreeing with the preset row beneath, which ascends
               // 25 → 500 in reading order; pinning the track LTR left the two
               // controls counting in opposite directions on the same Arabic page.
-              className="accent-hs-azure w-full"
+              className="accent-accent w-full"
             />
             <div className="flex flex-wrap items-center gap-1.5">
               {SIMULATE_COUNT_PRESETS.map((p) => (
@@ -238,7 +242,7 @@ export function SimulatePanel({
                 </Button>
               ))}
             </div>
-            <p className="text-ink-faint text-xs">
+            <p className="text-ink-2 text-xs">
               {t(intensity === "burst" ? "admin.simulate.burstHint" : "admin.simulate.trickleHint")}
             </p>
           </div>
@@ -259,26 +263,26 @@ export function SimulatePanel({
 
         {/* ---- result ------------------------------------------------------ */}
         {result?.kind === "error" && (
-          <div className="border-hairline bg-surface-sunken flex flex-col gap-1 rounded-md border p-3">
+          <div className="border-rule-soft bg-paper-2 flex flex-col gap-1 rounded-md border p-3">
             <span className="text-sev-high text-sm font-medium">
               {t(result.title.key, result.title.vars)}
             </span>
-            <span className="text-ink-dim text-xs">{t(result.message.key, result.message.vars)}</span>
+            <span className="text-ink-1 text-xs">{t(result.message.key, result.message.vars)}</span>
             {/* FastAPI's own `detail`, verbatim. It is the server describing what
                 it rejected; translating a message we did not write would be
                 inventing words for it. Pinned LTR since it is machine prose. */}
             {result.detail && (
-              <span className="hs-ltr text-ink-faint font-mono text-xs">{result.detail}</span>
+              <span className="hs-ltr text-ink-2 font-mono text-xs">{result.detail}</span>
             )}
           </div>
         )}
 
         {result?.kind === "ok" && (
-          <div className="border-hairline flex flex-col gap-2 rounded-md border p-3">
+          <div className="border-rule-soft flex flex-col gap-2 rounded-md border p-3">
             <div className="flex flex-wrap items-center justify-between gap-2">
               <span className="hs-label">{t("admin.simulate.output")}</span>
               {result.summary.model_version && (
-                <span className="hs-ltr text-ink-faint font-mono text-xs">
+                <span className="hs-ltr text-ink-2 font-mono text-xs">
                   {String(result.summary.model_version)}
                 </span>
               )}
@@ -289,10 +293,10 @@ export function SimulatePanel({
             )}
 
             {rows.length === 0 ? (
-              <p className="text-ink-dim text-xs">{t("admin.simulate.storedNothing")}</p>
+              <p className="text-ink-1 text-xs">{t("admin.simulate.storedNothing")}</p>
             ) : (
               <div className="flex flex-col">
-                <div className="border-hairline grid grid-cols-[1fr_5rem_5rem] gap-3 border-b pb-1">
+                <div className="border-rule grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem] gap-3 border-b pb-2">
                   <span className="hs-label">{t("admin.simulate.column.class")}</span>
                   <span className="hs-label text-end">{t("admin.simulate.column.detected")}</span>
                   <span className="hs-label text-end">{t("admin.simulate.column.stored")}</span>
@@ -300,7 +304,7 @@ export function SimulatePanel({
                 {rows.map((r) => (
                   <div
                     key={r.key}
-                    className="border-hairline grid grid-cols-[1fr_5rem_5rem] items-center gap-3 border-b py-1.5 last:border-0"
+                    className="border-rule grid grid-cols-[minmax(0,1fr)_4.25rem_4.25rem] items-center gap-3 border-b py-2 last:border-0"
                   >
                     <span className="flex min-w-0 items-center gap-2">
                       <span
@@ -308,7 +312,7 @@ export function SimulatePanel({
                         className="size-2 shrink-0 rounded-full"
                         style={{ background: r.color }}
                       />
-                      <span className="text-ink hs-ltr truncate text-sm">{r.label}</span>
+                      <span className="text-ink-0 hs-ltr truncate text-sm">{r.label}</span>
                       {/* The model may return a different label than requested;
                           when it does, say so rather than quietly relabelling. */}
                       {r.topLabel !== r.label && (
@@ -317,8 +321,8 @@ export function SimulatePanel({
                         </StatusPill>
                       )}
                     </span>
-                    <span className="hs-num text-ink-dim text-end text-sm">{f.number(r.detected)}</span>
-                    <span className="hs-num text-ink text-end text-sm">{f.number(r.persisted)}</span>
+                    <span className="hs-num text-ink-2 text-end text-sm">{f.number(r.detected)}</span>
+                    <span className="hs-num text-ink-0 text-end text-sm">{f.number(r.persisted)}</span>
                   </div>
                 ))}
               </div>
@@ -326,7 +330,7 @@ export function SimulatePanel({
           </div>
         )}
       </div>
-    </Module>
+    </Panel>
   )
 }
 

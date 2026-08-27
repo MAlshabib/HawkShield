@@ -74,57 +74,99 @@ const FALLBACK_CENTRE: LatLng = { lat: 24.7136, lng: 46.6753 }
  * design system's stylesheet should not carry a third-party library's reset.
  */
 const MAP_CSS = `
+/* The basemap, treated for paper in BOTH themes.
+
+   Light: OSM's own palette is a saturated road atlas — beside four paper steps
+   and one azure it reads as a photograph pasted into a document. Desaturating
+   and lifting it lands the tiles on the same paper the panels are cut from,
+   without touching a single label, road or coordinate.
+
+   Dark: the same tiles inverted. A white rectangle inside a graphite page is
+   unreadable, and there is no dark OSM tile server to reach for offline. Both
+   are rendering treatments of identical geometry. */
 .hs-map .leaflet-container {
-  background: var(--surface-sunken);
+  background: var(--color-paper-2);
   font-family: var(--font-body);
   font-size: 0.75rem;
 }
-/* The one raster treatment: same tiles, inverted so they sit on the dark
-   substrate instead of glaring off it. */
-.dark .hs-map .leaflet-tile-pane {
-  filter: invert(1) hue-rotate(180deg) brightness(0.92) contrast(0.88) saturate(0.7);
+.hs-map .leaflet-tile-pane {
+  filter: saturate(0.62) contrast(0.9) brightness(1.04);
 }
+.dark .hs-map .leaflet-tile-pane {
+  filter: invert(1) hue-rotate(180deg) brightness(0.86) contrast(0.9) saturate(0.55);
+}
+
+/* Controls, popups and tooltips are paper objects: the card surface, the soft
+   hairline, the system radius. Nothing here invents a colour. */
 .hs-map .leaflet-bar,
 .hs-map .leaflet-bar a {
-  background: var(--surface);
-  color: var(--ink);
-  border-color: var(--hairline-strong);
-  border-radius: 2px;
+  background: var(--color-paper-1);
+  color: var(--color-ink-0);
+  border-color: var(--color-rule-soft);
+  border-radius: var(--radius-sm);
 }
-.hs-map .leaflet-bar a:hover { background: var(--surface-raised); color: var(--ink); }
+.hs-map .leaflet-bar a:hover {
+  background: var(--color-paper-2);
+  color: var(--color-ink-0);
+}
 .hs-map .leaflet-control-attribution {
-  background: color-mix(in oklab, var(--surface) 88%, transparent);
-  color: var(--ink-faint);
-  border-start-start-radius: 2px;
+  background: color-mix(in oklch, var(--color-paper-1) 88%, transparent);
+  color: var(--color-ink-2);
+  border-start-start-radius: var(--radius-sm);
 }
-.hs-map .leaflet-control-attribution a { color: var(--hs-azure); }
+.hs-map .leaflet-control-attribution a {
+  color: var(--color-accent-cta);
+}
 .hs-map .leaflet-popup-content-wrapper,
 .hs-map .leaflet-popup-tip {
-  background: var(--surface-raised);
-  color: var(--ink);
-  border: 1px solid var(--hairline-strong);
-  border-radius: 2px;
+  background: var(--color-paper-1);
+  color: var(--color-ink-0);
+  border: 1px solid var(--color-rule-soft);
+  border-radius: var(--radius-md);
   box-shadow: none;
 }
-.hs-map .leaflet-popup-content { margin: 0.5rem 0.625rem; }
-.hs-map .leaflet-popup-close-button { color: var(--ink-dim); }
+.hs-map .leaflet-popup-content {
+  margin: 0.625rem 0.75rem;
+}
+.hs-map .leaflet-popup-close-button {
+  color: var(--color-ink-2);
+}
 .hs-map .leaflet-tooltip {
-  background: var(--surface);
-  color: var(--ink);
-  border: 1px solid var(--hairline-strong);
-  border-radius: 2px;
+  background: var(--color-paper-1);
+  color: var(--color-ink-0);
+  border: 1px solid var(--color-rule-soft);
+  border-radius: var(--radius-sm);
   box-shadow: none;
   font-family: var(--font-mono);
   font-size: 0.6875rem;
-  padding: 1px 5px;
+  padding: 2px 6px;
 }
-.hs-map .leaflet-tooltip-top::before { border-top-color: var(--hairline-strong); }
+.hs-map .leaflet-tooltip-top::before {
+  border-top-color: var(--color-rule-soft);
+}
 
-/* Paths are painted here because Leaflet writes colours as SVG presentation
-   attributes, where a custom property does not resolve. */
-.hs-map .hs-path-estimate { stroke: var(--sev-critical); fill: var(--sev-critical); }
-.hs-map .hs-path-uncertainty { stroke: var(--sev-critical); fill: var(--sev-critical); }
-.hs-map .hs-path-link { stroke: var(--hs-azure); }
+/* Paths are painted HERE, never through pathOptions.color.
+
+   Leaflet writes a path's colour as an SVG *presentation attribute*, and a
+   var() in a presentation attribute does not resolve — the path silently
+   renders black, which on a light basemap looks deliberate and on a dark one
+   disappears. Every path therefore carries a className and is coloured by
+   these rules, which also means the map re-themes with the page instead of
+   freezing at whatever the palette was when it mounted.
+
+   NOTE: no backticks anywhere in this string. It is a template literal, and a
+   backtick in a comment inside it terminates the CSS halfway through. */
+.hs-map .hs-path-estimate {
+  stroke: var(--color-critical);
+  fill: var(--color-critical);
+}
+.hs-map .hs-path-uncertainty {
+  stroke: var(--color-critical);
+  fill: var(--color-critical);
+}
+.hs-map .hs-path-link {
+  stroke: var(--color-accent);
+}
 `
 
 /** One label/value line inside a popup. */
@@ -132,7 +174,7 @@ function PopupLine({ label, children }: { label: React.ReactNode; children: Reac
   return (
     <div className="flex items-baseline justify-between gap-3">
       <span className="hs-label">{label}</span>
-      <span className="text-ink text-xs">{children}</span>
+      <span className="text-ink-0 text-xs">{children}</span>
     </div>
   )
 }
@@ -178,7 +220,7 @@ export default function LeafletMap({
       {/* `dir="ltr"` stops here. Everything outside this box mirrors normally. */}
       <div
         dir="ltr"
-        className="hs-map border-hairline bg-surface-sunken relative overflow-hidden rounded-md border"
+        className="hs-map bg-paper-0 relative min-w-0 overflow-hidden"
         style={{ blockSize: height }}
         role="img"
         aria-label={t("map.mapLabel")}
@@ -187,7 +229,7 @@ export default function LeafletMap({
           <div
             // `dir` is restored here because this is prose, not geography.
             dir={dir}
-            className="border-hairline bg-surface pointer-events-none absolute inset-x-0 top-0 z-[1000] border-b px-3 py-1.5 text-center"
+            className="border-rule bg-paper-1 pointer-events-none absolute inset-x-0 top-0 z-[1000] border-b px-3 py-1.5 text-center"
           >
             <span className="hs-label text-sev-high">{t("map.tilesOffline")}</span>
           </div>
@@ -220,7 +262,7 @@ export default function LeafletMap({
                 </Tooltip>
                 <Popup>
                   <div dir={dir} className="flex min-w-44 flex-col gap-1">
-                    <span className="text-ink text-sm font-medium">
+                    <span className="text-ink-0 text-sm font-medium">
                       {ap.name ? <span className="hs-ltr">{ap.name}</span> : t("map.apLocations")}
                     </span>
                     <PopupLine label={t("threats.detail.bssid")}>
@@ -241,7 +283,7 @@ export default function LeafletMap({
                         </PopupLine>
                       </>
                     ) : (
-                      <span className="text-ink-faint text-xs">{t("map.rssiEmpty")}</span>
+                      <span className="text-ink-2 text-xs">{t("map.rssiEmpty")}</span>
                     )}
                   </div>
                 </Popup>
@@ -258,7 +300,7 @@ export default function LeafletMap({
               >
                 <Popup>
                   <div dir={dir} className="flex min-w-44 flex-col gap-1">
-                    <span className="text-ink text-sm font-medium">{t("map.estimatedSource")}</span>
+                    <span className="text-ink-0 text-sm font-medium">{t("map.estimatedSource")}</span>
                     <PopupLine label={t("map.latitude")}>
                       <span className="hs-num">{centre.lat.toFixed(6)}</span>
                     </PopupLine>
