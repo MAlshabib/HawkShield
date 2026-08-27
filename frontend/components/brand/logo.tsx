@@ -54,20 +54,29 @@ const Logo = React.forwardRef<HTMLSpanElement, LogoProps>(function Logo(
 export type WordmarkSize = "sm" | "md" | "lg"
 
 /**
- * "HAWKSHIELD" set in the display face with the wide tracking taken off the
- * project poster. Tracking is the whole identity here, so it scales with the
- * size step rather than being a fixed em value that collapses at display sizes.
+ * "HawkShield" set in the display face.
+ *
+ * V2 set this uppercase at 0.2-0.28em tracking, borrowed off the project
+ * poster. Falcon Paper drops both: on paper, wide-tracked all-caps reads as a
+ * defence-contractor letterhead, which is the exact register this system exists
+ * to leave behind. The wordmark is now sentence-case at weight 700 with a
+ * tight optical tracking — the same treatment every headline gets, which is
+ * what makes the mark feel like it belongs to the page rather than sitting on
+ * top of it.
+ *
+ * `split` paints "Shield" in azure, the way the poster splits it. Colour, not
+ * spacing, now carries the identity.
  */
 export interface WordmarkProps extends Omit<React.ComponentPropsWithoutRef<"span">, "children"> {
   size?: WordmarkSize
-  /** Render the second half in azure, as the poster splits it. */
+  /** Paint "Shield" in azure, as the poster splits it. */
   split?: boolean
 }
 
 const wordmarkSizes: Record<WordmarkSize, string> = {
-  sm: "text-sm tracking-[0.28em]",
-  md: "text-xl tracking-[0.24em]",
-  lg: "text-3xl tracking-[0.2em]",
+  sm: "text-base tracking-[-0.02em]",
+  md: "text-xl tracking-[-0.025em]",
+  lg: "text-3xl tracking-[-0.03em]",
 }
 
 const Wordmark = React.forwardRef<HTMLSpanElement, WordmarkProps>(function Wordmark(
@@ -82,17 +91,14 @@ const Wordmark = React.forwardRef<HTMLSpanElement, WordmarkProps>(function Wordm
       // under RTL even though the page around it does.
       dir="ltr"
       className={cn(
-        "inline-block font-display font-medium whitespace-nowrap uppercase",
-        // Letter-spacing also lands after the final letter, which throws the
-        // optical centring off in any flex row. Pull that trailing space back.
-        "-me-[0.2em]",
+        "font-display inline-block leading-none font-bold whitespace-nowrap",
         wordmarkSizes[size],
         className
       )}
       {...props}
     >
-      HAWK
-      <span className={cn(split && "text-hs-azure")}>SHIELD</span>
+      Hawk
+      <span className={cn(split && "text-accent")}>Shield</span>
     </span>
   )
 })

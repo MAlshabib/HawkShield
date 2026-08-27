@@ -14,7 +14,13 @@ import {
 import { cn } from "@/lib/utils"
 
 /**
- * The dense operational table.
+ * The operational table.
+ *
+ * On paper it is a printed list, not a terminal grid: a hairline under each
+ * row, generous cell rhythm, the head set in the mono eyebrow, and figures
+ * right-aligned on the inline-end edge so a column of numbers reads as a
+ * column. No zebra striping — with a rule under every row, stripes are a second
+ * device doing the first one's job.
  *
  * Four states are built in rather than left to the caller, because the failure
  * mode this replaces is a table that only ever renders its happy path and shows
@@ -86,11 +92,11 @@ const hideBelowClass = {
 } as const
 
 function SortIcon({ active, direction }: { active: boolean; direction: SortDirection }) {
-  if (!active) return <ChevronsUpDown className="text-ink-faint size-3" aria-hidden="true" />
+  if (!active) return <ChevronsUpDown className="text-ink-3 size-3" aria-hidden="true" />
   return direction === "asc" ? (
-    <ArrowUp className="text-hs-azure size-3" aria-hidden="true" />
+    <ArrowUp className="text-accent-cta size-3" aria-hidden="true" />
   ) : (
-    <ArrowDown className="text-hs-azure size-3" aria-hidden="true" />
+    <ArrowDown className="text-accent-cta size-3" aria-hidden="true" />
   )
 }
 
@@ -149,9 +155,9 @@ function DataTable<T>({
                       type="button"
                       onClick={() => handleSort(column)}
                       className={cn(
-                        "hs-label hover:text-ink inline-flex items-center gap-1 transition-colors",
+                        "hs-label hover:text-ink-0 inline-flex items-center gap-1.5 transition-colors",
                         align === "end" && "flex-row-reverse",
-                        active && "text-ink"
+                        active && "text-ink-0"
                       )}
                     >
                       {column.header}
@@ -228,19 +234,19 @@ function DataTable<T>({
       {/* The three non-row states share one footprint so the table does not
           resize as it settles. */}
       {state === "loading" && (
-        <div className="hs-scan border-hairline grid min-h-24 place-items-center border-t">
+        <div className="hs-scan border-rule grid min-h-28 place-items-center border-t">
           {loadingLabel && <span className="hs-label">{loadingLabel}</span>}
         </div>
       )}
 
       {state === "error" && (
-        <div className="border-hairline grid min-h-24 place-items-center gap-1 border-t px-3 py-6 text-center">
+        <div className="border-rule grid min-h-28 place-items-center gap-1 border-t px-4 py-8 text-center">
           <span className="hs-label text-sev-critical">{errorLabel}</span>
         </div>
       )}
 
       {isEmpty && (
-        <div className="border-hairline grid min-h-24 place-items-center border-t px-3 py-6 text-center">
+        <div className="border-rule grid min-h-28 place-items-center border-t px-4 py-8 text-center">
           <span className="hs-label">{emptyLabel}</span>
         </div>
       )}

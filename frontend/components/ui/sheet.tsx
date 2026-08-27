@@ -42,7 +42,7 @@ function SheetOverlay({
     <SheetPrimitive.Overlay
       data-slot="sheet-overlay"
       className={cn(
-        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-[color-mix(in_oklab,var(--bg)_80%,transparent)]",
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-[color-mix(in_oklch,var(--bg)_80%,transparent)]",
         className
       )}
       {...props}
@@ -64,7 +64,7 @@ function SheetContent({
       <SheetPrimitive.Content
         data-slot="sheet-content"
         className={cn(
-          "bg-surface border-hairline-strong data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col gap-4 transition ease-in-out data-[state=closed]:duration-200 data-[state=open]:duration-300",
+          "bg-paper-1 border-rule-soft data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col gap-4 transition ease-in-out data-[state=closed]:duration-200 data-[state=open]:duration-300",
           // `right`/`left` are read as inline-end/inline-start: the panel and its
           // slide both flip under RTL, so the sheet always arrives from the
           // reading edge rather than from a fixed side of the glass.
@@ -81,7 +81,7 @@ function SheetContent({
         {...props}
       >
         {children}
-        <SheetPrimitive.Close className="text-ink-dim hover:text-ink absolute top-3 end-3 rounded-sm transition-colors disabled:pointer-events-none">
+        <SheetPrimitive.Close className="text-ink-2 hover:text-ink-0 absolute top-4 end-4 rounded-full transition-colors disabled:pointer-events-none">
           <XIcon className="size-4" />
           <span className="sr-only">Close</span>
         </SheetPrimitive.Close>
@@ -94,7 +94,7 @@ function SheetHeader({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="sheet-header"
-      className={cn("border-hairline flex flex-col gap-1 border-b p-4", className)}
+      className={cn("border-rule flex flex-col gap-1.5 border-b p-5", className)}
       {...props}
     />
   )
@@ -104,7 +104,7 @@ function SheetFooter({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="sheet-footer"
-      className={cn("mt-auto flex flex-col gap-2 p-4", className)}
+      className={cn("mt-auto flex flex-col gap-2 p-5", className)}
       {...props}
     />
   )
@@ -117,7 +117,7 @@ function SheetTitle({
   return (
     <SheetPrimitive.Title
       data-slot="sheet-title"
-      className={cn("text-ink font-display text-base leading-none font-medium", className)}
+      className={cn("text-ink-0 font-display text-lg leading-tight font-bold", className)}
       {...props}
     />
   )
@@ -130,7 +130,7 @@ function SheetDescription({
   return (
     <SheetPrimitive.Description
       data-slot="sheet-description"
-      className={cn("text-ink-dim text-sm", className)}
+      className={cn("text-ink-2 text-sm", className)}
       {...props}
     />
   )

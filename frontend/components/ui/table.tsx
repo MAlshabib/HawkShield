@@ -32,7 +32,7 @@ function TableHeader({ className, ...props }: React.ComponentProps<"thead">) {
   return (
     <thead
       data-slot="table-header"
-      className={cn("[&_tr]:border-hairline [&_tr]:border-b", className)}
+      className={cn("[&_tr]:border-rule [&_tr]:border-b", className)}
       {...props}
     />
   )
@@ -53,7 +53,7 @@ function TableFooter({ className, ...props }: React.ComponentProps<"tfoot">) {
     <tfoot
       data-slot="table-footer"
       className={cn(
-        "bg-surface-sunken border-hairline border-t font-medium [&>tr]:last:border-b-0",
+        "bg-paper-2 border-rule-soft border-t font-medium [&>tr]:last:border-b-0",
         className
       )}
       {...props}
@@ -68,7 +68,7 @@ function TableRow({ className, ...props }: React.ComponentProps<"tr">) {
       className={cn(
         // The hover lift is a surface step, not a tint — a coloured hover would
         // compete with the severity encoding in the row's own cells.
-        "border-hairline hover:bg-surface-raised data-[state=selected]:bg-surface-sunken border-b transition-colors",
+        "border-rule hover:bg-paper-2 data-[state=selected]:bg-accent-tint border-b transition-colors",
         className
       )}
       {...props}
@@ -81,7 +81,7 @@ function TableHead({ className, ...props }: React.ComponentProps<"th">) {
     <th
       data-slot="table-head"
       className={cn(
-        "hs-label h-8 px-3 text-start align-middle whitespace-nowrap [&:has([role=checkbox])]:pe-0 [&>[role=checkbox]]:translate-y-[2px]",
+        "hs-label h-10 px-4 text-start align-middle whitespace-nowrap [&:has([role=checkbox])]:pe-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}
@@ -94,7 +94,7 @@ function TableCell({ className, ...props }: React.ComponentProps<"td">) {
     <td
       data-slot="table-cell"
       className={cn(
-        "px-3 py-2 align-middle whitespace-nowrap [&:has([role=checkbox])]:pe-0 [&>[role=checkbox]]:translate-y-[2px]",
+        "px-4 py-3 align-middle whitespace-nowrap [&:has([role=checkbox])]:pe-0 [&>[role=checkbox]]:translate-y-[2px]",
         className
       )}
       {...props}
@@ -109,7 +109,7 @@ function TableCaption({
   return (
     <caption
       data-slot="table-caption"
-      className={cn("text-ink-dim mt-3 text-start text-xs", className)}
+      className={cn("text-ink-2 mt-3 text-start text-xs", className)}
       {...props}
     />
   )

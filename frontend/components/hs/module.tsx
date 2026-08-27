@@ -1,95 +1,28 @@
 import * as React from "react"
 
-import { cn } from "@/lib/utils"
+import { Panel, PanelGrid, type PanelProps } from "@/components/hs/panel"
 
 /**
- * The core repeating unit of the whole UI: a bounded panel with a dense header
- * strip.
+ * DEPRECATED — use `components/hs/panel` directly.
  *
- * A module is a hairline rectangle on a lifted surface. There is no card
- * shadow, no rounded corner past 2px, and no coloured left border — structure
- * comes from the rule under the header and from the surface step, which is what
- * lets nine of these sit side by side without the screen turning into confetti.
+ * `Module` was the V2 instrument container. Falcon Paper replaces it with
+ * `Panel`, but a straight deletion would break every page that has not been
+ * rebuilt yet (`app/(app)/**`, `components/threats/*`, `components/MapTrilateration`,
+ * `components/simulate-panel`), all of which are owned by other engineers and
+ * are mid-rewrite. So this file stays as a one-hop alias: the old name, the old
+ * props, the new component underneath.
+ *
+ * It carries no styling of its own. When the last importer has moved to
+ * `Panel`, delete this file — `git grep "hs/module"` returning nothing is the
+ * signal.
  */
 
-// `title` is overridden deliberately: the module's title is rendered content,
-// not the browser's tooltip attribute of the same name.
-export interface ModuleProps extends Omit<React.ComponentPropsWithoutRef<"section">, "title"> {
-  /** Uppercase mono micro-label. The module's permanent identity. */
-  label?: React.ReactNode
-  /** Optional secondary line in ink, for a subject that changes (an SSID, a date range). */
-  title?: React.ReactNode
-  /** Right-aligned (inline-end) header slot: filters, a menu, a live indicator. */
-  actions?: React.ReactNode
-  /**
-   * Drop the body padding so a table can sit flush against the hairline. Tables
-   * carry their own cell rhythm and double padding reads as a misalignment.
-   */
-  flush?: boolean
-  /** Paint the loading scan over the body. Content stays mounted underneath. */
-  loading?: boolean
-}
+export type ModuleProps = PanelProps
 
-const Module = React.forwardRef<HTMLElement, ModuleProps>(function Module(
-  { label, title, actions, flush = false, loading = false, className, children, ...props },
-  ref
-) {
-  const hasHeader = Boolean(label || title || actions)
-
-  return (
-    <section
-      ref={ref}
-      data-slot="module"
-      data-loading={loading || undefined}
-      className={cn(
-        "bg-surface border-hairline flex min-w-0 flex-col rounded-md border",
-        className
-      )}
-      {...props}
-    >
-      {hasHeader && (
-        <header
-          data-slot="module-header"
-          className="border-hairline flex min-h-9 items-center gap-3 border-b px-3 py-2"
-        >
-          <div className="flex min-w-0 items-baseline gap-2">
-            {label && <span className="hs-label shrink-0">{label}</span>}
-            {title && (
-              <h3 className="text-ink truncate text-sm leading-none font-medium">{title}</h3>
-            )}
-          </div>
-          {actions && (
-            <div className="ms-auto flex shrink-0 items-center gap-1.5">{actions}</div>
-          )}
-        </header>
-      )}
-
-      <div
-        data-slot="module-body"
-        className={cn("min-w-0 flex-1", !flush && "p-3", loading && "hs-scan")}
-      >
-        {children}
-      </div>
-    </section>
-  )
+const Module = React.forwardRef<HTMLElement, ModuleProps>(function Module(props, ref) {
+  return <Panel ref={ref} data-slot="module" {...props} />
 })
 
-/**
- * A run of modules on the 8pt grid. Kept here rather than in each page so the
- * gutter between instruments is defined once — an inconsistent gutter is the
- * fastest way to make a panel grid look assembled rather than built.
- */
-const ModuleGrid = React.forwardRef<HTMLDivElement, React.ComponentPropsWithoutRef<"div">>(
-  function ModuleGrid({ className, ...props }, ref) {
-    return (
-      <div
-        ref={ref}
-        data-slot="module-grid"
-        className={cn("grid gap-2 sm:gap-3", className)}
-        {...props}
-      />
-    )
-  }
-)
+const ModuleGrid = PanelGrid
 
 export { Module, ModuleGrid }

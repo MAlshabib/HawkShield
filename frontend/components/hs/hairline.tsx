@@ -5,11 +5,15 @@ import { cn } from "@/lib/utils"
 /**
  * A rule, optionally carrying a label.
  *
- * The hairline is the system's only structural device — it does the work cards
- * and shadows do elsewhere — so a labelled one is how a long column gets
- * sectioned without introducing a second nested panel. The rule continues past
- * the label on both sides so the label reads as sitting *on* the line rather
- * than as a heading that happens to have a line next to it.
+ * Falcon Paper builds structure from two rule weights and nothing else, so a
+ * labelled rule is how a long column gets sectioned without introducing a
+ * second nested panel. The rule continues past the label on both sides, which
+ * is what makes the label read as sitting *on* the line rather than as a
+ * heading that happens to have a line next to it.
+ *
+ * Retained from V2 rather than replaced: `app/(app)/page.tsx` and
+ * `components/threats/detection-drawer.tsx` both still import it, and both are
+ * owned by other engineers. Only the tokens changed.
  */
 
 export interface HairlineProps extends React.ComponentPropsWithoutRef<"div"> {
@@ -26,7 +30,7 @@ const Hairline = React.forwardRef<HTMLDivElement, HairlineProps>(function Hairli
   { label, orientation = "horizontal", align = "start", strong = false, className, ...props },
   ref
 ) {
-  const line = strong ? "bg-hairline-strong" : "bg-hairline"
+  const line = strong ? "bg-rule-soft" : "bg-rule"
 
   if (orientation === "vertical") {
     return (

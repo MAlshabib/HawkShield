@@ -9,20 +9,20 @@ import { cn } from "@/lib/utils"
  *
  * Deliberately distinct from `components/hs/status-pill`: a Badge names a thing
  * (a class, an interface, a build), a StatusPill grades one. The radius is what
- * tells them apart at a glance — square labels, round grades — so a Badge must
- * never take `rounded-full`.
+ * tells them apart at a glance — a soft-cornered label against a fully round
+ * grade — so a Badge must never take `rounded-full`.
  */
 const badgeVariants = cva(
-  "hs-label inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-sm border px-1.5 py-0.5 whitespace-nowrap transition-colors [&>svg]:pointer-events-none [&>svg]:size-3 aria-invalid:border-destructive",
+  "hs-label inline-flex w-fit shrink-0 items-center justify-center gap-1 overflow-hidden rounded-sm border px-2 py-1 whitespace-nowrap transition-colors [&>svg]:pointer-events-none [&>svg]:size-3 aria-invalid:border-destructive",
   {
     variants: {
       variant: {
         default:
-          "bg-surface-sunken border-hairline-strong text-ink",
-        secondary: "bg-transparent border-hairline text-ink-dim",
+          "bg-paper-2 border-transparent text-ink-1",
+        secondary: "bg-transparent border-rule-soft text-ink-2",
         destructive:
-          "border-[color-mix(in_oklab,var(--sev-critical)_38%,transparent)] bg-[color-mix(in_oklab,var(--sev-critical)_12%,transparent)] text-sev-critical",
-        outline: "text-ink border-hairline-strong bg-transparent",
+          "border-[color-mix(in_oklch,var(--sev-critical)_32%,transparent)] bg-[color-mix(in_oklch,var(--sev-critical)_14%,transparent)] text-sev-critical",
+        outline: "text-ink-0 border-rule-soft bg-transparent",
       },
     },
     defaultVariants: {

@@ -17,7 +17,7 @@ export interface SparklineProps
   values: readonly number[]
   width?: number
   height?: number
-  /** Any CSS colour. Defaults to the live azure token so it re-themes. */
+  /** Any CSS colour. Defaults to the live accent token so it re-themes. */
   stroke?: string
   /** Fill the area under the line at low opacity. Off for dense tables. */
   area?: boolean
@@ -43,9 +43,9 @@ function scale(values: readonly number[], height: number, padding: number) {
 const Sparkline = React.forwardRef<SVGSVGElement, SparklineProps>(function Sparkline(
   {
     values,
-    width = 64,
-    height = 18,
-    stroke = "var(--hs-azure)",
+    width = 72,
+    height = 20,
+    stroke = "var(--color-accent)",
     area = false,
     showLast = true,
     label,
@@ -89,17 +89,17 @@ const Sparkline = React.forwardRef<SVGSVGElement, SparklineProps>(function Spark
     >
       {geometry ? (
         <>
-          {area && <path d={geometry.areaPath} fill={stroke} fillOpacity={0.14} stroke="none" />}
+          {area && <path d={geometry.areaPath} fill={stroke} fillOpacity={0.12} stroke="none" />}
           <polyline
             points={geometry.line}
             fill="none"
             stroke={stroke}
-            strokeWidth={1.25}
+            strokeWidth={1.5}
             strokeLinecap="round"
             strokeLinejoin="round"
             vectorEffect="non-scaling-stroke"
           />
-          {showLast && <circle cx={geometry.last[0]} cy={geometry.last[1]} r={1.5} fill={stroke} />}
+          {showLast && <circle cx={geometry.last[0]} cy={geometry.last[1]} r={1.75} fill={stroke} />}
         </>
       ) : (
         /* Fewer than two samples is not an error, it is "not enough history
@@ -109,7 +109,7 @@ const Sparkline = React.forwardRef<SVGSVGElement, SparklineProps>(function Spark
           y1={height / 2}
           x2={width}
           y2={height / 2}
-          stroke="var(--hairline-strong)"
+          stroke="var(--color-rule-soft)"
           strokeWidth={1}
           vectorEffect="non-scaling-stroke"
         />

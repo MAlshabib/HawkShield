@@ -5,11 +5,19 @@ import { cn } from "@/lib/utils"
 /**
  * One line of a monospace trace, with a leading marker.
  *
- * Built for Saqr's tool trace: an agent that says which tool it reached for,
- * and what came back, reads as a terminal transcript and not as a chat bubble.
- * The marker column is fixed width so a run of lines forms a straight gutter —
- * that column is the only thing holding the block together, since there is no
- * border and no background.
+ * Built for Saqr's tool trace: an agent that says which tool it reached for and
+ * what came back reads as a transcript, not as a chat bubble. The marker column
+ * is a fixed width so a run of lines forms a straight gutter — that column is
+ * the only thing holding the block together, since there is no border and no
+ * background.
+ *
+ * It is a *line*, and deliberately never a window. No title bar, no dots, no
+ * drawn frame: re-drawn terminal chrome is one of the clearest tells that a UI
+ * was generated rather than designed, and the transcript stands perfectly well
+ * on the page it is already on.
+ *
+ * Retained from V2 rather than replaced: `app/(app)/saqr/page.tsx` and
+ * `components/saqr/trace.tsx` both still import it. Only the tokens changed.
  *
  * Everything textual is caller-supplied; the component owns no copy.
  */
@@ -17,12 +25,12 @@ import { cn } from "@/lib/utils"
 export type TerminalTone = "default" | "muted" | "critical" | "high" | "info" | "accent"
 
 const toneClass: Record<TerminalTone, string> = {
-  default: "text-ink",
-  muted: "text-ink-dim",
+  default: "text-ink-1",
+  muted: "text-ink-2",
   critical: "text-sev-critical",
   high: "text-sev-high",
   info: "text-sev-info",
-  accent: "text-hs-azure",
+  accent: "text-accent-cta",
 }
 
 export interface TerminalLineProps extends React.ComponentPropsWithoutRef<"div"> {
@@ -58,7 +66,7 @@ const TerminalLine = React.forwardRef<HTMLDivElement, TerminalLineProps>(functio
       {...props}
     >
       {stamp && (
-        <span className="hs-num text-ink-faint shrink-0 tabular-nums select-none">{stamp}</span>
+        <span className="hs-num text-ink-3 shrink-0 tabular-nums select-none">{stamp}</span>
       )}
 
       <span

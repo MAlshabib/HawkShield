@@ -1,14 +1,18 @@
 "use client"
 
 /**
- * The two controls that live in the top-inline-end corner of every page:
- * language, then field.
+ * The two controls that ride in the nav pill: language, then field.
  *
- * Restrained on purpose — the design engineer owns the visual system, so this
- * only ever reads the tokens (`--ink`, `--ink-dim`, `--hairline`, `--surface`,
- * `--hs-azure`) and invents no colour of its own. Both controls are real
- * `<button>`s carrying `aria-pressed`, because a locale switch that only works
- * with a mouse is not a locale switch for the people most likely to need it.
+ * Re-cut for the floating pill — both controls are now pills themselves, at the
+ * pill's own 32px height, so they sit inside it without pushing it taller than
+ * its padding. Nothing here invents a colour or a font: it reads the tokens
+ * (`--color-paper-*`, `--color-ink-*`, `--color-rule*`, `--color-accent`) and
+ * nothing else.
+ *
+ * Both are real `<button>`s carrying `aria-pressed`. A locale switch that only
+ * works with a mouse is not a locale switch for the people most likely to need
+ * it, and a theme toggle that does not announce its state is a toggle only for
+ * people who can see the icon.
  */
 import { Moon, Sun } from "lucide-react"
 
@@ -16,12 +20,15 @@ import { useLocale, useT } from "@/lib/i18n"
 import { useTheme } from "@/components/providers/theme-provider"
 import { cn } from "@/lib/utils"
 
-/** One segment of the locale switch. */
+/**
+ * One half of the locale switch. `ع` and `EN` are the two labels: each is
+ * independently pressable, so the current language is announced rather than
+ * hidden inside a single opaque "toggle".
+ */
 const segment = cn(
-  "px-2.5 py-1 text-xs font-medium leading-none transition-colors",
-  "text-[color:var(--ink-dim)] hover:text-[color:var(--ink)]",
-  "aria-pressed:text-[color:var(--ink)]",
-  "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--hs-azure)]",
+  "px-2.5 py-1.5 text-xs leading-none font-medium transition-colors",
+  "text-ink-2 hover:text-ink-0",
+  "aria-pressed:bg-paper-2 aria-pressed:text-ink-0"
 )
 
 export function CommandBar({ className }: { className?: string }) {
@@ -33,18 +40,11 @@ export function CommandBar({ className }: { className?: string }) {
 
   return (
     <div
-      className={cn("flex items-center gap-2", className)}
+      className={cn("flex items-center gap-1.5", className)}
       role="group"
       aria-label={t("command.label")}
     >
-      {/* Locale: ع | EN. Each half is independently pressable so the current
-          language is announced, rather than a single opaque "toggle". */}
-      <div
-        className={cn(
-          "flex items-stretch overflow-hidden rounded-md border",
-          "border-[color:var(--hairline)] bg-[color:var(--surface)]",
-        )}
-      >
+      <div className="border-rule-soft bg-paper-0 flex items-stretch overflow-hidden rounded-full border">
         {/* The divider is a border on the inline-END edge, so it lands between
             the two segments in Arabic exactly as it does in English. */}
         <button
@@ -53,7 +53,7 @@ export function CommandBar({ className }: { className?: string }) {
           aria-pressed={locale === "ar"}
           aria-label={t("command.locale.ar")}
           lang="ar"
-          className={cn(segment, "border-e border-[color:var(--hairline)]")}
+          className={cn(segment, "border-rule border-e")}
         >
           ع
         </button>
@@ -78,13 +78,15 @@ export function CommandBar({ className }: { className?: string }) {
         aria-label={t("command.theme.toggle")}
         title={isDark ? t("command.theme.dark") : t("command.theme.light")}
         className={cn(
-          "inline-flex h-7 w-7 items-center justify-center rounded-md border transition-colors",
-          "border-[color:var(--hairline)] bg-[color:var(--surface)]",
-          "text-[color:var(--ink-dim)] hover:text-[color:var(--ink)]",
-          "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--hs-azure)]",
+          "border-rule-soft bg-paper-0 text-ink-2 inline-flex size-8 items-center justify-center rounded-full border",
+          "transition-colors hover:bg-paper-2 hover:text-ink-0"
         )}
       >
-        {isDark ? <Sun className="h-3.5 w-3.5" aria-hidden /> : <Moon className="h-3.5 w-3.5" aria-hidden />}
+        {isDark ? (
+          <Sun className="size-3.5" aria-hidden />
+        ) : (
+          <Moon className="size-3.5" aria-hidden />
+        )}
       </button>
     </div>
   )

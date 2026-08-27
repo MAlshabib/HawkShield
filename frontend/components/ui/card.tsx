@@ -3,14 +3,13 @@ import * as React from "react"
 import { cn } from "@/lib/utils"
 
 /**
- * Card is kept only so pages that already import it keep compiling; new surfaces
- * should use `components/hs/module`, which carries the mono micro-label header
+ * Card is kept only so pages that already import it keep compiling; new
+ * surfaces use `components/hs/panel`, which carries the mono micro-label header
  * the rest of the system is built on.
  *
- * Restyled to the same substrate regardless: hairline border, 2px radius, and
- * a single elevation step that resolves to nothing in dark. The generous 24px
- * shadcn padding is pulled back to 16px so a Card sitting next to a Module does
- * not read as a different design system.
+ * Restyled onto the paper substrate regardless — hairline edge, 20px radius,
+ * and the single card elevation step that resolves to nothing in dark — so a
+ * Card sitting beside a Panel does not read as a different design system.
  */
 
 function Card({ className, ...props }: React.ComponentProps<"div">) {
@@ -18,7 +17,7 @@ function Card({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card"
       className={cn(
-        "bg-card text-card-foreground border-hairline hs-elev flex min-w-0 flex-col gap-4 rounded-md border py-4",
+        "bg-card text-card-foreground border-rule-soft hs-elev flex min-w-0 flex-col gap-5 rounded-lg border py-5",
         className
       )}
       {...props}
@@ -31,7 +30,7 @@ function CardHeader({ className, ...props }: React.ComponentProps<"div">) {
     <div
       data-slot="card-header"
       className={cn(
-        "@container/card-header grid auto-rows-min grid-rows-[auto_auto] items-start gap-1 px-4 has-data-[slot=card-action]:grid-cols-[1fr_auto] [.border-b]:pb-4",
+        "@container/card-header grid auto-rows-min grid-rows-[auto_auto] items-start gap-1.5 px-5 has-data-[slot=card-action]:grid-cols-[minmax(0,1fr)_auto] [.border-b]:pb-5",
         className
       )}
       {...props}
@@ -43,7 +42,7 @@ function CardTitle({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-title"
-      className={cn("text-ink text-sm leading-none font-medium", className)}
+      className={cn("text-ink-0 font-display text-base leading-tight font-bold", className)}
       {...props}
     />
   )
@@ -53,7 +52,7 @@ function CardDescription({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-description"
-      className={cn("text-ink-dim text-xs", className)}
+      className={cn("text-ink-2 text-sm", className)}
       {...props}
     />
   )
@@ -76,7 +75,7 @@ function CardContent({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-content"
-      className={cn("min-w-0 px-4", className)}
+      className={cn("min-w-0 px-5", className)}
       {...props}
     />
   )
@@ -86,7 +85,7 @@ function CardFooter({ className, ...props }: React.ComponentProps<"div">) {
   return (
     <div
       data-slot="card-footer"
-      className={cn("flex items-center px-4 [.border-t]:pt-4", className)}
+      className={cn("flex items-center px-5 [.border-t]:pt-5", className)}
       {...props}
     />
   )

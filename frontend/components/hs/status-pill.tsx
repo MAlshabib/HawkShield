@@ -6,12 +6,14 @@ import { cn } from "@/lib/utils"
 /**
  * Severity / state pill.
  *
- * `rounded-full` is the one place in the system where a full radius is allowed:
- * a pill is a token, not a container, and the shape is what separates it from
- * the table cell it sits in. Everything else keeps 0-2px.
+ * On paper, everything is already softly rounded, so the pill can no longer
+ * rely on its radius alone to separate itself from the cell it sits in. It
+ * earns the distinction with a tint plus a same-hue hairline instead — the tint
+ * is the grade, the border keeps it legible on a tinted panel.
  *
- * `neutral` exists because the absence of a finding is not a green light —
- * HawkShield detects and classifies, it does not certify a network clean.
+ * `neutral` exists because the absence of a finding is not a green light.
+ * HawkShield detects and classifies; it does not certify a network clean.
+ * There is deliberately no success tone in this component.
  */
 
 export type PillTone = Severity | "neutral"
@@ -22,48 +24,54 @@ export interface StatusPillProps extends React.ComponentPropsWithoutRef<"span"> 
   variant?: "quiet" | "solid"
   /** Leading state dot. Off by default — most pills already carry a word. */
   dot?: boolean
+  /** Pulse the dot. Only when the state it names is genuinely live. */
+  live?: boolean
 }
 
 /**
- * Tints are `color-mix` against the live severity token rather than baked hexes,
- * so a pill re-themes with its subtree instead of needing a dark: twin.
+ * Tints are `color-mix` against the live severity token rather than baked
+ * values, so a pill re-themes with its subtree instead of needing a `dark:`
+ * twin. The mix percentages are higher than they were on the dark substrate:
+ * a 12% tint that read clearly on graphite is invisible on paper.
  */
 const quietTone: Record<PillTone, string> = {
   critical:
-    "text-sev-critical border-[color-mix(in_oklab,var(--sev-critical)_38%,transparent)] bg-[color-mix(in_oklab,var(--sev-critical)_12%,transparent)]",
-  high: "text-sev-high border-[color-mix(in_oklab,var(--sev-high)_38%,transparent)] bg-[color-mix(in_oklab,var(--sev-high)_12%,transparent)]",
-  info: "text-sev-info border-[color-mix(in_oklab,var(--sev-info)_38%,transparent)] bg-[color-mix(in_oklab,var(--sev-info)_12%,transparent)]",
-  neutral: "text-ink-dim border-hairline-strong bg-surface-sunken",
+    "text-sev-critical border-[color-mix(in_oklch,var(--sev-critical)_32%,transparent)] bg-[color-mix(in_oklch,var(--sev-critical)_14%,transparent)]",
+  high: "text-sev-high border-[color-mix(in_oklch,var(--sev-high)_32%,transparent)] bg-[color-mix(in_oklch,var(--sev-high)_14%,transparent)]",
+  info: "text-sev-info border-[color-mix(in_oklch,var(--sev-info)_32%,transparent)] bg-[color-mix(in_oklch,var(--sev-info)_12%,transparent)]",
+  neutral: "text-ink-2 border-rule-soft bg-paper-2",
 }
 
 /** `--on-*` carries the readable foreground for each fill; see `globals.css`. */
 const solidTone: Record<PillTone, string> = {
-  critical: "border-transparent bg-sev-critical text-[var(--on-critical)]",
-  high: "border-transparent bg-sev-high text-[var(--on-high)]",
-  info: "border-transparent bg-sev-info text-[var(--on-info)]",
-  neutral: "border-transparent bg-ink-dim text-[var(--on-neutral)]",
+  critical: "border-transparent bg-sev-critical text-[color:var(--on-critical)]",
+  high: "border-transparent bg-sev-high text-[color:var(--on-high)]",
+  info: "border-transparent bg-sev-info text-[color:var(--on-info)]",
+  neutral: "border-transparent bg-ink-2 text-[color:var(--on-neutral)]",
 }
 
 const StatusPill = React.forwardRef<HTMLSpanElement, StatusPillProps>(function StatusPill(
-  { tone = "neutral", variant = "quiet", dot = false, className, children, ...props },
+  { tone = "neutral", variant = "quiet", dot = false, live = false, className, children, ...props },
   ref
 ) {
+  const showDot = dot || live
+
   return (
     <span
       ref={ref}
       data-slot="status-pill"
       data-tone={tone}
       className={cn(
-        "hs-label inline-flex w-fit shrink-0 items-center gap-1.5 rounded-full border px-2 py-0.5 whitespace-nowrap",
+        "hs-label inline-flex w-fit shrink-0 items-center gap-1.5 rounded-full border px-2.5 py-1 whitespace-nowrap",
         variant === "solid" ? solidTone[tone] : quietTone[tone],
         className
       )}
       {...props}
     >
-      {dot && (
+      {showDot && (
         <span
           aria-hidden="true"
-          className="size-1.5 shrink-0 rounded-full bg-current"
+          className={cn("size-1.5 shrink-0 rounded-full bg-current", live && "hs-live-dot")}
         />
       )}
       {children}

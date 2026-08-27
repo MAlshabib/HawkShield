@@ -6,7 +6,7 @@ import { CheckIcon } from "lucide-react"
 
 import { cn } from "@/lib/utils"
 
-/** Square, like every other field. The check is the only thing that moves. */
+/** A 6px-cornered slip, like every other field. The check is the only thing that moves. */
 function Checkbox({
   className,
   ...props
@@ -15,8 +15,8 @@ function Checkbox({
     <CheckboxPrimitive.Root
       data-slot="checkbox"
       className={cn(
-        "peer bg-surface-sunken border-hairline-strong size-4 shrink-0 rounded-sm border transition-colors",
-        "hover:border-ink-faint",
+        "peer bg-paper-0 border-rule-soft size-4.5 shrink-0 rounded-sm border transition-colors",
+        "hover:border-ink-3",
         "data-[state=checked]:bg-primary data-[state=checked]:text-primary-foreground data-[state=checked]:border-primary",
         "data-[state=indeterminate]:bg-primary data-[state=indeterminate]:border-primary",
         "disabled:cursor-not-allowed disabled:opacity-45",

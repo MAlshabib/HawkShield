@@ -4,24 +4,26 @@ import type { Metadata } from "next"
 /**
  * Self-hosted type. V1 pulled Inter through `next/font/google`, which is why
  * `next build` needed internet — a hard blocker for a Raspberry Pi demo behind
- * a captive network. These are the four families named in `brand-spec.md`.
+ * a captive network.
  *
- * The list below is exactly the one `app/globals.css` names above its
- * `--font-display / --font-body / --font-arabic / --font-mono` tokens. Per-weight
- * files, not the package index: the index pulls every weight and every subset,
- * which is roughly an order of magnitude of font bytes nobody renders. Keep the
- * two lists in step — a stack whose face never loads falls silently through to
- * its generic fallback and simply looks slightly wrong.
+ * Falcon Paper runs on two families, not four:
+ *
+ *   · **Thmanyah Sans** carries display AND body in BOTH languages. It covers
+ *     Latin, the digits, the punctuation and Arabic, which is what let the
+ *     previous Space Grotesk + IBM Plex Sans + IBM Plex Sans Arabic stack
+ *     collapse into one face. It is `@font-face`-declared in `app/globals.css`
+ *     rather than imported here, because the woff2 files are placed by
+ *     `scripts/fonts.mjs` (the foundry asks that they not be redistributed, so
+ *     they are gitignored and the `predev` / `prebuild` hooks copy them in).
+ *   · **IBM Plex Mono** carries figures, MAC addresses, SQL and timestamps.
+ *     Only the two weights the stylesheet declares are imported: the package
+ *     index pulls every weight and every subset, which is roughly an order of
+ *     magnitude of font bytes nobody renders.
+ *
+ * Keep this list in step with the `--font-mono` token in `globals.css` — a
+ * stack whose face never loads falls silently through to its generic fallback
+ * and simply looks slightly wrong.
  */
-import "@fontsource/space-grotesk/400.css"
-import "@fontsource/space-grotesk/500.css"
-import "@fontsource/space-grotesk/700.css"
-import "@fontsource/ibm-plex-sans/400.css"
-import "@fontsource/ibm-plex-sans/500.css"
-import "@fontsource/ibm-plex-sans/600.css"
-import "@fontsource/ibm-plex-sans-arabic/400.css"
-import "@fontsource/ibm-plex-sans-arabic/500.css"
-import "@fontsource/ibm-plex-sans-arabic/600.css"
 import "@fontsource/ibm-plex-mono/400.css"
 import "@fontsource/ibm-plex-mono/500.css"
 

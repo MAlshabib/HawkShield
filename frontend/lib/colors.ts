@@ -1,35 +1,37 @@
 /**
- * Threat-class identity colours.
+ * Threat-class identity colours — Falcon Paper.
  *
- * Derived from the two brand hues in `frontend/brand-spec.md` (navy `#0E2A55`,
- * azure `#2E8FDD`) plus the two warm severity hues. Six of the classes sit on a
- * navy -> azure ramp interpolated in oklch; the two that must never be missed
- * take the warm hues outright. V1's fuchsia `#E879F9` and indigo `#818CF8` were
- * off-brand and are gone.
+ * Two anchors plus a ramp. `evil_twin` takes the critical red and `krack` the
+ * companion amber outright, because those two must never be missed; the
+ * remaining six fall along an azure-to-slate ramp interpolated in oklch from
+ * the mark's azure (250 deg) toward the navy's hue (260 deg), losing chroma as
+ * they go. Salience therefore tracks severity: `evil_twin` advances, `ssdp`
+ * recedes into low-chroma slate, and a legend reads as the ordinal scale these
+ * classes genuinely are instead of as eight unrelated hues.
  *
- * Salience tracks severity on purpose. `evil_twin` advances in red, `ssdp`
- * recedes into low-chroma slate, and everything between falls monotonically in
- * lightness and chroma — so a legend reads as an ordinal scale, which these
- * classes genuinely are, instead of as eight unrelated hues.
+ * Lightness is banded 0.527-0.615 so a single value clears 3:1 against BOTH
+ * papers — `oklch(98.6% .004 250)` in light and `oklch(16.5% .018 258)` in
+ * dark. That band is not a preference: these values are consumed as literal hex
+ * by recharts and by inline SVG fills, which cannot ask which theme is active,
+ * so unlike every other colour in the system they cannot be theme-split. The
+ * same nine are mirrored as `--cls-*` in `app/globals.css` for anything that
+ * can reach for a custom property instead.
  *
- * Lightness is banded 0.50-0.64 so one hex clears 3:1 against BOTH substrates
- * (`#070B12` dark and `#F5F7FA` light). These values are consumed as literal
- * hex by recharts and by inline styles, so unlike the CSS tokens they cannot be
- * theme-split. The same values are mirrored as `--cls-*` in `app/globals.css`
- * for anything that can reach for a custom property instead.
+ * The hexes below are the sRGB rendering of the oklch values named beside them;
+ * the oklch is the source of truth and the hex is what ships to a chart.
  *
  * Key order is canonical: most severe first.
  */
 export const attackColors = {
-  evil_twin: "#DB4144", // warm hue: the critical anchor
-  krack: "#BA7400", // warm hue: the high anchor
-  kr00k: "#2D91E2", // oklch(0.640 0.150 247.5) — ramp ceiling, full azure
-  rogueap: "#4088CD", // oklch(0.612 0.128 249.8)
-  deauth: "#4A7FB8", // oklch(0.584 0.105 252.1)
-  disas: "#5175A3", // oklch(0.556 0.083 254.4)
-  reassoc: "#556D8E", // oklch(0.528 0.060 256.7)
-  ssdp: "#566479", // oklch(0.500 0.038 259.0) — ramp floor, near-neutral slate
-  other: "#787E86", // unclassified: deliberately achromatic, claims no hue
+  evil_twin: "#D03C3C", // oklch(57.5% 0.185 25)  — the critical anchor
+  krack: "#C0640C", // oklch(60.0% 0.145 55)  — the high anchor
+  kr00k: "#2B89D7", // oklch(61.5% 0.145 248) — ramp ceiling, full azure
+  rogueap: "#3D83C6", // oklch(59.5% 0.125 250)
+  deauth: "#497DB6", // oklch(57.8% 0.105 252.5)
+  disas: "#5277A6", // oklch(56.1% 0.085 255)
+  reassoc: "#587196", // oklch(54.4% 0.065 257.5)
+  ssdp: "#5C6C85", // oklch(52.7% 0.045 260) — ramp floor, near-neutral slate
+  other: "#727579", // oklch(56.0% 0.008 258) — unclassified: claims no hue
 } as const
 
 export type AttackType = keyof typeof attackColors
@@ -85,8 +87,9 @@ export function severityOf(label: string): Severity {
 /**
  * The CSS custom property mirroring a class colour, with the literal as its
  * fallback. Preferred over `attackColors[t]` anywhere the value lands in CSS
- * (SVG `fill`, `style={{ color }}`) since the token survives a re-themed
- * subtree; the literal is still required where the value is string-concatenated.
+ * (SVG `fill`, `style={{ color }}`, a `DataCardBar` segment) because the token
+ * resolves through the cascade; the literal is still required where the value
+ * is string-concatenated or handed to a charting library.
  */
 export function attackColorVar(type: AttackType): string {
   return `var(--cls-${type.replace(/_/g, "-")}, ${attackColors[type]})`

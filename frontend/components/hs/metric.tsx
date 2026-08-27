@@ -40,7 +40,7 @@ export interface MetricProps extends Omit<React.ComponentPropsWithoutRef<"div">,
 }
 
 const toneClass: Record<NonNullable<MetricProps["tone"]>, string> = {
-  neutral: "text-ink",
+  neutral: "text-ink-0",
   critical: "text-sev-critical",
   high: "text-sev-high",
   info: "text-sev-info",
@@ -125,24 +125,32 @@ const Metric = React.forwardRef<HTMLDivElement, MetricProps>(function Metric(
     <div
       ref={ref}
       data-slot="metric"
-      className={cn("flex min-w-0 flex-col gap-1", className)}
+      className={cn("flex min-w-0 flex-col gap-2", className)}
       {...props}
     >
       <span className="hs-label">{label}</span>
 
-      <span className="flex items-baseline gap-1.5">
+      <span className="flex flex-wrap items-baseline gap-x-2 gap-y-1">
         {/* aria-live is deliberately absent: a dashboard of these would narrate
             continuously. The figure is polled, not announced. */}
-        <span className={cn("hs-num text-3xl leading-none font-medium", toneClass[tone])}>
+        {/* Display face, not mono. The mono's fixed advance widths read as a
+            spreadsheet at 34px+; `tabular-nums` alone gives the column
+            alignment a running total needs, without the ledger texture. */}
+        <span
+          className={cn(
+            "font-display text-3xl leading-none font-bold tabular-nums",
+            toneClass[tone]
+          )}
+        >
           {format(shown)}
         </span>
-        {unit && <span className="text-ink-dim text-xs">{unit}</span>}
+        {unit && <span className="hs-label text-ink-2">{unit}</span>}
       </span>
 
       {typeof delta === "number" && (
-        <span className="text-ink-dim flex items-baseline gap-1 text-xs">
+        <span className="text-ink-2 flex items-baseline gap-1.5 text-xs">
           <span
-            className="hs-num text-ink"
+            className="hs-num text-ink-1"
             // The glyph is direction, not language, so it is not a translated
             // string; it also needs no RTL flip because it points vertically.
             // It is left uncoloured on purpose: whether a rise is good depends
@@ -156,7 +164,7 @@ const Metric = React.forwardRef<HTMLDivElement, MetricProps>(function Metric(
         </span>
       )}
 
-      {footer && <div className="mt-1">{footer}</div>}
+      {footer && <div className="mt-1.5">{footer}</div>}
     </div>
   )
 })
