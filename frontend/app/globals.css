@@ -3,44 +3,268 @@
 
 @custom-variant dark (&:is(.dark *));
 
+/* ---------------------------------------------------------------------------
+ * HawkShield — Falcon Ops design foundation.
+ *
+ * Everything here descends from `frontend/brand-spec.md`. Two brand hues (navy
+ * `#0E2A55`, azure `#2E8FDD`) sampled off the real mark, plus two warm severity
+ * hues. Any additional step is derived with `oklch()` from one of those four —
+ * no hue is invented, which is what keeps the UI from drifting back into the V1
+ * cyan/fuchsia soup.
+ *
+ * `:root` is the LIGHT theme; `.dark` overrides. That ordering matters: the
+ * theme lives entirely in custom properties, so putting `.dark` on any element
+ * (not just `<html>`) re-themes that subtree. `app/_design` relies on it, and so
+ * will any future preview pane. Components must therefore style with the
+ * semantic tokens below and NOT with `dark:` variants — a `dark:` variant keys
+ * off ancestry, a token keys off the cascade, and only the latter survives being
+ * nested inside a locally-themed wrapper.
+ *
+ * Fonts are self-hosted via `@fontsource` so the Pi builds and serves offline.
+ * `app/layout.tsx` owns the import statements and must carry exactly these,
+ * or every stack below falls through to its generic fallback:
+ *
+ *   import "@fontsource/space-grotesk/400.css"
+ *   import "@fontsource/space-grotesk/500.css"
+ *   import "@fontsource/space-grotesk/700.css"
+ *   import "@fontsource/ibm-plex-sans/400.css"
+ *   import "@fontsource/ibm-plex-sans/500.css"
+ *   import "@fontsource/ibm-plex-sans/600.css"
+ *   import "@fontsource/ibm-plex-sans-arabic/400.css"
+ *   import "@fontsource/ibm-plex-sans-arabic/500.css"
+ *   import "@fontsource/ibm-plex-sans-arabic/600.css"
+ *   import "@fontsource/ibm-plex-mono/400.css"
+ *   import "@fontsource/ibm-plex-mono/500.css"
+ * ------------------------------------------------------------------------- */
+
 :root {
-  --background: oklch(0.145 0 0);
-  --foreground: oklch(0.985 0 0);
-  --card: oklch(0.145 0 0);
-  --card-foreground: oklch(0.985 0 0);
-  --popover: oklch(0.145 0 0);
-  --popover-foreground: oklch(0.985 0 0);
-  --primary: oklch(0.985 0 0);
-  --primary-foreground: oklch(0.205 0 0);
-  --secondary: oklch(0.269 0 0);
-  --secondary-foreground: oklch(0.985 0 0);
-  --muted: oklch(0.269 0 0);
-  --muted-foreground: oklch(0.708 0 0);
-  --accent: oklch(0.269 0 0);
-  --accent-foreground: oklch(0.985 0 0);
-  --destructive: oklch(0.396 0.141 25.723);
-  --destructive-foreground: oklch(0.637 0.237 25.331);
-  --border: oklch(0.269 0 0);
-  --input: oklch(0.269 0 0);
-  --ring: oklch(0.439 0 0);
-  --chart-1: oklch(0.488 0.243 264.376);
-  --chart-2: oklch(0.696 0.17 162.48);
-  --chart-3: oklch(0.769 0.188 70.08);
-  --chart-4: oklch(0.627 0.265 303.9);
-  --chart-5: oklch(0.645 0.246 16.439);
-  --radius: 0.625rem;
-  --sidebar: oklch(0.205 0 0);
-  --sidebar-foreground: oklch(0.985 0 0);
-  --sidebar-primary: oklch(0.488 0.243 264.376);
-  --sidebar-primary-foreground: oklch(0.985 0 0);
-  --sidebar-accent: oklch(0.269 0 0);
-  --sidebar-accent-foreground: oklch(0.985 0 0);
-  --sidebar-border: oklch(0.269 0 0);
-  --sidebar-ring: oklch(0.439 0 0);
+  /* -- brand ------------------------------------------------------------- */
+  --hs-navy: #0e2a55;
+  --hs-azure: #1e6fbf; /* darkened one step so azure-on-white clears 4.5:1 */
+
+  /* -- substrate --------------------------------------------------------- */
+  --bg: #f5f7fa;
+  --surface: #ffffff;
+  --surface-raised: #f6f9fd; /* oklch(0.980 0.006 255) */
+  --surface-sunken: #f0f3f8; /* oklch(0.964 0.007 255) */
+  --hairline: #dde3eb;
+  --hairline-strong: #c0c6ce; /* oklch(L-0.09) off --hairline */
+
+  /* -- ink --------------------------------------------------------------- */
+  --ink: #101a2b;
+  --ink-dim: #5a6b82;
+  /* Reserved for non-essential metadata and placeholders: it clears ~4.3-4.6:1
+     on every substrate, which is AA for the sizes it is used at but is not a
+     licence to set body copy in it. */
+  --ink-faint: #69778a; /* oklch(0.565 0.034 256) off --ink-dim */
+
+  /* -- severity (semantic only; never decorative) ------------------------ */
+  --sev-critical: #c62a2f;
+  --sev-high: #b87400;
+  --sev-info: #1e6fbf;
+
+  /* Text laid ON a filled severity swatch. Per-hue rather than per-theme,
+     because the answer genuinely differs: white clears 4.5:1 on the light red
+     but fails on the light amber, and near-black is the reverse. Getting this
+     wrong is the standard way a "solid" badge ends up unreadable. */
+  --on-critical: #ffffff;
+  --on-high: var(--ink);
+  --on-info: #ffffff;
+  --on-neutral: #ffffff;
+
+  /* Elevation is a single step, not a ladder. Light gets one hairline drop;
+     dark gets none at all (see `.dark`) because a shadow on #070B12 is a smudge.
+     Written as a fully transparent shadow rather than `none` so it stays legal
+     inside Tailwind's composed `box-shadow` list. */
+  --elev: 0 1px 2px rgb(16 26 43 / 0.07);
+
+  /* -- threat-class identity ramp ---------------------------------------- */
+  /* Six steps interpolated in oklch from the navy hue (259deg, low chroma) to
+     the azure hue (247.5deg, full chroma), plus the two warm severity hues for
+     the two classes that must never be missed. Salience deliberately tracks
+     severity: ssdp recedes into slate, evil_twin advances in red. Lightness is
+     banded 0.50-0.64 so a single hex clears 3:1 on BOTH #070B12 and #F5F7FA —
+     these values are consumed as literal hex from `lib/colors.ts` by recharts
+     and by inline styles, so they cannot be theme-split. */
+  --cls-ssdp: #566479;
+  --cls-reassoc: #556d8e;
+  --cls-disas: #5175a3;
+  --cls-deauth: #4a7fb8;
+  --cls-rogueap: #4088cd;
+  --cls-kr00k: #2d91e2;
+  --cls-krack: #ba7400;
+  --cls-evil-twin: #db4144;
+  --cls-other: #787e86;
+
+  /* -- motion ------------------------------------------------------------ */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --dur-fast: 120ms; /* state flips: hover, checked, press */
+  --dur-base: 220ms; /* entrances, disclosure */
+  --dur-slow: 400ms; /* layout-scale movement */
+
+  /* -- geometry ---------------------------------------------------------- */
+  /* 2px on modules, 0 on tables, 999px only on pills. Terminals don't round. */
+  --radius: 2px;
+
+  /* -- shadcn aliases ---------------------------------------------------- */
+  /* Re-pointed at the tokens above so every existing `components/ui/*` inherits
+     the new palette without being rewritten class-by-class. */
+  --background: var(--bg);
+  --foreground: var(--ink);
+  --card: var(--surface);
+  --card-foreground: var(--ink);
+  --popover: var(--surface-raised);
+  --popover-foreground: var(--ink);
+  --primary: var(--hs-azure);
+  --primary-foreground: #ffffff;
+  --secondary: var(--surface-sunken);
+  --secondary-foreground: var(--ink);
+  --muted: var(--surface-sunken);
+  --muted-foreground: var(--ink-dim);
+  --accent: var(--surface-sunken);
+  --accent-foreground: var(--ink);
+  --destructive: var(--sev-critical);
+  --destructive-foreground: #ffffff;
+  --border: var(--hairline);
+  --input: var(--hairline-strong);
+  --ring: var(--hs-azure);
+  --chart-1: var(--cls-deauth);
+  --chart-2: var(--cls-kr00k);
+  --chart-3: var(--cls-krack);
+  --chart-4: var(--cls-evil-twin);
+  --chart-5: var(--cls-reassoc);
+  --sidebar: var(--surface);
+  --sidebar-foreground: var(--ink);
+  --sidebar-primary: var(--hs-azure);
+  --sidebar-primary-foreground: #ffffff;
+  --sidebar-accent: var(--surface-sunken);
+  --sidebar-accent-foreground: var(--ink);
+  --sidebar-border: var(--hairline);
+  --sidebar-ring: var(--hs-azure);
+}
+
+.dark {
+  --hs-navy: #0e2a55;
+  --hs-azure: #2e8fdd;
+
+  --bg: #070b12;
+  --surface: #0d1420;
+  --surface-raised: #151c29; /* oklch(L+0.035) off --surface */
+  --surface-sunken: #09101b; /* oklch(L-0.020) off --surface */
+  --hairline: #1a2434;
+  --hairline-strong: #2b3646; /* oklch(L+0.07) off --hairline */
+
+  --ink: #e8eef6;
+  --ink-dim: #7e8fa6;
+  --ink-faint: #717e90; /* oklch(0.590 0.032 256) off --ink-dim */
+
+  --sev-critical: #e5484d;
+  --sev-high: #f0a020;
+  --sev-info: #2e8fdd;
+
+  /* Every dark-theme severity sits above L 0.62, so near-black wins on all four. */
+  --on-critical: var(--bg);
+  --on-high: var(--bg);
+  --on-info: var(--bg);
+  --on-neutral: var(--bg);
+
+  /* No shadows in dark. Elevation reads as hairline + surface lift instead. */
+  --elev: 0 0 0 0 rgb(0 0 0 / 0);
+
+  /* Azure at L .63 carries white text at only 3.4:1, so filled controls flip to
+     near-black ink in dark rather than white. */
+  --primary-foreground: #070b12;
+  --destructive-foreground: #070b12;
+  --sidebar-primary-foreground: #070b12;
+}
+
+@theme {
+  /* 4px base -> the whole 8pt grid falls out of the `size-*` / `p-*` scale. */
+  --spacing: 0.25rem;
+
+  /* -- type -------------------------------------------------------------- */
+  /* Space Grotesk is the only display face; IBM Plex carries body, Arabic and
+     data so an Arabic page has matching metrics rather than being a degraded
+     English one. Inter / Roboto / system-ui are explicitly not display faces. */
+  --font-display: "Space Grotesk", "IBM Plex Sans", ui-sans-serif, sans-serif;
+  --font-body: "IBM Plex Sans", "IBM Plex Sans Arabic", ui-sans-serif, system-ui, sans-serif;
+  --font-arabic: "IBM Plex Sans Arabic", "IBM Plex Sans", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "IBM Plex Mono", ui-monospace, "Cascadia Mono", monospace;
+  --font-sans: var(--font-body);
+
+  /* Fluid scale. Body sits at 14-15px — operator density, per the Bloomberg
+     lineage — which puts the h1 floor at 56px to hold the 4x h1:body ratio.
+     `--text-5xl` is therefore a page-level headline only; in-app module titles
+     live at `--text-lg` and below. */
+  --text-micro: 0.6875rem;
+  --text-micro--line-height: 1.2;
+  --text-micro--letter-spacing: 0.09em;
+  --text-xs: 0.75rem;
+  --text-xs--line-height: 1.35;
+  --text-sm: 0.8125rem;
+  --text-sm--line-height: 1.45;
+  --text-base: clamp(0.875rem, 0.845rem + 0.13vw, 0.9375rem);
+  --text-base--line-height: 1.55;
+  --text-lg: clamp(1rem, 0.95rem + 0.22vw, 1.125rem);
+  --text-lg--line-height: 1.45;
+  --text-xl: clamp(1.125rem, 1.03rem + 0.4vw, 1.375rem);
+  --text-xl--line-height: 1.3;
+  --text-2xl: clamp(1.375rem, 1.18rem + 0.85vw, 1.875rem);
+  --text-2xl--line-height: 1.2;
+  --text-3xl: clamp(1.75rem, 1.4rem + 1.5vw, 2.5rem);
+  --text-3xl--line-height: 1.12;
+  --text-4xl: clamp(2.25rem, 1.6rem + 2.8vw, 3.5rem);
+  --text-4xl--line-height: 1.06;
+  --text-5xl: clamp(3.5rem, 2.2rem + 5.6vw, 5rem);
+  --text-5xl--line-height: 1;
+  --text-5xl--letter-spacing: -0.02em;
+  --text-display: clamp(4rem, 2.4rem + 7vw, 6.5rem);
+  --text-display--line-height: 0.95;
+  --text-display--letter-spacing: -0.025em;
+
+  /* -- radius ------------------------------------------------------------ */
+  /* The whole shadcn radius ladder collapses onto 0 / 2 / 4px. Pills opt in
+     with `rounded-full`; nothing else is allowed to look soft. */
+  --radius-xs: 0px;
+  --radius-sm: 0px;
+  --radius-md: var(--radius);
+  --radius-lg: var(--radius);
+  --radius-xl: 4px;
+  --radius-2xl: 4px;
+
+  /* -- motion ------------------------------------------------------------ */
+  --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+  --default-transition-duration: 120ms;
+  --default-transition-timing-function: cubic-bezier(0.16, 1, 0.3, 1);
 }
 
 @theme inline {
-  --font-family-sans: var(--font-sans), ui-sans-serif, system-ui, sans-serif, "Apple Color Emoji", "Segoe UI Emoji", "Segoe UI Symbol", "Noto Color Emoji";
+  /* -- brand + substrate ------------------------------------------------- */
+  --color-hs-navy: var(--hs-navy);
+  --color-hs-azure: var(--hs-azure);
+  --color-bg: var(--bg);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-surface-sunken: var(--surface-sunken);
+  --color-hairline: var(--hairline);
+  --color-hairline-strong: var(--hairline-strong);
+  --color-ink: var(--ink);
+  --color-ink-dim: var(--ink-dim);
+  --color-ink-faint: var(--ink-faint);
+  --color-sev-critical: var(--sev-critical);
+  --color-sev-high: var(--sev-high);
+  --color-sev-info: var(--sev-info);
+
+  /* Every elevation utility resolves to the one elevation step, so no component
+     can quietly introduce a second shadow tier. */
+  --shadow-2xs: var(--elev);
+  --shadow-xs: var(--elev);
+  --shadow-sm: var(--elev);
+  --shadow-md: var(--elev);
+  --shadow-lg: var(--elev);
+  --shadow-xl: var(--elev);
+
+  /* -- shadcn aliases ---------------------------------------------------- */
   --color-background: var(--background);
   --color-foreground: var(--foreground);
   --color-card: var(--card);
@@ -65,10 +289,6 @@
   --color-chart-3: var(--chart-3);
   --color-chart-4: var(--chart-4);
   --color-chart-5: var(--chart-5);
-  --radius-sm: calc(var(--radius) - 4px);
-  --radius-md: calc(var(--radius) - 2px);
-  --radius-lg: var(--radius);
-  --radius-xl: calc(var(--radius) + 4px);
   --color-sidebar: var(--sidebar);
   --color-sidebar-foreground: var(--sidebar-foreground);
   --color-sidebar-primary: var(--sidebar-primary);
@@ -81,166 +301,263 @@
 
 @layer base {
   * {
-    @apply border-border outline-ring/50;
+    @apply border-border;
   }
+
+  html {
+    -webkit-text-size-adjust: 100%;
+  }
+
   body {
-    @apply bg-slate-900 text-foreground font-sans antialiased;
+    @apply bg-bg text-ink antialiased;
+    /* `var(--font-body)` rather than the `font-sans` utility: `--font-sans` can
+       still be shadowed on <html> by a `next/font` class, and the body face is
+       not something a font loader elsewhere gets to override. */
+    font-family: var(--font-body);
+    /* Digits must line up column-to-column everywhere, not just in tables — a
+       metric that reflows while it counts up is unreadable. */
     font-variant-numeric: tabular-nums;
+    text-rendering: optimizeLegibility;
   }
-  
-  /* Apply tabular numbers to common numeric elements */
-  .tabular-nums,
-  [type="number"],
-  [data-numeric="true"],
-  .numeric,
-  time,
-  .timestamp,
-  .count,
-  .metric {
-    font-variant-numeric: tabular-nums;
+
+  /* Arabic is a first-class page, not a translation layer over Latin metrics. */
+  :where([lang="ar"]) {
+    font-family: var(--font-arabic);
+  }
+
+  h1,
+  h2,
+  h3,
+  h4,
+  h5,
+  h6 {
+    font-family: var(--font-display);
+    font-weight: 500;
+    text-wrap: balance;
+    overflow-wrap: break-word;
+  }
+
+  h1 {
+    @apply text-5xl;
+  }
+  h2 {
+    @apply text-3xl;
+  }
+  h3 {
+    @apply text-xl;
+  }
+  h4 {
+    @apply text-lg;
+  }
+  h5,
+  h6 {
+    @apply text-base;
+  }
+
+  p {
+    text-wrap: pretty;
+  }
+
+  code,
+  kbd,
+  samp,
+  pre {
+    font-family: var(--font-mono);
+  }
+
+  /* One focus treatment for the whole app. Azure ring plus offset reads on both
+     substrates without needing a per-component override. */
+  :focus-visible {
+    outline: 2px solid var(--ring);
+    outline-offset: 2px;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--hs-azure) 30%, transparent);
+    color: var(--ink);
+  }
+
+  /* Native controls (scrollbars, date pickers) should follow the token theme
+     rather than the OS setting. */
+  :where(html) {
+    color-scheme: light;
+  }
+  :where(.dark) {
+    color-scheme: dark;
   }
 }
 
-/* Added cyber/neon theme styles and animations */
 @layer utilities {
-  .cyber-glow {
-    box-shadow: 0 0 20px rgba(34, 211, 238, 0.3);
+  /* The uppercase mono micro-label — the single most repeated typographic move
+     in the system. Module headers, table heads and metric captions all use it,
+     which is what makes unrelated panels read as one instrument. */
+  .hs-label {
+    font-family: var(--font-mono);
+    font-size: var(--text-micro);
+    line-height: 1.2;
+    letter-spacing: 0.09em;
+    text-transform: uppercase;
+    font-weight: 500;
   }
 
-  .cyber-glow-blue {
-    box-shadow: 0 0 20px rgba(56, 189, 248, 0.3);
+  /* Zero-specificity so the dim ink is only a default: a `text-*` utility on the
+     same element still wins, which is what lets a severity pill borrow the
+     label's typography without inheriting its colour. */
+  :where(.hs-label) {
+    color: var(--ink-dim);
   }
 
-  .glassmorphism {
-    background: rgba(15, 23, 42, 0.8);
-    backdrop-filter: blur(10px);
-    border: 1px solid rgba(34, 211, 238, 0.2);
+  /* Any figure an operator might compare against another figure.
+
+     `direction` and `unicode-bidi` are load-bearing, not decoration. Under an
+     Arabic (RTL) paragraph, a string that opens with a neutral character takes
+     the paragraph's direction for that character: `#C62A2F` renders as
+     `C62A2F#`, and `-64 dBm` renders as `dBm 64-`. The DOM is correct and the
+     screen is wrong, which is the worst kind of wrong. Isolating alone is not
+     enough — the run still inherits `direction: rtl` — so both are set. */
+  .hs-num {
+    font-family: var(--font-mono);
+    font-variant-numeric: tabular-nums;
+    font-feature-settings: "zero" 1;
+    direction: ltr;
+    unicode-bidi: isolate;
   }
 
-  .gradient-text {
-    background: linear-gradient(90deg, #22d3ee, #38bdf8, #7dd3fc);
-    background-size: 200% 100%;
-    -webkit-background-clip: text;
-    -webkit-text-fill-color: transparent;
-    background-clip: text;
-    animation: gradient-shift 3s ease-in-out infinite;
+  /* Same reasoning, for technical strings that are not figures: MAC and BSSID
+     addresses, SSIDs, interface names, SQL fragments, model identifiers. */
+  .hs-ltr {
+    direction: ltr;
+    unicode-bidi: isolate;
   }
 
-  @keyframes gradient-shift {
-    0%,
-    100% {
-      background-position: 0% 50%;
+  .hs-elev {
+    box-shadow: var(--elev);
+  }
+
+  /* -- radar sweep ------------------------------------------------------- */
+  /* The only ambient loop in the product. It answers exactly one question at a
+     glance — "is the sensor still listening?" — so it must never appear on a
+     surface that is not actually live, or it becomes decoration. */
+  .hs-radar {
+    position: relative;
+    overflow: hidden;
+    border-radius: 999px;
+  }
+
+  .hs-radar::after {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: conic-gradient(
+      from 0deg,
+      transparent 0deg,
+      color-mix(in oklab, var(--hs-azure) 55%, transparent) 26deg,
+      transparent 48deg
+    );
+    animation: hs-sweep 4s linear infinite;
+  }
+
+  @keyframes hs-sweep {
+    to {
+      transform: rotate(360deg);
     }
-    50% {
-      background-position: 100% 50%;
+  }
+
+  /* -- threat arrival ---------------------------------------------------- */
+  /* A new detection enters, tints itself with its own severity, and the tint
+     decays to nothing. The wash *is* the notification — no toast, and nothing
+     left glowing afterwards to compete with the next arrival.
+     The entrance translates on the block axis on purpose: a horizontal slide
+     would have to flip under RTL, a vertical one is direction-agnostic. */
+  .hs-arrival {
+    animation:
+      hs-arrive var(--dur-base) var(--ease-out) both,
+      hs-decay 900ms var(--ease-out) forwards;
+  }
+
+  @keyframes hs-arrive {
+    from {
+      opacity: 0;
+      transform: translateY(-6px);
+    }
+    to {
+      opacity: 1;
+      transform: none;
     }
   }
 
-  .wifi-wave {
+  @keyframes hs-decay {
+    from {
+      background-color: color-mix(in oklab, var(--hs-arrival-tint, var(--sev-info)) 24%, transparent);
+    }
+    to {
+      background-color: transparent;
+    }
+  }
+
+  /* -- hairline scan (loading) ------------------------------------------- */
+  /* Replaces the spinner. A spinner says "something is happening somewhere"; a
+     line travelling down the module says "this module is filling in". Driven by
+     background-position so it is height-independent. */
+  .hs-scan {
     position: relative;
     overflow: hidden;
   }
 
-  .wifi-wave::before {
+  .hs-scan::after {
     content: "";
     position: absolute;
-    top: 0;
-    left: -100%;
-    width: 200%;
-    height: 100%;
-    background: linear-gradient(90deg, transparent, rgba(34, 211, 238, 0.1), transparent);
-    animation: wifi-sweep 4s linear infinite;
+    inset: 0;
+    pointer-events: none;
+    background-image: linear-gradient(
+      to bottom,
+      transparent 46%,
+      color-mix(in oklab, var(--hs-azure) 65%, transparent) 50%,
+      transparent 54%
+    );
+    background-size: 100% 220%;
+    background-repeat: no-repeat;
+    animation: hs-scanline 1400ms linear infinite;
   }
 
-  @keyframes wifi-sweep {
-    0% {
-      left: -100%;
+  @keyframes hs-scanline {
+    from {
+      background-position: 0 -110%;
     }
-    100% {
-      left: 100%;
-    }
-  }
-
-  /* Added new animations for HawkShield enhancements */
-  .animated-gradient-text {
-    background: linear-gradient(90deg, #1e3a8a, #2563eb, #38bdf8, #22d3ee, #2563eb);
-    background-size: 300% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    animation: hg-gradient-shift 18s ease-in-out infinite;
-  }
-
-  @keyframes hg-gradient-shift {
-    0% {
-      background-position: 0% 50%;
-    }
-    50% {
-      background-position: 100% 50%;
-    }
-    100% {
-      background-position: 0% 50%;
-    }
-  }
-
-  .logo-neon {
-    filter: drop-shadow(0 0 10px rgba(34, 211, 238, 0.65)) drop-shadow(0 0 24px rgba(56, 189, 248, 0.45));
-  }
-
-  @media (prefers-reduced-motion: no-preference) {
-    .logo-neon-pulse {
-      animation: neon-pulse 2.6s ease-in-out infinite;
-    }
-    .drop-in {
-      opacity: 0;
-      transform: translateY(-12px);
-      animation: hg-drop 700ms cubic-bezier(0.2, 0.7, 0.2, 1) forwards;
-    }
-    .drop-in.delay-1 {
-      animation-delay: 120ms;
-    }
-    .drop-in.delay-2 {
-      animation-delay: 220ms;
-    }
-  }
-
-  @keyframes neon-pulse {
-    0%,
-    100% {
-      filter: drop-shadow(0 0 8px rgba(34, 211, 238, 0.45)) drop-shadow(0 0 22px rgba(56, 189, 248, 0.3));
-    }
-    50% {
-      filter: drop-shadow(0 0 14px rgba(34, 211, 238, 0.75)) drop-shadow(0 0 30px rgba(56, 189, 248, 0.55));
-    }
-  }
-
-  @keyframes hg-drop {
     to {
-      opacity: 1;
-      transform: translateY(0);
+      background-position: 0 110%;
     }
   }
 }
 
-/* Respect reduced motion preferences */
+/* Reduced motion: every loop stops and every entrance resolves to its end state.
+   Nothing above carries information that exists only while it is moving, so the
+   still frame is complete. */
 @media (prefers-reduced-motion: reduce) {
-  .gradient-text,
-  .animated-gradient-text {
-    animation: none;
-    background-position: 0% 50%;
+  *,
+  *::before,
+  *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
   }
 
-  .wifi-wave::before {
-    animation: none;
+  .hs-radar::after {
+    /* Freeze the sweep at a legible angle rather than hiding it — the wedge is
+       the "listening" affordance and has to stay on screen. */
+    animation: none !important;
+    transform: rotate(-35deg);
   }
 
-  .logo-neon-pulse {
-    animation: none;
+  .hs-scan::after {
+    animation: none !important;
+    background-position: 0 0;
   }
 
-  .drop-in {
+  .hs-arrival {
+    animation: none !important;
     opacity: 1;
-    transform: translateY(0);
-    animation: none;
+    transform: none;
   }
 }

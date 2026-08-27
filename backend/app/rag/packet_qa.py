@@ -21,13 +21,25 @@ from __future__ import annotations
 import json
 import logging
 import os
-import re
 import sys
-from datetime import date, datetime, time as _time, timedelta
-from decimal import Decimal
 from pathlib import Path
 from typing import Any, Dict, List, Optional, Sequence, Tuple
-from uuid import UUID
+
+# The SQL guards, the dialect crib sheets and the JSON row conversion moved to
+# ``backend.app.agent.sqlguard`` so the agent and this module share one
+# implementation instead of two.  They are imported back under their historical
+# private names: the behaviour of ``/ask`` is unchanged, and anything that
+# monkeypatches ``packet_qa._assert_select_only`` and friends still works.
+from backend.app.agent.sqlguard import (  # noqa: E402
+    apply_row_limit as _apply_row_limit_impl,
+    assert_select_only as _assert_select_only,
+    dialect_notes as _dialect_notes_impl,
+    jsonable as _jsonable,
+    normalize_db_url as _normalize_db_url,
+    rows_to_dicts as _rows_to_dicts,
+    run_select as _run_select,
+    sql_dialect as _sql_dialect_impl,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -198,23 +210,8 @@ Rules:
 
 
 # --------------------------------------------------------------------------- #
-# Fix #2 — database URL normalisation                                          #
+# Fix #2 — database URL normalisation (``agent.sqlguard.normalize_db_url``)     #
 # --------------------------------------------------------------------------- #
-_DIALECT_RE = re.compile(r"^(postgres(?:ql)?)\+[a-zA-Z0-9_]+://")
-
-
-def _normalize_db_url(url: str) -> str:
-    """Strip the SQLAlchemy driver suffix so ``psycopg.connect()`` accepts the URL.
-
-    ``postgresql+psycopg2://u:p@h/db`` -> ``postgresql://u:p@h/db``
-    ``postgresql+psycopg://...``       -> ``postgresql://...``
-    Anything else is returned untouched.
-    """
-    if not url:
-        return ""
-    return _DIALECT_RE.sub(r"\1://", url.strip(), count=1)
-
-
 def _db_url() -> str:
     url = _normalize_db_url(_cfg("DATABASE_URL"))
     if not url:
@@ -289,130 +286,31 @@ def _load_attacks_context() -> str:
 
 
 # --------------------------------------------------------------------------- #
-# SQL guards                                                                   #
+# SQL guards (``agent.sqlguard``)                                              #
 # --------------------------------------------------------------------------- #
-_FORBIDDEN_RE = re.compile(
-    r"\b(insert|update|delete|drop|alter|create|truncate|merge|upsert|grant|revoke|"
-    r"copy|vacuum|reindex|cluster|comment|call|prepare|execute|listen|notify|lock|"
-    r"begin|commit|rollback|savepoint|into)\b",
-    re.IGNORECASE,
-)
-_LIMIT_RE = re.compile(r"\blimit\s+(\d+|all)\b|\bfetch\s+(first|next)\b", re.IGNORECASE)
-_AGGREGATE_RE = re.compile(
-    r"\b(count|sum|avg|min|max|stddev|stddev_samp|stddev_pop|variance|var_samp|var_pop)\s*\(",
-    re.IGNORECASE,
-)
-_GROUP_BY_RE = re.compile(r"\bgroup\s+by\b", re.IGNORECASE)
-
-
-def _assert_select_only(sql: str) -> str:
-    """Validate that ``sql`` is one read-only SELECT. Returns the cleaned statement.
-
-    Rejects: non-SELECT starts, a second statement hidden behind ``;``, and any
-    write keyword anywhere (which also covers a CTE such as
-    ``WITH x AS (INSERT ...) SELECT ...``).
-    """
-    statement = (sql or "").strip()
-    if not statement:
-        raise ValueError("Refusing to run an empty SQL statement.")
-
-    # One optional trailing semicolon is tolerated; anything after it is not.
-    while statement.endswith(";"):
-        statement = statement[:-1].rstrip()
-    if ";" in statement:
-        raise ValueError("Refusing to run SQL that contains more than one statement.")
-
-    head = statement.lstrip("( \t\r\n").lower()
-    if not (head.startswith("select") or head.startswith("with")):
-        raise ValueError("Refusing to run non-SELECT SQL.")
-
-    forbidden = _FORBIDDEN_RE.search(statement)
-    if forbidden:
-        raise ValueError(f"Refusing to run SQL containing the keyword '{forbidden.group(0)}'.")
-
-    if head.startswith("with") and not re.search(r"\bselect\b", statement, re.IGNORECASE):
-        raise ValueError("Refusing to run a CTE that does not end in a SELECT.")
-
-    return statement
-
-
+# ``_assert_select_only`` is ``agent.sqlguard.assert_select_only`` under its
+# historical name.  ``_apply_row_limit`` keeps its own default-resolution -- the
+# RAG path is documented to read ``RAG_MAX_ROWS`` and nothing else -- and hands
+# the resolved number to the shared implementation.
 def _apply_row_limit(sql: str, max_rows: Optional[int] = None) -> str:
     """Append a bounded ``LIMIT`` to an unbounded, non-aggregate SELECT."""
     limit = max_rows if max_rows is not None else _cfg_int("RAG_MAX_ROWS", DEFAULT_MAX_ROWS)
-    statement = sql.rstrip().rstrip(";").rstrip()
-
-    if _LIMIT_RE.search(statement):
-        return statement
-    # A bare aggregate (no GROUP BY) returns a single row; leave it alone.
-    if _AGGREGATE_RE.search(statement) and not _GROUP_BY_RE.search(statement):
-        return statement
-
-    logger.debug("Appending LIMIT %s to unbounded SELECT", limit)
-    return f"{statement}\nLIMIT {limit}"
-
-
-# --------------------------------------------------------------------------- #
-# JSON-safe result rows                                                        #
-# --------------------------------------------------------------------------- #
-def _jsonable(value: Any) -> Any:
-    """Convert a psycopg value into something FastAPI's encoder can serialise."""
-    if value is None or isinstance(value, (str, bool, int, float)):
-        return value
-    if isinstance(value, (datetime, date, _time)):
-        return value.isoformat()
-    if isinstance(value, Decimal):
-        return float(value)
-    if isinstance(value, timedelta):
-        return value.total_seconds()
-    if isinstance(value, UUID):
-        return str(value)
-    if isinstance(value, memoryview):
-        return value.tobytes().hex()
-    if isinstance(value, (bytes, bytearray)):
-        return bytes(value).hex()
-    if isinstance(value, dict):
-        return {str(k): _jsonable(v) for k, v in value.items()}
-    if isinstance(value, (list, tuple, set, frozenset)):
-        return [_jsonable(v) for v in value]
-    return str(value)
-
-
-def _rows_to_dicts(cols: Sequence[str], rows: Sequence[Sequence[Any]]) -> List[Dict[str, Any]]:
-    return [{col: _jsonable(row[i]) for i, col in enumerate(cols)} for row in rows]
+    return _apply_row_limit_impl(sql, limit)
 
 
 # --------------------------------------------------------------------------- #
 # SQL dialect                                                                  #
 # --------------------------------------------------------------------------- #
 # The same repo runs on the Pi (PostgreSQL) and on a laptop demo (SQLite), so the
-# generated SQL has to match whichever database is actually configured.
-_POSTGRES_NOTES = """
-=== SQL DIALECT: PostgreSQL ===
-- Time filters: ts >= NOW() - INTERVAL '1 hour' / '24 hours' / '7 days';
-  "today" is ts >= date_trunc('day', NOW()).
-- Buckets: date_trunc('hour', ts), EXTRACT(HOUR FROM ts), EXTRACT(DOW FROM ts) (0 = Sunday).
-- JSON: raw->>'ssid' returns text; cast when you need a number, e.g. (raw->>'sig')::float.
-"""
-
-_SQLITE_NOTES = """
-=== SQL DIALECT: SQLite ===
-This database is SQLite, NOT PostgreSQL. PostgreSQL-only syntax will fail.
-- Time filters: ts >= datetime('now', '-1 hour') / '-24 hours' / '-7 days';
-  "today" is ts >= date('now').
-- Buckets: strftime('%H', ts) for the hour, strftime('%w', ts) for the weekday (0 = Sunday).
-  There is no date_trunc, no EXTRACT, no INTERVAL keyword and no NOW().
-- JSON: json_extract(raw, '$.ssid') instead of raw->>'ssid'.
-- There is no :: cast syntax; use CAST(x AS REAL) or CAST(x AS INTEGER).
-"""
-
-
+# generated SQL has to match whichever database is actually configured.  The
+# crib sheets themselves live in ``agent.sqlguard``.
 def _sql_dialect() -> str:
     """Return 'sqlite' or 'postgresql', derived from DATABASE_URL."""
-    return "sqlite" if _cfg("DATABASE_URL").strip().lower().startswith("sqlite") else "postgresql"
+    return _sql_dialect_impl(_cfg("DATABASE_URL"))
 
 
 def _dialect_notes() -> str:
-    return _SQLITE_NOTES if _sql_dialect() == "sqlite" else _POSTGRES_NOTES
+    return _dialect_notes_impl(_sql_dialect())
 
 
 # --------------------------------------------------------------------------- #
@@ -428,24 +326,9 @@ def _run_sql(sql: str) -> Tuple[List[str], List[Tuple[Any, ...]]]:
 
     if dialect == "sqlite":
         # Reuse the app's SQLAlchemy engine; psycopg cannot parse a sqlite:// URL.
-        from sqlalchemy import text as sa_text
+        return _run_select(statement, dialect="sqlite")
 
-        from backend.app.db import engine
-
-        with engine.connect() as conn:
-            result = conn.execute(sa_text(statement))
-            cols = list(result.keys())
-            rows = [tuple(r) for r in result.fetchall()]
-        return cols, rows
-
-    import psycopg  # imported lazily so the module imports without a DB driver
-
-    with psycopg.connect(_db_url(), options=f"-c statement_timeout={timeout_ms}") as conn:
-        with conn.cursor() as cur:
-            cur.execute(statement)  # type: ignore[arg-type]
-            cols = [d[0] for d in (cur.description or [])]
-            rows = cur.fetchall()
-    return cols, list(rows)
+    return _run_select(statement, dialect="postgresql", timeout_ms=timeout_ms, db_url=_db_url())
 
 
 # --------------------------------------------------------------------------- #

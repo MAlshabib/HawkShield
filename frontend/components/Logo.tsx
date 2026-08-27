@@ -1,5 +1,15 @@
 "use client"
 
+/**
+ * DEPRECATED — superseded by `components/brand/logo.tsx`.
+ *
+ * The neon `drop-shadow` stack below overwrites the two colours the mark is
+ * actually drawn in with a cyan the logo does not contain; `brand-spec.md`
+ * rules it out. This file is left in place only because `components/navbar.tsx`
+ * and `app/(app)/home/page.tsx` still import it. Delete it once both switch to
+ * `<Logo />` / `<Wordmark />` from `@/components/brand/logo`.
+ */
+
 type Props = { 
   size?: number
   className?: string

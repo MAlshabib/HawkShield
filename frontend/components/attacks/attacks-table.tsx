@@ -6,7 +6,7 @@ import { Badge } from "@/components/ui/badge"
 import { ChevronLeft, ChevronRight, AlertTriangle } from "lucide-react"
 import { attackColors, attackLabels } from "@/lib/colors"
 import type { AttackEvent } from "@/app/(app)/attacks/page"
-import { useMemo } from "react";
+import { Mac, Timestamp } from "@/lib/format"
 
 interface AttacksTableProps {
   attacks: AttackEvent[]
@@ -17,16 +17,9 @@ interface AttacksTableProps {
 }
 
 export function AttacksTable({ attacks, onAttackClick, currentPage, totalPages, onPageChange }: AttacksTableProps) {
-  const riyadhFormatter = useMemo(() => new Intl.DateTimeFormat('en-GB', {
-    month: 'short',
-    day: '2-digit',
-    hour: '2-digit',
-    minute: '2-digit',
-    second: '2-digit',
-    hour12: false,
-    timeZone: 'Asia/Riyadh',
-  }), []);
-
+  // Timestamps now come from `lib/format`: same Asia/Riyadh zone as before, but
+  // locale-aware and — critically — bidi-isolated. A timestamp rendered inside
+  // Arabic text without isolation is silently reordered on screen.
   const getSeverityColor = (severity: AttackEvent["severity"]) => {
     switch (severity) {
       case "High":
@@ -37,11 +30,6 @@ export function AttacksTable({ attacks, onAttackClick, currentPage, totalPages, 
         return "bg-green-500/20 text-green-400 border-green-500/30"
     }
   }
-
-  const formatTimestamp = (date: Date | string | number) => {
-    const d = date instanceof Date ? date : new Date(date);
-    return riyadhFormatter.format(d);
-  };
 
   const formatRSSI = (rssi: number) => {
     return `${rssi} dBm`
@@ -73,10 +61,8 @@ export function AttacksTable({ attacks, onAttackClick, currentPage, totalPages, 
                 }}
                 onClick={() => onAttackClick(attack)}
               >
-                <TableCell className="text-gray-300 font-mono text-sm">
-                  <time dateTime={new Date(attack.timestamp as any).toISOString()} suppressHydrationWarning>
-                    {formatTimestamp(attack.timestamp)}
-                  </time>
+                <TableCell className="text-gray-300 text-sm">
+                  <Timestamp value={attack.timestamp} />
                 </TableCell>
                 <TableCell>
                   <div className="flex items-center space-x-2">
@@ -86,8 +72,12 @@ export function AttacksTable({ attacks, onAttackClick, currentPage, totalPages, 
                     </span>
                   </div>
                 </TableCell>
-                <TableCell className="font-mono text-sm text-gray-300">{attack.sourceMac}</TableCell>
-                <TableCell className="font-mono text-sm text-gray-300">{attack.destMac}</TableCell>
+                <TableCell className="text-sm text-gray-300">
+                  <Mac value={attack.sourceMac} />
+                </TableCell>
+                <TableCell className="text-sm text-gray-300">
+                  <Mac value={attack.destMac} />
+                </TableCell>
                 <TableCell>
                   <Badge className={`text-xs ${getSeverityColor(attack.severity)}`}>{attack.severity}</Badge>
                 </TableCell>

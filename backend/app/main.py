@@ -12,7 +12,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from fastapi.staticfiles import StaticFiles
 
 from backend.app.config import APP_VERSION, configure_logging, settings
-from backend.app.routers import ask, attacks, health, maps, reports, simulate, stream
+from backend.app.routers import agent, ask, attacks, health, maps, reports, simulate, stream
 
 logger = logging.getLogger(__name__)
 
@@ -38,6 +38,7 @@ def create_app() -> FastAPI:
     app.include_router(reports.router)
     app.include_router(maps.router)
     app.include_router(ask.router)
+    app.include_router(agent.router)
     app.include_router(simulate.router)
     app.include_router(stream.router)
 

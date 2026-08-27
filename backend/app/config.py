@@ -12,7 +12,7 @@ import re
 from pathlib import Path
 from typing import Annotated, Dict, List, Any, Optional
 
-from pydantic import field_validator
+from pydantic import AliasChoices, Field, field_validator
 from pydantic_core.core_schema import ValidationInfo
 from pydantic_settings import BaseSettings, NoDecode, SettingsConfigDict
 
@@ -166,6 +166,53 @@ class Settings(BaseSettings):
     OPENROUTER_APP_NAME: str = "HawkShield"
     HUMANIZE_SQL: int = 1
 
+    # ---- Saqr agent (POST /agent/ask) -----------------------------------
+    #: Master switch.  ``0`` makes every ``/agent/*`` route answer 503 without
+    #: touching OpenRouter, exactly as a missing key does.
+    SAQR_ENABLED: bool = True
+    #: Model id for the agent.  Blank means "reuse ``GEN_MODEL``", so an existing
+    #: ``.env`` written before the agent existed keeps working untouched.  Read
+    #: through :attr:`saqr_model`, never directly.
+    SAQR_MODEL: str = ""
+    #: ``en`` or ``ar``.  Used when the request body does not say.
+    SAQR_DEFAULT_LOCALE: str = "en"
+    SAQR_TEMPERATURE: float = 0.1
+    #: Model turns that may call tools before the loop forces a prose answer.
+    SAQR_MAX_STEPS: int = 6
+    #: Total tool executions per run, across all steps.
+    SAQR_MAX_TOOL_CALLS: int = 12
+    #: Wall-clock budget for one ``/agent/ask``, and for one tool inside it.
+    SAQR_RUN_TIMEOUT_S: float = 90.0
+    SAQR_TOOL_TIMEOUT_S: float = 20.0
+    #: ``LIMIT`` safety net appended to an unbounded ``SELECT``.  ``RAG_MAX_ROWS``
+    #: is accepted as a deprecated alias so an existing ``.env`` still tunes it.
+    SAQR_MAX_ROWS: int = Field(
+        default=500, validation_alias=AliasChoices("SAQR_MAX_ROWS", "RAG_MAX_ROWS")
+    )
+    #: Rows handed back to the UI in the response envelope (the model sees fewer).
+    SAQR_UI_ROWS: int = 50
+    #: Hard cap on the JSON a single tool result may add to the conversation.
+    SAQR_MAX_TOOL_CHARS: int = 12000
+    #: Postgres ``statement_timeout`` for agent SQL.  ``RAG_SQL_TIMEOUT_MS`` is
+    #: accepted as a deprecated alias.
+    SAQR_SQL_TIMEOUT_MS: int = Field(
+        default=15000, validation_alias=AliasChoices("SAQR_SQL_TIMEOUT_MS", "RAG_SQL_TIMEOUT_MS")
+    )
+    #: Publish the ``run_sql`` escape hatch.  Off by default: the seven structured
+    #: tools cover the dashboard, and model-authored SQL is the widest attack
+    #: surface the agent has.
+    SAQR_ALLOW_RAW_SQL: bool = False
+    #: Publish ``run_simulation``, the one mutating tool.
+    SAQR_ALLOW_SIMULATION_TOOL: bool = True
+    #: Per-class detection cap the agent may ask ``/simulate`` for.  The effective
+    #: cap is ``min(requested, this, SIM_MAX_COUNT)``.
+    SAQR_SIM_TOOL_MAX_COUNT: int = 50
+    #: Rolling-window rate limit on ``/agent/ask``.
+    SAQR_RATE_MAX: int = 20
+    SAQR_RATE_WINDOW_S: float = 60.0
+    #: Agent runs allowed to be in flight at once on this (single) process.
+    SAQR_MAX_CONCURRENT_RUNS: int = 2
+
     # ---- simulation (POST /simulate) ------------------------------------
     #: Master switch for the demo/testing endpoint.  On by default; set to 0 to
     #: return 403 from /simulate on a box where writing synthetic rows is not
@@ -194,6 +241,25 @@ class Settings(BaseSettings):
         """A zero or negative cap would make min(count, cap) select an invalid
         value and break every simulation run. Clamp to a sane floor."""
         return max(1, int(v))
+
+    @field_validator(
+        "SAQR_MAX_STEPS", "SAQR_MAX_TOOL_CALLS", "SAQR_MAX_ROWS", "SAQR_UI_ROWS",
+        "SAQR_SIM_TOOL_MAX_COUNT", "SAQR_RATE_MAX", "SAQR_MAX_CONCURRENT_RUNS",
+    )
+    @classmethod
+    def _at_least_one(cls, v: int) -> int:
+        """A zero or negative budget would make every agent run fail closed."""
+        return max(1, int(v))
+
+    @field_validator("SAQR_DEFAULT_LOCALE")
+    @classmethod
+    def _known_locale(cls, v: str) -> str:
+        """Only the two locales the prompt actually has a block for."""
+        locale = str(v or "").strip().lower()
+        if locale not in {"en", "ar"}:
+            logger.warning("SAQR_DEFAULT_LOCALE=%r is not en/ar; falling back to en", v)
+            return "en"
+        return locale
 
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
@@ -255,6 +321,25 @@ class Settings(BaseSettings):
     @property
     def rag_enabled(self) -> bool:
         return bool(self.OPENROUTER_API_KEY.strip())
+
+    @property
+    def saqr_model(self) -> str:
+        """The model id the agent actually calls.
+
+        ``SAQR_MODEL`` when set, otherwise ``GEN_MODEL`` -- so an ``.env`` that
+        predates the agent needs no edit to run it.
+        """
+        return self.SAQR_MODEL.strip() or self.GEN_MODEL.strip()
+
+    @property
+    def saqr_enabled(self) -> bool:
+        """The agent can serve requests: switched on *and* holding a key."""
+        return bool(self.SAQR_ENABLED) and bool(self.OPENROUTER_API_KEY.strip())
+
+    @property
+    def sql_dialect(self) -> str:
+        """``"sqlite"`` or ``"postgresql"``, derived from ``DATABASE_URL``."""
+        return "sqlite" if self.DATABASE_URL.strip().lower().startswith("sqlite") else "postgresql"
 
     def safe_database_url(self) -> str:
         """``DATABASE_URL`` with any password replaced by ``***`` for logging."""

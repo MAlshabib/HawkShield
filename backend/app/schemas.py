@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional, Union
+from typing import Any, Dict, List, Literal, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -87,6 +87,64 @@ class ReportExportPayload(BaseModel):
 class AskPayload(BaseModel):
     question: str
     session_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Agent (Saqr)
+# ---------------------------------------------------------------------------
+class AgentAskPayload(BaseModel):
+    """Request body for ``POST /agent/ask``."""
+
+    question: str = Field(min_length=1, max_length=4000)
+    #: ``en`` or ``ar``.  ``None`` means "use ``SAQR_DEFAULT_LOCALE``".
+    locale: Optional[Literal["en", "ar"]] = None
+    session_id: Optional[str] = None
+
+
+class AgentToolCall(BaseModel):
+    """One tool execution inside a run, for the operator to inspect."""
+
+    step: int
+    name: str
+    arguments: Dict[str, Any] = Field(default_factory=dict)
+    ok: bool
+    duration_ms: int = 0
+    #: The identical call was made earlier in this run and was not re-executed.
+    cached: bool = False
+    #: The SELECT the tool actually ran, values inlined, when it ran one.
+    sql_preview: Optional[str] = None
+    row_count: Optional[int] = None
+    error: Optional[Dict[str, Any]] = None
+
+
+class AgentAskResponse(BaseModel):
+    """Response body for ``POST /agent/ask``."""
+
+    answer: str
+    locale: str
+    model: str
+    steps: int
+    #: ``answered`` | ``step_limit`` | ``call_limit`` | ``timeout`` | ``error``
+    stop_reason: str = "answered"
+    #: The last SQL a tool ran, mirroring ``/ask``'s ``sql`` field.
+    sql: Optional[str] = None
+    cols: List[str] = Field(default_factory=list)
+    rows: List[Dict[str, Any]] = Field(default_factory=list)
+    tool_calls: List[AgentToolCall] = Field(default_factory=list)
+    error: Optional[str] = None
+
+
+class AgentToolInfo(BaseModel):
+    """One entry of ``GET /agent/tools``."""
+
+    name: str
+    #: Stable i18n key, so the frontend generates its label table from here.
+    label_key: str
+    description: str
+    #: True for the one tool that writes to the database (``run_simulation``).
+    mutating: bool = False
+    tags: List[str] = Field(default_factory=list)
+    args_schema: Dict[str, Any] = Field(default_factory=dict)
 
 
 # ---------------------------------------------------------------------------

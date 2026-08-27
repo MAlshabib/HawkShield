@@ -100,9 +100,27 @@ credentials, or thresholds anywhere in the codebase. `backend/detector/*` reads 
 | `OPENROUTER_SITE_URL` | `https://github.com/MAlshabib/HawkShield` | RAG — sent as `HTTP-Referer` |
 | `OPENROUTER_APP_NAME` | `HawkShield` | RAG — sent as `X-Title` |
 | `HUMANIZE_SQL` | `1` | RAG |
-| `RAG_MAX_ROWS` | `500` | RAG — `LIMIT` safety net appended to unbounded `SELECT`s |
-| `RAG_SQL_TIMEOUT_MS` | `15000` | RAG — Postgres `statement_timeout` for `/ask` queries (PostgreSQL only) |
-| `ATTACKS_FILE` | *(empty = packaged `app/rag/knowledge/attacks.md`)* | RAG — knowledge-base override |
+| `RAG_MAX_ROWS` | `500` | RAG — `LIMIT` safety net appended to unbounded `SELECT`s. **Deprecated:** also read as a fallback for `SAQR_MAX_ROWS` |
+| `RAG_SQL_TIMEOUT_MS` | `15000` | RAG — Postgres `statement_timeout` for `/ask` queries (PostgreSQL only). **Deprecated:** also read as a fallback for `SAQR_SQL_TIMEOUT_MS` |
+| `ATTACKS_FILE` | *(empty = packaged `app/rag/knowledge/attacks.md`)* | RAG *and* agent — knowledge-base override |
+| `SAQR_ENABLED` | `1` | agent — master switch; `0` ⇒ every `/agent/*` request answers 503 |
+| `SAQR_MODEL` | *(empty = reuse `GEN_MODEL`)* | agent — must be a tool-calling model |
+| `SAQR_DEFAULT_LOCALE` | `en` | agent — `en` \| `ar`, used when the body omits `locale` |
+| `SAQR_TEMPERATURE` | `0.1` | agent |
+| `SAQR_MAX_STEPS` | `6` | agent — model turns that may call tools, then a forced prose turn |
+| `SAQR_MAX_TOOL_CALLS` | `12` | agent — total tool executions per question |
+| `SAQR_RUN_TIMEOUT_S` | `90` | agent — wall clock for one `/agent/ask` |
+| `SAQR_TOOL_TIMEOUT_S` | `20` | agent — wall clock for one tool |
+| `SAQR_MAX_ROWS` | `500` | agent — `LIMIT` appended to an unbounded agent `SELECT` |
+| `SAQR_UI_ROWS` | `50` | agent — rows returned in the response envelope |
+| `SAQR_MAX_TOOL_CHARS` | `12000` | agent — cap on the JSON one tool result adds to the conversation |
+| `SAQR_SQL_TIMEOUT_MS` | `15000` | agent — Postgres `statement_timeout` (PostgreSQL only) |
+| `SAQR_ALLOW_RAW_SQL` | `0` | agent — publish the `run_sql` escape hatch |
+| `SAQR_ALLOW_SIMULATION_TOOL` | `1` | agent — publish `run_simulation`; also requires `ALLOW_SIMULATION=1` |
+| `SAQR_SIM_TOOL_MAX_COUNT` | `50` | agent — per-class cap; effective cap is `min(requested, this, SIM_MAX_COUNT)` |
+| `SAQR_RATE_MAX` | `20` | agent — calls per `SAQR_RATE_WINDOW_S`; over it ⇒ 429 |
+| `SAQR_RATE_WINDOW_S` | `60` | agent |
+| `SAQR_MAX_CONCURRENT_RUNS` | `2` | agent — runs in flight at once; over it ⇒ 429 |
 | `CORS_ORIGINS` | `http://localhost:3000` (comma-separated) | app |
 | `FRONTEND_DIST` | `<repo>/frontend/out` | app |
 | `AP_LOCATIONS_FILE` | `<repo>/backend/config/ap_locations.json` | app |
@@ -149,6 +167,8 @@ All routes are registered on the app **without** a prefix (the frontend calls `$
 | GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool, "v2": bool, "v2_gbdt": bool}, "model_version": "v2-gbdt"\|"v2-tcn"\|"v1"\|"none", "spec_version": str, "artefact_spec_version": str\|null, "model_problems": [str], "version": str}` |
 | POST | `/simulate` | body `{"attacks": "all"\|[str], "count": int, "intensity": "burst"\|"trickle"}` → `{"sim_batch": hex, "model_version": str, "intensity": str, "classes": [str], "count_per_class": int, "total_persisted": int, "per_class": {cls: {"requested","frames_pushed","detected","persisted","top_label","labels":{lbl:int}}}}`. **403** when `ALLOW_SIMULATION=0`; **400** on an unknown class; **429** over the rate limit; **503** when no model or no corpus loads. See §9 |
 | GET | `/stream?since_id=-1` | `text/event-stream`. One SSE `data:` event per new `packets` row: `{"id","ts","predicted_label","p1","p2","src_mac","bssid","sim"}`. `since_id=-1` (default) starts from the current tail; a non-negative value resumes after that id. Opens with an `event: hello` carrying `{"since_id": int}` |
+| POST | `/agent/ask` | body `{"question": str (1–4000), "locale": "en"\|"ar"?, "session_id": str?}` → `{"answer": str, "locale": str, "model": str, "steps": int, "stop_reason": "answered"\|"step_limit"\|"call_limit"\|"timeout"\|"error", "sql": str\|null, "cols": [str], "rows": [obj], "tool_calls": [{"step","name","arguments","ok","duration_ms","cached","sql_preview","row_count","error"}], "error": str?}`. **400** on a malformed body (validated in the handler, so FastAPI's 422 is not used here); **429** over `SAQR_RATE_MAX` or `SAQR_MAX_CONCURRENT_RUNS`, with `Retry-After`; **503** when `SAQR_ENABLED=0`, when no `OPENROUTER_API_KEY` is set (same `detail` string `/ask` returns), or when no model is configured. See §10 |
+| GET | `/agent/tools` | `[{"name": str, "label_key": str, "description": str, "mutating": bool, "tags": [str], "args_schema": {JSON Schema}}, …]` — the tools the agent can currently call, honouring `SAQR_ALLOW_RAW_SQL` / `SAQR_ALLOW_SIMULATION_TOOL`. Published unconditionally, so a UI can render the catalogue and explain why the agent is unavailable. `label_key` is `saqr.tool.<name>`: **the frontend generates its label table from this**, it does not hand-copy one |
 
 Label mapping used by `/reports/summary` (DB label → frontend key). **Derived, not hand-maintained** —
 `backend/app/config.py` builds it from `feature_spec.ATTACK_CLASSES` by lower-casing and dropping
@@ -425,8 +445,18 @@ backend/
     db.py         engine, SessionLocal, Base, get_db(), init_db()
     models.py     Packet, Document ORM
     schemas.py    pydantic response models
-    routers/      attacks.py reports.py maps.py ask.py health.py
+    routers/      attacks.py reports.py maps.py ask.py agent.py health.py
+                  simulate.py stream.py
     rag/          packet_qa.py + knowledge/attacks.md   (RAG agent)
+    agent/        Saqr, the tool-calling assistant behind /agent/*
+      sqlguard.py   read-only SQL guards, table allow-list, dialect, row normalisation
+      knowledge.py  section index over rag/knowledge/attacks.md, by class
+      schemas.py    one pydantic arg model per tool (the single schema source)
+      tools.py      the tool registry: name -> (arg model, executor, flags)
+      llm.py        OpenRouter client factory, SaqrUnavailable, chat()
+      prompts.py    build_system_prompt(locale, dialect)
+      ratelimit.py  rolling-window limiter + concurrency gate
+      loop.py       run_agent() -> AgentResult
   detector/     Capture + inference only.  MUST NOT import backend.app.routers.*
     pipeline.py   GBDTPipeline + RollupState (v2-gbdt), V2Pipeline (v2-tcn),
                   Stage1/Stage2/TwoStagePipeline (v1), build_pipeline()
@@ -506,6 +536,31 @@ class PacketSink:
 class RagUnavailable(RuntimeError): ...
 def packet_ask(question: str) -> dict:
     """-> {"mode","sql","answer","cols","rows","error"?}; raises RagUnavailable if no API key."""
+
+# backend/app/agent/sqlguard.py   (packet_qa imports these back under its old private names)
+def assert_select_only(sql: str) -> str: ...       # one read-only SELECT, or ValueError
+def assert_tables_allowed(sql: str, allowed=None) -> str:
+    """Allow-list over every FROM/JOIN target, plus CTE names defined in the same
+    statement. Defaults to {"packets"}; rejects documents, sqlite_master,
+    pg_catalog.*, information_schema.*."""
+def apply_row_limit(sql: str, max_rows: int | None = None) -> str: ...
+def run_select(statement, *, db=None, dialect=None, timeout_ms=None, db_url=None)\
+        -> tuple[list[str], list[tuple]]: ...
+def normalise_packet_row(row: dict) -> dict:
+    """`raw` is a dict on PostgreSQL and TEXT on SQLite; `ts` likewise. ONE
+    implementation -- routers.attacks and routers.stream each grew their own."""
+def sql_dialect(database_url: str | None = None) -> str: ...   # "sqlite" | "postgresql"
+
+# backend/app/agent/llm.py
+class SaqrUnavailable(RuntimeError): ...
+def chat(messages, *, tools=None, tool_choice=None, temperature=None, model=None):
+    """One chat completion. Returns the assistant *message* (.content and .tool_calls)."""
+
+# backend/app/agent/loop.py
+async def run_agent(question: str, *, locale=None, session_factory=None, emitter=None,
+                    registry=None, model=None) -> "AgentResult":
+    """`session_factory` is a sessionmaker bound to the request's engine, so a
+    get_db override is honoured. `emitter(event, payload)` may be None."""
 ```
 
 ---
@@ -598,6 +653,14 @@ catalogue (with its live price) → a `DOCS` answer → a `SQL` generation → t
 `POST /ask` will work; `2` = key/model id, `3` = `DOCS` call, `4` = `SQL` generation or execution.
 `--skip-db` stops before execution.
 
+`backend/scripts/check_saqr.py` does the same for `/agent/ask`: key present and a client built → the
+configured model (`SAQR_MODEL`, else `GEN_MODEL`) exists in the catalogue → that entry advertises the
+`tools` parameter → a live one-tool round-trip (the model requests a tool, is handed a result, and answers
+in prose quoting it). Exit `0` means `POST /agent/ask` will work; `2` = key/client, `3` = model id,
+`4` = tool calling unsupported, `5` = the round-trip, `6` = catalogue unreachable with `--skip-live`.
+With no key it prints exactly which checks it could **not** perform and exits non-zero — it never reports a
+pass it did not observe. `--skip-live` stops before the billed call.
+
 ---
 
 ## 9. Simulation and live streaming
@@ -674,3 +737,93 @@ predicting on this machine; non-zero names the missing/corrupt artefact.
 `python -m backend.scripts.live_monitor --follow` is the terminal twin of `/stream`: it tails the `packets`
 table (reusing `backend.app.db` + `Packet`), printing one coloured line per row with a `SIM` tag when
 `raw.sim` is set. `--since-id` resumes from an id; `--sim-only` shows only simulated rows.
+
+---
+
+## 10. Saqr — the tool-calling agent
+
+`POST /agent/ask` is the second-generation assistant. Instead of asking a model to author SQL, it gives the
+model a fixed menu of **tools** and lets it choose. Each tool is a Python function over a
+`sqlalchemy.orm.Session`; several of them call the very same functions the dashboard endpoints call
+(`reports.compute_summary`, `attacks.read_attack_analysis`, `maps._avg_rssi_rows`, `health.health`), so the
+agent's numbers and the dashboard's numbers cannot disagree.
+
+`POST /ask` and `backend/app/rag/packet_qa.py` are unchanged and still serve the shipped `frontend/out`
+build. The SQL guards `packet_qa` used are now `backend/app/agent/sqlguard.py`, imported back under their
+historical private names; behaviour is identical.
+
+### 10.1 Tools call Python, never HTTP
+
+HawkShield runs as **one** uvicorn process. A tool that issued an HTTP request back into the same app would
+occupy the only worker while waiting for its own response. Tools therefore call the handler functions
+directly, on a worker thread (`asyncio.to_thread`), using a `sessionmaker` bound to the *request's* engine —
+the pattern `stream.py` and `simulate.py` already use, which also keeps a `get_db` dependency override
+working under test. **Do not reintroduce self-HTTP.**
+
+### 10.2 The tool registry
+
+Eight tools, in this order. The menu is deliberately short: a cheap model degrades as it grows, picking a
+plausible wrong tool rather than composing the right one. `aggregate_threats` therefore absorbs what would
+otherwise be four separate tools (top offenders, channel usage, per-class counts, the hour/day heatmap).
+
+| # | Tool | Reads | Notes |
+|---|---|---|---|
+| 1 | `query_threats` | `packets` | Individual detections. Window / label / MAC / BSSID / iface / channel / confidence filters, `order`, `limit ≤ 200`. Parameterised `select()`, never model-authored SQL |
+| 2 | `aggregate_threats` | `packets` | Counts by `group_by ∈ {label, src_mac, bssid, channel_freq, iface, hour_of_day, day_of_week, none}`, `top_n ≤ 50`. `hour_of_day`/`day_of_week` are bucketed **in Python**, exactly as `attacks.heatmap_attack` does, so there is no `date_trunc`/`strftime` dialect split |
+| 3 | `threat_overview` | `packets` | `reports.compute_summary` + `attacks.read_attack_analysis` + stored packet count and first/last timestamps |
+| 4 | `explain_attack_class` | knowledge base | `agent/knowledge.py`; no database access |
+| 5 | `locate_source` | `packets` + `AP_LOCATIONS_FILE` | `maps._avg_rssi_rows` + `_load_ap_locations` + the same weighted-centroid maths as `POST /map/estimate-origin` |
+| 6 | `system_status` | — | `health(db)` + model/spec versions + the agent's own configuration and available tools, so "why are you broken?" is self-answerable |
+| 7 | `run_simulation` | **writes** `packets` | The **only** mutating tool (`mutating: true` in the registry and in `GET /agent/tools`). Calls `simulate.simulate`; count capped at `min(requested, SAQR_SIM_TOOL_MAX_COUNT, SIM_MAX_COUNT)`. Hidden unless `SAQR_ALLOW_SIMULATION_TOOL=1` **and** `ALLOW_SIMULATION=1` |
+| 8 | `run_sql` | `packets` | Guarded escape hatch, listed last so the model reaches for it last. Hidden unless `SAQR_ALLOW_RAW_SQL=1` |
+
+Argument schemas have exactly one definition: a pydantic model in `backend/app/agent/schemas.py`.
+`Model.model_json_schema()` both feeds the OpenRouter `tools=` payload and validates the model's arguments,
+so what the model is shown and what its call is checked against cannot drift.
+
+Every tool that runs SQL returns `sql_preview` — the statement with values inlined
+(`stmt.compile(compile_kwargs={"literal_binds": True})`) — so the UI can show the real `SELECT` even for the
+structured tools, and an answer is checkable rather than merely plausible.
+
+### 10.3 The loop
+
+Up to `SAQR_MAX_STEPS` model turns may call tools, then one final turn with `tool_choice="none"`. Every
+bound has a defined outcome, and none of them is a blank answer:
+
+- **step limit / call limit / run timeout** → the forced final prose turn; `stop_reason` says which;
+- **bad tool name, or arguments that fail pydantic** → `{"ok": false, "error": {...}}` fed back as a
+  `role: "tool"` message so the model self-corrects. Never an exception;
+- **repeat call** → keyed on `(tool, canonical JSON of args)`; a repeat returns the cached result plus a note
+  saying the identical call was already made, instead of re-executing. An *error* would just make the model
+  retry with a cosmetic tweak, which is the loop this prevents;
+- **`ar` answer with no Arabic codepoint** → one corrective turn, budgeted *outside* `SAQR_MAX_STEPS`
+  because it is a formatting fix, not another chance to reason.
+
+All turns are non-streaming. `run_agent` already accepts an `emitter(event, payload)` and calls it at
+`run_start` / `step` / `tool_call` / `tool_result` / `answer` / `run_end`, so the streaming transport can be
+added without restructuring the loop.
+
+### 10.4 Prompt injection is in scope
+
+`src_mac`, `bssid`, `dst_mac` and `raw.ssid` are **attacker-controlled by design** — anyone can name their
+SSID `ignore previous instructions`. Two structural rules, both pinned by tests:
+
+1. Tool output goes into `role: "tool"` messages as JSON. It is **never** spliced into the system prompt.
+2. The system prompt states that tool output is data and never instruction, names those fields as
+   attacker-controlled, and forbids calling the mutating tool because a tool result asked for it.
+
+### 10.5 Table allow-list
+
+`assert_select_only` proves a statement only *reads*; it says nothing about *what*. `documents`,
+`sqlite_master`, `pg_catalog.*` and `information_schema.*` were all reachable. `assert_tables_allowed`
+parses every `FROM`/`JOIN` target (after blanking string literals and comments) and permits only `packets`
+plus CTE names defined in the same statement, so
+`WITH recent AS (SELECT … FROM packets) SELECT … FROM recent` passes and the rest do not.
+
+### 10.6 Failure posture
+
+`503` when `SAQR_ENABLED=0`, when there is no `OPENROUTER_API_KEY` (the *same* `detail` string `/ask`
+returns), or when no model is configured. `429` over `SAQR_RATE_MAX` or `SAQR_MAX_CONCURRENT_RUNS`, with
+`Retry-After`. `400` on a malformed body — validated inside the handler, so FastAPI's default 422 handler is
+left alone for every other route. Anything the run itself survives is reported inside a 200 response
+(`stop_reason`, `error`), because a partially answered question tells an operator more than an opaque 500.
