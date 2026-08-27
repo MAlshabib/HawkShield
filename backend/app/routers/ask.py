@@ -1,8 +1,22 @@
-"""Natural-language question endpoint.
+"""Natural-language question endpoint -- a thin shim over the Saqr agent.
 
-This router is deliberately thin: it owns the TTL cache and the short per-session
-conversational memory, then delegates all retrieval / generation to
-``backend.app.rag.packet_qa`` (owned by the RAG component).
+``POST /ask`` predates the agent.  The already-built ``frontend/out`` bundle
+calls it and destructures a fixed envelope out of the reply, so the route
+survives, but everything behind it is now
+:func:`backend.app.agent.loop.run_agent` -- the same loop, the same eight tools
+and the same guards that serve ``POST /agent/ask``.  There is one assistant in
+this system, not two.
+
+What this router still owns, unchanged: the TTL cache, the five-turn per-session
+memory, and a 503 when the assistant is not configured.
+
+**The envelope is the contract, and the bundle is unforgiving about it.**  Its
+handler reads, in order: ``error`` (truthy short-circuits to an error bubble and
+nothing else renders), then ``mode``, where the literal string ``"SQL"`` is the
+*only* value that renders the sample-rows table -- every other value falls
+through to prose and the table silently disappears.  That is why ``mode`` is
+derived from which tools actually ran rather than from anything the model says,
+and why ``backend/scripts/check_frontend.py`` asserts it explicitly.
 """
 from __future__ import annotations
 
@@ -10,28 +24,35 @@ import hashlib
 import logging
 from collections import OrderedDict
 from datetime import datetime, timedelta, timezone
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Set
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException
+from sqlalchemy.orm import Session, sessionmaker
 
+from backend.app.config import settings
+from backend.app.db import get_db
 from backend.app.schemas import AskPayload
 
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["ask"])
 
+# The agent stack is imported defensively for the same reason the RAG module was:
+# registering this router must never be what stops the API from booting.  A
+# failure here becomes a clean 503 rather than an import-time crash.
 try:
-    from backend.app.rag.packet_qa import RagUnavailable, packet_ask
-except Exception as _import_exc:  # noqa: BLE001 - the RAG module is optional at boot
-    logger.warning("RAG module unavailable (%s); /ask will answer 503.", _import_exc)
+    from backend.app.agent.llm import SaqrUnavailable
+    from backend.app.agent.loop import run_agent
+except Exception as _import_exc:  # noqa: BLE001 - any failure means "not installed"
+    logger.warning("Saqr agent unavailable (%s); /ask will answer 503.", _import_exc)
 
-    class RagUnavailable(RuntimeError):  # type: ignore[no-redef]
-        """Raised when the RAG backend cannot serve a question."""
+    class SaqrUnavailable(RuntimeError):  # type: ignore[no-redef]
+        """Raised when the assistant cannot serve a question."""
 
-    _RAG_IMPORT_ERROR = str(_import_exc)
+    _AGENT_IMPORT_ERROR = str(_import_exc)
 
-    def packet_ask(question: str) -> Dict[str, Any]:  # type: ignore[misc]
-        raise RagUnavailable(f"RAG backend is not installed: {_RAG_IMPORT_ERROR}")
+    async def run_agent(*args: Any, **kwargs: Any) -> Any:  # type: ignore[misc]
+        raise SaqrUnavailable(f"The assistant is not installed: {_AGENT_IMPORT_ERROR}")
 
 
 def _now() -> datetime:
@@ -41,6 +62,11 @@ def _now() -> datetime:
 MAX_TURNS = 5
 CACHE_MAXSIZE = 200
 CACHE_TTL_SECONDS = 600
+
+#: The one tool that answers from the knowledge base rather than from packet
+#: data.  A run that used only this is ``DOCS``; a run that touched anything else
+#: is ``SQL``, because the bundle keys its rows table on that exact string.
+DOCS_ONLY_TOOLS: Set[str] = {"explain_attack_class"}
 
 
 class TTLCache:
@@ -89,9 +115,44 @@ def _build_context(session_id: str) -> str:
     return "\n\n".join(f"Q: {t['q']}\nA: {t['a']}" for t in turns[-MAX_TURNS:])
 
 
+def _mode_for(result: Any) -> str:
+    """Map an agent run onto the four modes the bundle understands.
+
+    Derived from which tools *actually executed*, never from anything the model
+    asserts about itself: the bundle renders its rows table on ``"SQL"`` alone,
+    so this is the one field that must not depend on a model's self-report.
+
+      * ``ERROR`` -- the run failed;
+      * ``SQL``   -- at least one tool that reads packet data ran, so there are
+                     rows (or a real ``sql_preview``) to show;
+      * ``DOCS``  -- only the knowledge-base tool ran;
+      * ``OOS``   -- no tool ran at all, so the model answered from scope alone.
+    """
+    if getattr(result, "error", None):
+        return "ERROR"
+    executed = {call.name for call in getattr(result, "tool_calls", []) if call.ok}
+    if executed - DOCS_ONLY_TOOLS:
+        return "SQL"
+    if executed:
+        return "DOCS"
+    return "OOS"
+
+
 @router.post("/ask")
-def ask(payload: AskPayload) -> Dict[str, Any]:
+async def ask(payload: AskPayload, db: Session = Depends(get_db)) -> Dict[str, Any]:
     """Answer a question about the captured traffic, with cache + session memory."""
+    if not settings.OPENROUTER_API_KEY.strip():
+        # Deliberately the same sentence the RAG path answered with, and the same
+        # one /agent/ask uses; the bundle renders any non-2xx as a network error.
+        raise HTTPException(
+            status_code=503,
+            detail="OPENROUTER_API_KEY is not configured; the assistant is disabled.",
+        )
+    if not settings.SAQR_ENABLED:
+        raise HTTPException(
+            status_code=503, detail="The Saqr agent is disabled (SAQR_ENABLED=0)."
+        )
+
     session_id = payload.session_id or "default-session"
     context = _build_context(session_id)
     if context:
@@ -108,13 +169,18 @@ def ask(payload: AskPayload) -> Dict[str, Any]:
     if cached:
         return {"cached": True, **cached}
 
+    # A sessionmaker bound to this request's engine, so the tools honour a get_db
+    # override (tests) and the configured database (production) alike -- and so
+    # nothing here ever calls back into this process over HTTP.
+    maker = sessionmaker(bind=db.get_bind(), autocommit=False, autoflush=False)
+
     try:
-        result = packet_ask(full_q)
-    except RagUnavailable as exc:
+        result = await run_agent(full_q, session_factory=maker, emitter=None)
+    except SaqrUnavailable as exc:
         logger.info("/ask rejected: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
 
-    compact_answer = (result.get("answer") or "")[:800]
+    compact_answer = (result.answer or "")[:800]
     SESSION_MEMORY.setdefault(session_id, []).append(
         {"q": payload.question.strip(), "a": compact_answer}
     )
@@ -122,12 +188,14 @@ def ask(payload: AskPayload) -> Dict[str, Any]:
         SESSION_MEMORY[session_id] = SESSION_MEMORY[session_id][-MAX_TURNS:]
 
     resp = {
-        "mode": result.get("mode"),
-        "sql": result.get("sql"),
-        "answer": result.get("answer"),
-        "cols": result.get("cols"),
-        "rows": result.get("rows"),
-        "error": result.get("error"),
+        "mode": _mode_for(result),
+        # The last tabular tool's real SELECT, values inlined, so the panel can
+        # still show the query behind the numbers.
+        "sql": result.sql or "",
+        "answer": result.answer,
+        "cols": list(result.cols),
+        "rows": list(result.rows),
+        "error": result.error,
     }
     cache.set(ck, resp)
     return {"cached": False, **resp}

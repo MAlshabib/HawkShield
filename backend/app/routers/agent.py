@@ -28,6 +28,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import time
 import uuid
 from typing import Any, AsyncIterator, Dict, List, Optional
 
@@ -121,6 +122,7 @@ async def _sse_body(
     run_id = uuid.uuid4().hex
     emitter = events.Emitter(run_id, buffered=True)
     released = False
+    started = time.monotonic()
 
     def release() -> None:
         nonlocal released
@@ -148,8 +150,14 @@ async def _sse_body(
             await emitter.error(events.ERR_INTERNAL, "The run failed unexpectedly.", fatal=True)
         finally:
             # Belt and braces: whatever happened, the stream must terminate.
+            # No-op when the loop already emitted its own `done`; when it did
+            # not, this is the only `done` the client will see, so it carries a
+            # real elapsed time rather than a placeholder zero.
             await emitter.done(
-                steps=0, tool_calls=0, elapsed_ms=0, stop_reason="error",
+                steps=0,
+                tool_calls=0,
+                elapsed_ms=int((time.monotonic() - started) * 1000),
+                stop_reason="error",
             )
 
     runner: Optional[asyncio.Task] = None

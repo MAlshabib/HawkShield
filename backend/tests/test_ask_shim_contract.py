@@ -61,8 +61,9 @@ from backend.app.routers import ask as ask_router  # noqa: E402
 #: exact set the bundle reads, which is what a shim must keep.
 ASK_KEYS = ("mode", "sql", "answer", "cols", "rows", "error")
 
-#: The SQL the faked model "writes". Real query, real rows.
-GATE_SQL = "SELECT predicted_label, COUNT(*) AS count FROM packets GROUP BY predicted_label"
+#: The tool the faked model calls. Real query, real rows out of the seeded DB.
+GATE_TOOL = "aggregate_threats"
+GATE_ARGS = {"group_by": "label"}
 
 
 # --------------------------------------------------------------------------- #
@@ -144,33 +145,16 @@ def client(engine, monkeypatch) -> Iterator[TestClient]:
 
 @pytest.fixture()
 def faked_model(monkeypatch):
-    """Fake the model at both the current and the future ``/ask`` boundary.
+    """Fake the model at the ``/ask`` boundary.
 
-    ``packet_qa._get_client`` is today's; ``agent.llm.chat`` is the shim's.
-    Whichever is live gets a canned reply and the other patch is never reached,
-    so this file needs no edit at S5 -- which is the point of a gate.
+    ``/ask`` is now a shim over the agent, so ``agent.llm.chat`` is the only
+    boundary there is.  Until S5 this fixture also patched
+    ``packet_qa._get_client``, which is how the same file gave the same verdict
+    before and after the flip.
     """
     from backend.app.agent import llm as agent_llm
-    from backend.app.rag import packet_qa
 
-    routing = json.dumps({"mode": "SQL", "sql": GATE_SQL, "answer": ""})
     prose = "Deauth is the most frequent detected class in this window."
-
-    class _Completions:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def create(self, **kwargs: Any) -> Any:
-            self.calls += 1
-            content = routing if self.calls == 1 else prose
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
-            )
-
-    monkeypatch.setattr(
-        packet_qa, "_get_client",
-        lambda: SimpleNamespace(chat=SimpleNamespace(completions=_Completions())),
-    )
 
     def fake_chat(messages: Any, **kwargs: Any) -> Any:
         if kwargs.get("tool_choice") == "none" or not kwargs.get("tools"):
@@ -182,8 +166,7 @@ def faked_model(monkeypatch):
                     id="shim_call_1",
                     type="function",
                     function=SimpleNamespace(
-                        name="aggregate_threats",
-                        arguments=json.dumps({"group_by": "label"}),
+                        name=GATE_TOOL, arguments=json.dumps(GATE_ARGS),
                     ),
                 )
             ],
@@ -287,32 +270,41 @@ def test_6_row_values_survive_string_coercion(ask):
 def test_7_a_non_sql_mode_still_carries_an_answer(client, monkeypatch):
     """The fall-through branch: `else r = e.answer || "(no answer)"`.
 
-    Conceptual questions legitimately answer in DOCS mode, and that must keep
-    working -- the point of test 2 is that a *database* question must not land
-    here, not that this branch is wrong.
+    A conceptual question uses only the knowledge-base tool, which is DOCS mode
+    and legitimately has no rows -- and that must keep working.  The point of
+    test 2 is that a *database* question must not land here, not that this
+    branch is wrong.
     """
-    from backend.app.rag import packet_qa
+    from backend.app.agent import llm as agent_llm
 
-    reply = json.dumps(
-        {"mode": "DOCS", "sql": "", "answer": "An evil twin is a rogue access point."}
-    )
-    monkeypatch.setattr(
-        packet_qa, "_get_client",
-        lambda: SimpleNamespace(
-            chat=SimpleNamespace(
-                completions=SimpleNamespace(
-                    create=lambda **kw: SimpleNamespace(
-                        choices=[SimpleNamespace(message=SimpleNamespace(content=reply))]
-                    )
+    answer = "An evil twin is a rogue access point impersonating a real SSID."
+
+    def fake_chat(messages: Any, **kwargs: Any) -> Any:
+        if kwargs.get("tool_choice") == "none" or not kwargs.get("tools"):
+            return SimpleNamespace(content=answer, tool_calls=None)
+        if any(m.get("role") == "tool" for m in messages):
+            return SimpleNamespace(content=answer, tool_calls=None)
+        return SimpleNamespace(
+            content="",
+            tool_calls=[
+                SimpleNamespace(
+                    id="docs_1", type="function",
+                    function=SimpleNamespace(
+                        name="explain_attack_class",
+                        arguments=json.dumps({"attack_class": "Evil_Twin"}),
+                    ),
                 )
-            )
-        ),
-    )
+            ],
+        )
+
+    monkeypatch.setattr(agent_llm, "chat", fake_chat)
+    ask_router.cache.store.clear()
     response = client.post("/ask", json={"question": "what is an evil twin?"})
     assert response.status_code == 200
     body = response.json()
     assert not body.get("error")
-    assert body.get("answer", "").strip(), 'would render the literal "(no answer)"'
+    assert body["mode"] == "DOCS", "only the knowledge tool ran"
+    assert body["answer"].strip(), 'would render the literal "(no answer)"'
 
 
 # --------------------------------------------------------------------------- #
@@ -340,27 +332,20 @@ def test_no_api_key_is_a_503(client, monkeypatch):
     assert response.json()["detail"]
 
 
-def test_a_failed_query_reports_through_error_not_a_500(client, monkeypatch):
+def test_a_failed_run_reports_through_error_not_a_500(client, monkeypatch):
     """The bundle has an `e.error` branch; it has no handler for a 500 body."""
-    from backend.app.rag import packet_qa
+    from backend.app.agent import llm as agent_llm
 
-    reply = json.dumps({"mode": "SQL", "sql": "SELECT nope FROM packets", "answer": ""})
-    monkeypatch.setattr(
-        packet_qa, "_get_client",
-        lambda: SimpleNamespace(
-            chat=SimpleNamespace(
-                completions=SimpleNamespace(
-                    create=lambda **kw: SimpleNamespace(
-                        choices=[SimpleNamespace(message=SimpleNamespace(content=reply))]
-                    )
-                )
-            )
-        ),
-    )
+    def exploding_chat(messages: Any, **kwargs: Any) -> Any:
+        raise RuntimeError("the upstream fell over")
+
+    monkeypatch.setattr(agent_llm, "chat", exploding_chat)
     ask_router.cache.store.clear()
     response = client.post("/ask", json={"question": "break it"})
-    assert response.status_code == 200, "a bad query must not become a 500"
-    assert response.json().get("error"), "the failure must arrive in `error`"
+    assert response.status_code == 200, "an upstream failure must not become a 500"
+    body = response.json()
+    assert body["mode"] == "ERROR"
+    assert body["error"], "the failure must arrive in `error`"
 
 
 # --------------------------------------------------------------------------- #
@@ -438,3 +423,152 @@ def test_the_routes_the_bundle_needs_are_registered(client):
     paths = {route.path for route in app.routes}
     for path in ("/ask", "/stream", "/simulate", "/attacks", "/health"):
         assert path in paths, f"{path} is not registered"
+
+
+# --------------------------------------------------------------------------- #
+# Shim mode mapping                                                            #
+# --------------------------------------------------------------------------- #
+# `mode` is derived from which tools actually executed, never from anything the
+# model says about itself -- the bundle renders its rows table on the literal
+# "SQL" alone, so this field must not depend on a model's self-report.
+def _chat_calling(tool: str, args: Dict[str, Any], answer: str):
+    """A fake `llm.chat` that calls `tool` once, then answers."""
+
+    def fake_chat(messages: Any, **kwargs: Any) -> Any:
+        if kwargs.get("tool_choice") == "none" or not kwargs.get("tools"):
+            return SimpleNamespace(content=answer, tool_calls=None)
+        if any(m.get("role") == "tool" for m in messages):
+            return SimpleNamespace(content=answer, tool_calls=None)
+        return SimpleNamespace(
+            content="",
+            tool_calls=[
+                SimpleNamespace(
+                    id="m1", type="function",
+                    function=SimpleNamespace(name=tool, arguments=json.dumps(args)),
+                )
+            ],
+        )
+
+    return fake_chat
+
+
+@pytest.mark.parametrize(
+    "tool, args",
+    [
+        ("aggregate_threats", {"group_by": "label"}),
+        ("query_threats", {"limit": 5}),
+        ("threat_overview", {"days": 30}),
+        ("system_status", {}),
+    ],
+)
+def test_any_data_tool_yields_sql_mode(client, monkeypatch, tool, args):
+    from backend.app.agent import llm as agent_llm
+
+    monkeypatch.setattr(agent_llm, "chat", _chat_calling(tool, args, "Here you go."))
+    ask_router.cache.store.clear()
+    body = client.post("/ask", json={"question": f"use {tool}"}).json()
+    assert body["mode"] == "SQL", f"{tool} reads packet data, so the table must render"
+
+
+def test_only_the_knowledge_tool_yields_docs_mode(client, monkeypatch):
+    from backend.app.agent import llm as agent_llm
+
+    monkeypatch.setattr(
+        agent_llm, "chat",
+        _chat_calling("explain_attack_class", {"attack_class": "Deauth"}, "A deauth flood is..."),
+    )
+    ask_router.cache.store.clear()
+    body = client.post("/ask", json={"question": "what is deauth?"}).json()
+    assert body["mode"] == "DOCS"
+    assert body["rows"] == []
+
+
+def test_no_tool_at_all_yields_oos_mode(client, monkeypatch):
+    from backend.app.agent import llm as agent_llm
+
+    monkeypatch.setattr(
+        agent_llm, "chat",
+        lambda messages, **kw: SimpleNamespace(
+            content="HawkShield answers questions about Wi-Fi attacks only.",
+            tool_calls=None,
+        ),
+    )
+    ask_router.cache.store.clear()
+    body = client.post("/ask", json={"question": "what is the weather?"}).json()
+    assert body["mode"] == "OOS"
+    assert not body["error"]
+    assert body["answer"]
+
+
+def test_a_failed_tool_does_not_count_towards_the_mode(client, monkeypatch):
+    """Only tools that actually succeeded may promote a run to SQL mode."""
+    from backend.app.agent import llm as agent_llm
+
+    monkeypatch.setattr(
+        agent_llm, "chat",
+        _chat_calling("explain_attack_class", {"attack_class": "ransomware"}, "Not a class."),
+    )
+    ask_router.cache.store.clear()
+    body = client.post("/ask", json={"question": "what is ransomware?"}).json()
+    assert body["mode"] == "OOS", "the only tool call failed, so no tool ran"
+
+
+def test_sql_field_carries_the_real_select(client, faked_model):
+    ask_router.cache.store.clear()
+    body = client.post("/ask", json={"question": "how many by class?"}).json()
+    assert body["mode"] == "SQL"
+    assert body["sql"].upper().startswith("SELECT")
+    assert "packets" in body["sql"]
+
+
+# --------------------------------------------------------------------------- #
+# The table allow-list now covers /ask too                                     #
+# --------------------------------------------------------------------------- #
+@pytest.mark.parametrize(
+    "sql",
+    [
+        "SELECT * FROM documents",
+        "SELECT name FROM sqlite_master",
+        "SELECT * FROM pg_catalog.pg_tables",
+        "SELECT table_name FROM information_schema.tables",
+        "DELETE FROM packets",
+    ],
+)
+def test_ask_can_no_longer_reach_anything_but_packets(client, monkeypatch, sql):
+    """Closed at S5. The RAG path enforced SELECT-only but never a table allow-list.
+
+    The model is made to ask for the forbidden query directly; the guard has to
+    refuse it, and the refusal has to arrive as a tool error the model can read
+    rather than as a 500.
+    """
+    from backend.app.agent import llm as agent_llm
+    from backend.app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "SAQR_ALLOW_RAW_SQL", True)
+    monkeypatch.setattr(
+        agent_llm, "chat", _chat_calling("run_sql", {"sql": sql}, "That query was refused.")
+    )
+    ask_router.cache.store.clear()
+    response = client.post("/ask", json={"question": f"run: {sql}"})
+    assert response.status_code == 200
+    body = response.json()
+    # The tool failed, so no data tool succeeded and there are no rows.
+    assert body["rows"] == []
+    assert body["mode"] in ("OOS", "ERROR")
+
+
+def test_ask_still_allows_a_legitimate_cte_over_packets(client, monkeypatch):
+    """The allow-list must not be so blunt that it refuses real queries."""
+    from backend.app.agent import llm as agent_llm
+    from backend.app.config import settings as app_settings
+
+    sql = (
+        "WITH recent AS (SELECT predicted_label FROM packets) "
+        "SELECT predicted_label, COUNT(*) AS n FROM recent GROUP BY predicted_label"
+    )
+    monkeypatch.setattr(app_settings, "SAQR_ALLOW_RAW_SQL", True)
+    monkeypatch.setattr(agent_llm, "chat", _chat_calling("run_sql", {"sql": sql}, "Done."))
+    ask_router.cache.store.clear()
+    body = client.post("/ask", json={"question": "cte please"}).json()
+    assert body["mode"] == "SQL"
+    assert body["rows"], "a legitimate CTE over packets must still run"

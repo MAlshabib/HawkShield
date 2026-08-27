@@ -165,7 +165,6 @@ class Settings(BaseSettings):
     GEN_MODEL: str = "deepseek/deepseek-v4-flash"
     OPENROUTER_SITE_URL: str = "https://github.com/MAlshabib/HawkShield"
     OPENROUTER_APP_NAME: str = "HawkShield"
-    HUMANIZE_SQL: int = 1
 
     # ---- Saqr agent (POST /agent/ask) -----------------------------------
     #: Master switch.  ``0`` makes every ``/agent/*`` route answer 503 without
@@ -199,10 +198,14 @@ class Settings(BaseSettings):
     SAQR_SQL_TIMEOUT_MS: int = Field(
         default=15000, validation_alias=AliasChoices("SAQR_SQL_TIMEOUT_MS", "RAG_SQL_TIMEOUT_MS")
     )
-    #: Publish the ``run_sql`` escape hatch.  Off by default: the seven structured
-    #: tools cover the dashboard, and model-authored SQL is the widest attack
-    #: surface the agent has.
-    SAQR_ALLOW_RAW_SQL: bool = False
+    #: Publish the ``run_sql`` escape hatch.  **On by default.**  It is the
+    #: answer to an oblique question no structured tool can express, and it is
+    #: not the loose cannon its name suggests: the statement must be a single
+    #: ``SELECT``/``WITH``, may touch only ``packets`` plus CTEs defined in the
+    #: same statement, is row-capped by ``SAQR_MAX_ROWS`` and bounded by
+    #: ``SAQR_SQL_TIMEOUT_MS``.  Those guards are the most heavily tested code
+    #: path in the repository.  Set to 0 to publish seven tools instead of eight.
+    SAQR_ALLOW_RAW_SQL: bool = True
     #: Publish ``run_simulation``, the one mutating tool.
     SAQR_ALLOW_SIMULATION_TOOL: bool = True
     #: Per-class detection cap the agent may ask ``/simulate`` for.  The effective

@@ -66,7 +66,7 @@ No Wi-Fi adapter, no database, no configuration:
 
 ```bash
 python run.py --demo                    # replay a sample attack capture, then serve the dashboard
-python backend/scripts/check_rag.py     # optional: verify the /ask assistant is configured
+python backend/scripts/check_saqr.py    # optional: verify the assistant is configured
 ```
 
 Open the URL it prints. `--demo` replays one of the bundled `.pcapng` captures through the real
@@ -175,7 +175,7 @@ The systemd path is still the right answer for an unattended Pi — see
 | 🌐 | **Analytics API** — counts, per-label breakdown, top offenders, channel usage, day×hour heatmap | `backend/app/routers/attacks.py` |
 | 🗺️ | **Map utilities** — AP inventory, per-source average RSSI, RSSI-weighted centroid origin estimate | `backend/app/routers/maps.py` |
 | 🧾 | **Reports** — JSON summary and a one-page A4 PDF export (ReportLab) | `backend/app/routers/reports.py` |
-| 🧠 | **`/ask` assistant (optional)** — text-to-SQL over `packets` plus Q&A from a bundled attack knowledge base, through **OpenRouter** (default model DeepSeek V4 Flash); dialect-aware (PostgreSQL on the Pi, SQLite on a laptop demo), read-only `SELECT` enforcement, row cap and statement timeout | `backend/app/rag/packet_qa.py` |
+| 🧠 | **Saqr, the assistant (optional)** — a tool-calling agent over **OpenRouter** (default DeepSeek V4 Flash) with eight tools that call the same Python the dashboard endpoints call, so its numbers and the dashboard's cannot disagree. Bilingual (en/ar), streams over SSE, and refuses to reach any table but `packets`. Serves both `POST /agent/ask` and the legacy `POST /ask` | `backend/app/agent/` |
 | 🖥️ | **Dashboard** — Next.js 15 static export served by FastAPI itself at `/`, same-origin, no second web server | `frontend/` |
 | 🔁 | **Offline replay** — score any `.pcapng` through the exact live code path, no radio required | `backend/scripts/replay_pcap.py` |
 | 🚀 | **One launcher** — auto-detects Pi vs laptop, preflights `.env`/database/models/build/port, starts what that machine needs | `run.py` |
@@ -434,7 +434,7 @@ object containing one `SELECT`.
 | `qwen/qwen3.7-flash` | cheapest of the four | 0.03 / 0.13 |
 | `qwen/qwen3-235b-a22b-2507` | largest and slowest; reach for it only if the small models misroute | 0.09 / 0.55 |
 
-Prices move; `check_rag.py` prints the live figure from OpenRouter's catalogue.
+Prices move; `check_saqr.py` prints the live figure from OpenRouter's catalogue.
 
 Three more optional variables: `OPENROUTER_BASE_URL` (default `https://openrouter.ai/api/v1` —
 change it only for a proxy or a self-hosted OpenAI-compatible endpoint), and `OPENROUTER_SITE_URL` /
@@ -449,7 +449,7 @@ change it only for a proxy or a self-hosted OpenAI-compatible endpoint), and `OP
 ### Pre-flight check
 
 ```bash
-python backend/scripts/check_rag.py
+python backend/scripts/check_saqr.py
 ```
 
 It verifies, in order: a key is configured → the configured model actually exists on OpenRouter (and
@@ -489,7 +489,8 @@ HawkShield/
 │   │   ├── schemas.py            pydantic request/response models
 │   │   ├── main.py               app factory: routers first, static mount last
 │   │   ├── routers/              health.py attacks.py reports.py maps.py ask.py simulate.py stream.py
-│   │   └── rag/                  packet_qa.py + knowledge/attacks.md
+│   │   ├── agent/                Saqr: tools, loop, guards, SSE events
+│   │   └── rag/                  knowledge/attacks.md (the RAG module is gone)
 │   ├── detector/               capture + inference — must not import backend.app.routers.*
 │   │   ├── feature_spec.py       THE CONTRACT: 46 features, 9 classes, derive_frame_features()
 │   │   ├── features.py           scapy_to_raw() + packet_to_features_v2(); v1's packet_to_row()
@@ -497,7 +498,8 @@ HawkShield/
 │   │   ├── capture.py            monitor mode, sniff loop, heartbeat, signal handling
 │   │   ├── sink.py               PacketSink — batched writes
 │   │   └── cli.py                argparse entrypoint
-│   ├── scripts/                init_db.py, verify_models.py, replay_pcap.py, check_rag.py
+│   ├── scripts/                init_db.py, verify_models.py, replay_pcap.py,
+│   │                           check_saqr.py, check_frontend.py
 │   ├── config/                 ap_locations.json
 │   ├── tests/                  pytest suites (301 tests)
 │   └── requirements*.txt
@@ -755,7 +757,8 @@ Three more checks worth running:
 ```bash
 python -m backend.scripts.verify_models     # v1 bundle digests, feature counts, class map
 python ml/model.py                          # the causality probe, standalone (needs torch)
-python backend/scripts/check_rag.py         # the /ask assistant end to end (needs a key + network)
+python backend/scripts/check_saqr.py        # the assistant end to end (needs a key + network)
+python backend/scripts/check_frontend.py    # the shipped frontend/out build against this backend
 cd frontend && npx tsc --noEmit             # static export builds with zero TypeScript errors
 ```
 

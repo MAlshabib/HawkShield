@@ -99,7 +99,6 @@ credentials, or thresholds anywhere in the codebase. `backend/detector/*` reads 
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | RAG — OpenAI-compatible endpoint override |
 | `OPENROUTER_SITE_URL` | `https://github.com/MAlshabib/HawkShield` | RAG — sent as `HTTP-Referer` |
 | `OPENROUTER_APP_NAME` | `HawkShield` | RAG — sent as `X-Title` |
-| `HUMANIZE_SQL` | `1` | RAG |
 | `RAG_MAX_ROWS` | `500` | RAG — `LIMIT` safety net appended to unbounded `SELECT`s. **Deprecated:** also read as a fallback for `SAQR_MAX_ROWS` |
 | `RAG_SQL_TIMEOUT_MS` | `15000` | RAG — Postgres `statement_timeout` for `/ask` queries (PostgreSQL only). **Deprecated:** also read as a fallback for `SAQR_SQL_TIMEOUT_MS` |
 | `ATTACKS_FILE` | *(empty = packaged `app/rag/knowledge/attacks.md`)* | RAG *and* agent — knowledge-base override |
@@ -140,9 +139,11 @@ checkout — including `.env` — as static files.)*
 **`DATABASE_URL` selects the SQL dialect** that `/ask` generates and executes: `sqlite:` prefix ⇒ SQLite,
 anything else ⇒ PostgreSQL. See §8.
 
-Note: `RAG_MAX_ROWS`, `RAG_SQL_TIMEOUT_MS` and `ATTACKS_FILE` are read directly from the environment by
-`backend/app/rag/packet_qa.py` rather than being fields on the `Settings` class. Behaviour is identical
-(`.env` is loaded process-wide and `Settings` uses `extra="ignore"`); they are documented in `.env.example`.
+Note: `RAG_MAX_ROWS` and `RAG_SQL_TIMEOUT_MS` are **deprecated aliases** for `SAQR_MAX_ROWS` and
+`SAQR_SQL_TIMEOUT_MS`, kept working so an `.env` written before the agent existed still tunes the same
+limits. `ATTACKS_FILE` is read from the environment by `backend/app/agent/knowledge.py` rather than being a
+field on `Settings`; behaviour is identical (`.env` is loaded process-wide and `Settings` uses
+`extra="ignore"`), and it is documented in `.env.example`.
 
 ---
 
@@ -165,7 +166,7 @@ All routes are registered on the app **without** a prefix (the frontend calls `$
 | POST | `/map/estimate-origin` | body `{"sa","minutes","ap_locations":[…]}` → `{"sa","method":"weighted-centroid","used":int,"center":{"lat","lng"}|null}` |
 | GET | `/reports/summary?days=30` | `{"period": str, "totals": {deauth,ssdp,evil_twin,reassoc,rogueap,krack,disas,kr00k,other}, "summary": {"totalAttacks","mostFrequentType","peakHour","uniqueSources"}}` |
 | POST | `/reports/export` | body `{"days": int}` → `application/pdf` stream, `Content-Disposition: attachment; filename="hawkshield_report_<days>d.pdf"` |
-| POST | `/ask` | body `{"question": str, "session_id": str?}` → `{"cached": bool, "mode": "SQL"\|"DOCS"\|"OOS"\|"ERROR", "sql": str, "answer": str, "cols": [str], "rows": [obj], "error": str?}`; **503** `{"detail": "..."}` when no `OPENROUTER_API_KEY` |
+| POST | `/ask` | body `{"question": str, "session_id": str?}` -> `{"cached": bool, "mode": "SQL"\|"DOCS"\|"OOS"\|"ERROR", "sql": str, "answer": str, "cols": [str], "rows": [obj], "error": str?}`; **503** `{"detail": "..."}` when no `OPENROUTER_API_KEY` or `SAQR_ENABLED=0`. **A shim over the Saqr agent** since S5 -- same loop, same eight tools, same guards as `/agent/ask`. `mode` is derived from which tools actually executed, never from a model self-report: `SQL` when any tool that reads packet data ran, `DOCS` when only `explain_attack_class` ran, `OOS` when none ran, `ERROR` on failure. `sql` is the last tabular tool `sql_preview`. See section 10.8 |
 | GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool, "v2": bool, "v2_gbdt": bool}, "model_version": "v2-gbdt"\|"v2-tcn"\|"v1"\|"none", "spec_version": str, "artefact_spec_version": str\|null, "model_problems": [str], "capture": {…see below…}, "version": str}` |
 | POST | `/simulate` | body `{"attacks": "all"\|[str], "count": int, "intensity": "burst"\|"trickle"}` → `{"sim_batch": hex, "model_version": str, "intensity": str, "classes": [str], "count_per_class": int, "total_persisted": int, "per_class": {cls: {"requested","frames_pushed","detected","persisted","top_label","labels":{lbl:int}}}}`. **403** when `ALLOW_SIMULATION=0`; **400** on an unknown class; **429** over the rate limit; **503** when no model or no corpus loads. See §9 |
 | GET | `/stream?since_id=-1` | `text/event-stream`. One SSE `data:` event per new `packets` row: `{"id","ts","predicted_label","p1","p2","src_mac","bssid","sim"}`. `since_id=-1` (default) starts from the current tail; a non-negative value resumes after that id. Opens with an `event: hello` carrying `{"since_id": int}` |
@@ -476,7 +477,10 @@ backend/
     schemas.py    pydantic response models
     routers/      attacks.py reports.py maps.py ask.py agent.py health.py
                   simulate.py stream.py
-    rag/          packet_qa.py + knowledge/attacks.md   (RAG agent)
+    rag/          knowledge/attacks.md  -- the attack knowledge base ONLY.
+                  packet_qa.py was the text-to-SQL RAG; deleted at S6. The
+                  directory stays because ATTACKS_FILE (.env.example and the
+                  Pi's live .env) points at this path.
     agent/        Saqr, the tool-calling assistant behind /agent/*
       sqlguard.py   read-only SQL guards, table allow-list, dialect, row normalisation
       knowledge.py  section index over rag/knowledge/attacks.md, by class
@@ -495,7 +499,8 @@ backend/
     capture.py    monitor mode, sniff loop, heartbeat
     sink.py       batched DB writer
     cli.py        argparse entrypoint
-  scripts/      init_db.py, verify_models.py, replay_pcap.py
+  scripts/      init_db.py, verify_models.py, replay_pcap.py,
+                check_saqr.py, check_frontend.py
   tests/        pytest
 ```
 
@@ -562,12 +567,12 @@ class PacketSink:
     def flush(self) -> None: ...
     def close(self) -> None: ...
 
-# backend/app/rag/packet_qa.py
-class RagUnavailable(RuntimeError): ...
-def packet_ask(question: str) -> dict:
-    """-> {"mode","sql","answer","cols","rows","error"?}; raises RagUnavailable if no API key."""
+# backend/app/routers/ask.py   (a shim over the agent since S6; packet_qa is gone)
+async def ask(payload: AskPayload, db: Session) -> dict:
+    """-> {"cached","mode","sql","answer","cols","rows","error"}; 503 with no API key.
+    `mode` comes from which tools executed, never from a model self-report."""
 
-# backend/app/agent/sqlguard.py   (packet_qa imports these back under its old private names)
+# backend/app/agent/sqlguard.py
 def assert_select_only(sql: str) -> str: ...       # one read-only SELECT, or ValueError
 def assert_tables_allowed(sql: str, allowed=None) -> str:
     """Allow-list over every FROM/JOIN target, plus CTE names defined in the same
@@ -662,7 +667,7 @@ configuration edits on the laptop.**
 
 ### 8.3 SQL dialect
 
-`packet_qa._sql_dialect()` returns `"sqlite"` when `DATABASE_URL` starts with `sqlite`, else `"postgresql"`.
+`agent.sqlguard.sql_dialect()` returns `"sqlite"` when `DATABASE_URL` starts with `sqlite`, else `"postgresql"`.
 It governs two things, which MUST stay in agreement:
 
 * the dialect notes appended to `SYSTEM_PROMPT` (`_SQLITE_NOTES` / `_POSTGRES_NOTES`);
@@ -692,12 +697,8 @@ v2 ONNX + meta, or both v1 bundles. Owner of `run.py`, not of the detector.
 
 ### 8.6 Assistant pre-flight
 
-`backend/scripts/check_rag.py` verifies `/ask` end to end: key present → `GEN_MODEL` exists in the OpenRouter
-catalogue (with its live price) → a `DOCS` answer → a `SQL` generation → that SQL executed. Exit `0` means
-`POST /ask` will work; `2` = key/model id, `3` = `DOCS` call, `4` = `SQL` generation or execution.
-`--skip-db` stops before execution.
-
-`backend/scripts/check_saqr.py` does the same for `/agent/ask`: key present and a client built → the
+`backend/scripts/check_saqr.py` verifies the assistant end to end (it serves both `/agent/ask` and,
+since S5, `/ask`): key present and a client built → the
 configured model (`SAQR_MODEL`, else `GEN_MODEL`) exists in the catalogue → that entry advertises the
 `tools` parameter → a live one-tool round-trip (the model requests a tool, is handed a result, and answers
 in prose quoting it). Exit `0` means `POST /agent/ask` will work; `2` = key/client, `3` = model id,
@@ -713,9 +714,10 @@ it consumes (checked field by field, not by status); and `POST /ask` returns the
 RAG page destructures. Exit `0` means the shipped build still works; `2` = bundle missing or not served,
 `3` = an API endpoint broke, `4` = the `/ask` envelope broke, `5` = the live round-trip broke.
 
-Steps 1-3 need no key, no network and no PostgreSQL - the model is faked at *both* the current
-(`packet_qa._get_client`) and the future (`agent.llm.chat`) boundary, so the gate gives the same verdict
-before and after the flip, while the SQL runs for real against the seeded database. The live round-trip
+Steps 1-3 need no key, no network and no PostgreSQL - the model is faked at `agent.llm.chat` while the
+tools, and therefore the SQL, run for real against the seeded database. Before S5 it faked *both* that and
+`packet_qa._get_client`, which is how the same gate gave the same verdict on both sides of the flip; that
+is why it was written before the flip rather than after. The live round-trip
 runs only when `OPENROUTER_API_KEY` is set; without one the script names what it could not verify and still
 exits `0`, because this has to be runnable on an offline Pi. `--skip-live` forces that path.
 
@@ -821,9 +823,8 @@ model a fixed menu of **tools** and lets it choose. Each tool is a Python functi
 (`reports.compute_summary`, `attacks.read_attack_analysis`, `maps._avg_rssi_rows`, `health.health`), so the
 agent's numbers and the dashboard's numbers cannot disagree.
 
-`POST /ask` and `backend/app/rag/packet_qa.py` are unchanged and still serve the shipped `frontend/out`
-build. The SQL guards `packet_qa` used are now `backend/app/agent/sqlguard.py`, imported back under their
-historical private names; behaviour is identical.
+`POST /ask` is a thin shim over this same loop (section 10.8), and `backend/app/rag/packet_qa.py` has been
+deleted. There is one assistant in this system, not two.
 
 ### 10.1 Tools call Python, never HTTP
 
@@ -973,3 +974,43 @@ question on a Pi. If a provider refuses `stream=True` the answer is still delive
   `row_count`, `truncated` or `error`, which the event already carries as its own fields.
 - `stop_reason` on `done` is the same field, with the same vocabulary, as `stop_reason` in the JSON
   envelope: one concept, one name, both transports.
+
+### 10.8 `POST /ask` is a shim over this agent
+
+`/ask` predates the agent. The already-built `frontend/out` bundle calls it, so the route survives; since S5
+everything behind it is `run_agent(..., emitter=None)` — the same loop, the same eight tools, the same
+guards. `backend/app/rag/packet_qa.py` and `backend/tests/test_rag.py` were deleted at S6, along with
+`backend/scripts/check_rag.py`, which could not function without them.
+
+The router still owns exactly what it owned before: the TTL cache (200 entries / 600 s, key =
+sha256 of `session_id||question`), the five-turn per-session memory, and a 503 when the assistant is not
+configured. Nothing else about the envelope moved.
+
+**`mode` is derived from which tools actually executed**, never from anything the model says about itself:
+
+| value | condition |
+|---|---|
+| `ERROR` | the run failed (`AgentResult.error` is set) |
+| `SQL` | at least one tool that reads packet data ran successfully |
+| `DOCS` | only `explain_attack_class` ran |
+| `OOS` | no tool ran at all |
+
+That indirection is not fussiness. The bundle's handler branches on the literal string `"SQL"` and **only**
+that branch renders the sample-rows table; every other value falls through to `answer || "(no answer)"`. A
+wrong `mode` therefore shows a fluent, plausible reply with the rows table silently missing — no error,
+nothing red. `backend/scripts/check_frontend.py` asserts it explicitly and explains that consequence when it
+fails. `sql` is the last tabular tool's `sql_preview`, so the panel still shows the query behind the numbers.
+
+Two behaviours changed with the flip, both deliberate:
+
+- **`assert_tables_allowed` now covers `/ask`.** The RAG path enforced SELECT-only but never a table
+  allow-list, so `documents`, `sqlite_master`, `pg_catalog.*` and `information_schema.*` were reachable
+  through it. They are not reachable from either route now.
+- **`SAQR_ENABLED=0` disables `/ask` too.** After the flip there is one assistant, so its master switch
+  governs both routes. The missing-key 503 carries the identical `detail` string it always did.
+
+`/ask` deliberately has **no** rate limit and **no** concurrency gate, matching its previous behaviour;
+`/agent/ask` has both. A run through `/ask` is now materially more expensive than the old two-call RAG path
+(up to `SAQR_MAX_STEPS` model turns), so a host exposing `/ask` to untrusted callers should put the limit in
+front of it. The TTL cache absorbs repeats, which is what made this acceptable for the one legacy bundle it
+serves.

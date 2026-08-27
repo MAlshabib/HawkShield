@@ -4,9 +4,9 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timedelta, timezone
 from io import BytesIO
-from typing import Any, Dict, List
+from typing import Annotated, Any, Dict, List
 
-from fastapi import APIRouter, Depends
+from fastapi import APIRouter, Depends, Query
 from fastapi.responses import StreamingResponse
 from reportlab.lib.pagesizes import A4
 from reportlab.pdfgen import canvas
@@ -21,6 +21,9 @@ from backend.app.schemas import ReportExportPayload, ReportSummary
 logger = logging.getLogger(__name__)
 
 router = APIRouter(tags=["reports"])
+
+#: Upper bound on ``days``, matching ``routers.attacks.MAX_DAYS``.
+MAX_DAYS = 3650
 
 # DB label -> frontend key.  Derived in ``backend.app.config`` from
 # ``feature_spec.ATTACK_CLASSES`` so there is one class list in the repo, not two.
@@ -89,8 +92,24 @@ def compute_summary(db: Session, days: int = 30) -> ReportSummary:
 
 
 @router.get("/reports/summary")
-def get_report_summary(days: int = 30, db: Session = Depends(get_db)) -> Dict[str, Any]:
-    """Totals + headline summary for the last ``days`` days."""
+def get_report_summary(
+    days: Annotated[int, Query(
+        ge=1, le=MAX_DAYS,
+        description="Reporting window in days.",
+    )] = 30,
+    db: Session = Depends(get_db),
+) -> Dict[str, Any]:
+    """Totals + headline summary for the last ``days`` days.
+
+    ``days`` is validated to match the analytics endpoints.  It previously
+    accepted ``0`` and negatives, which produced a lower bound in the *future*
+    and therefore a confidently-rendered report of zero attacks -- a wrong
+    answer presented as a right one, which is worse than an error.
+
+    Annotated form, not ``days: int = Query(30, ...)``: only this leaves a real
+    Python default on the function, and ``compute_summary`` / the Saqr agent
+    call these handlers directly rather than over HTTP.
+    """
     data = compute_summary(db, days=days)
     return data.model_dump()
 

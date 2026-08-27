@@ -128,12 +128,12 @@ def _seed(engine: Any) -> None:
 def app_client(db_path: Path) -> Iterator[Any]:
     """The real application, serving the real bundle, over a seeded SQLite file.
 
-    ``DATABASE_URL`` and ``backend.app.db.engine`` are both repointed, not just
-    the ``get_db`` dependency: ``/ask`` reaches the database through the module
-    engine rather than through the request's session, so overriding only the
-    dependency would leave it talking to the configured PostgreSQL.  (The Saqr
-    agent does honour the request's bind; this is a property of the current
-    ``packet_qa`` path, and the gate has to work for both.)
+    ``DATABASE_URL`` and ``backend.app.db.engine`` are repointed as well as the
+    ``get_db`` dependency.  The agent honours the request's bind, so the
+    dependency override alone is now sufficient for ``/ask`` -- but the other two
+    are kept because they cost nothing and because a future endpoint that reaches
+    for the module engine (as the old RAG path did) would otherwise silently talk
+    to the configured PostgreSQL from inside this gate.
     """
     from fastapi.testclient import TestClient
     from sqlalchemy import create_engine
@@ -180,41 +180,27 @@ def app_client(db_path: Path) -> Iterator[Any]:
 
 @contextmanager
 def faked_model(sql: str) -> Iterator[None]:
-    """Fake the language model at every boundary ``/ask`` might use.
+    """Fake the language model at the ``/ask`` boundary.
 
-    Two boundaries are patched because ``/ask`` is being reimplemented:
+    ``/ask`` is a shim over the Saqr agent, so ``agent.llm.chat`` is the only
+    boundary.  Until the flip this also patched ``packet_qa._get_client``, which
+    is how this gate gave the same verdict before and after -- the whole reason
+    it was written before the flip rather than after.
 
-    * ``packet_qa._get_client`` -- the current text-to-SQL path;
-    * ``agent.llm.chat`` / ``chat_stream`` -- the path the S5 shim will use.
-
-    Whichever is live gets a canned reply; the other patch is simply never
-    reached.  That is deliberate: this gate has to give the same verdict before
-    and after the flip, or it cannot tell you which of the two broke.
-
-    The SQL itself is *not* faked -- it runs against the seeded database, so the
-    ``cols``/``rows`` the bundle renders are real query output.
+    The tools are *not* faked: the model is made to call ``aggregate_threats``,
+    which runs a real query against the seeded database, so the ``cols``/``rows``
+    the bundle renders are genuine output.  ``sql`` is accepted for signature
+    stability and is unused.
     """
-    from backend.app.rag import packet_qa
+    from backend.app.agent import llm as agent_llm
 
-    routing = json.dumps({"mode": "SQL", "sql": sql, "answer": ""})
     prose = "Deauth is the most frequent detected class in this window."
 
-    class _Completions:
-        def __init__(self) -> None:
-            self.calls = 0
-
-        def create(self, **kwargs: Any) -> Any:
-            self.calls += 1
-            content = routing if self.calls == 1 else prose
-            return SimpleNamespace(
-                choices=[SimpleNamespace(message=SimpleNamespace(content=content))]
-            )
-
-    fake_client = SimpleNamespace(chat=SimpleNamespace(completions=_Completions()))
-
     def fake_chat(messages: Any, **kwargs: Any) -> Any:
-        """One tool call, then prose -- enough for a shim to produce an envelope."""
-        if kwargs.get("tool_choice") == "none" or kwargs.get("tools") is None:
+        """One tool call, then prose."""
+        if kwargs.get("tool_choice") == "none" or not kwargs.get("tools"):
+            return SimpleNamespace(content=prose, tool_calls=None)
+        if any(m.get("role") == "tool" for m in messages):
             return SimpleNamespace(content=prose, tool_calls=None)
         return SimpleNamespace(
             content="",
@@ -233,16 +219,13 @@ def faked_model(sql: str) -> Iterator[None]:
     def fake_chat_stream(messages: Any, **kwargs: Any) -> Iterator[str]:
         yield prose
 
-    from backend.app.agent import llm as agent_llm
-
-    originals = (packet_qa._get_client, agent_llm.chat, agent_llm.chat_stream)
-    packet_qa._get_client = lambda: fake_client  # type: ignore[assignment]
+    originals = (agent_llm.chat, agent_llm.chat_stream)
     agent_llm.chat = fake_chat  # type: ignore[assignment]
     agent_llm.chat_stream = fake_chat_stream  # type: ignore[assignment]
     try:
         yield
     finally:
-        packet_qa._get_client, agent_llm.chat, agent_llm.chat_stream = originals
+        agent_llm.chat, agent_llm.chat_stream = originals
 
 
 # --------------------------------------------------------------------------- #

@@ -28,12 +28,15 @@ ones (`wlan_sa`, `avg_rssi`). See [`CONTRACT.md` §4](CONTRACT.md).
 | GET | [`/top-offenders`](#get-top-offenders) | `attacks.py` |
 | GET | [`/channel-usage`](#get-channel-usage) | `attacks.py` |
 | GET | [`/heatmap-attack`](#get-heatmap-attack) | `attacks.py` |
+| GET | `/attacks/series` | `attacks.py` — zero-filled time series. See `docs/CONTRACT.md` section 4 |
 | GET | [`/map/ap-locations`](#get-mapap-locations) | `maps.py` |
 | GET | [`/map/source-rssi`](#get-mapsource-rssi) | `maps.py` |
 | POST | [`/map/estimate-origin`](#post-mapestimate-origin) | `maps.py` |
 | GET | [`/reports/summary`](#get-reportssummary) | `reports.py` |
 | POST | [`/reports/export`](#post-reportsexport) | `reports.py` |
 | POST | [`/ask`](#post-ask) | `ask.py` |
+| POST | `/agent/ask` | `agent.py` — the Saqr agent; JSON or SSE. See `docs/CONTRACT.md` section 10 |
+| GET | `/agent/tools` | `agent.py` — the tool catalogue the UI builds its labels from |
 | POST | [`/simulate`](#post-simulate) | `simulate.py` |
 | GET | [`/stream`](#get-stream) | `stream.py` |
 | GET | [static dashboard](#static-dashboard) | `StaticFiles` mount |
@@ -493,117 +496,83 @@ figures. It is generated in memory — nothing is written to disk on the Pi.
 
 ## POST `/ask`
 
-Natural-language question over the `packets` table and a bundled attack knowledge base, answered by a
-model hosted on [OpenRouter](https://openrouter.ai) (default `deepseek/deepseek-v4-flash`).
-**Optional**: with no `OPENROUTER_API_KEY`, this endpoint — and only this endpoint — is unavailable.
+A thin shim over the Saqr agent. It predates the agent and the already-built `frontend/out` bundle calls
+it, so the route and its envelope survive; everything behind it is now the same loop, the same eight
+tools and the same guards that serve `POST /agent/ask`. The text-to-SQL RAG that used to back it
+(`backend/app/rag/packet_qa.py`) was deleted — see `docs/CONTRACT.md` section 10.8.
 
-**Request**
-
-```json
-{ "question": "how many deauth attacks today?", "session_id": "dash-1" }
+```bash
+curl -s -X POST localhost:8000/ask -H 'content-type: application/json'   -d '{"question":"how many Deauth attacks in the last 24 hours?","session_id":"demo"}'
 ```
-
-`session_id` is optional and defaults to `"default-session"`. The last 5 turns of a session are
-prepended to the question as context, and answers are cached for 600 s (200 entries, keyed on
-`sha256(session_id || question)`).
-
-**Response — 200, `SQL` mode**
 
 ```json
 {
   "cached": false,
   "mode": "SQL",
-  "sql": "SELECT COUNT(*) AS n FROM packets WHERE predicted_label = 'Deauth' AND ts >= NOW() - INTERVAL '1 day' LIMIT 500",
-  "answer": "There were 1 deauthentication frames flagged in the last 24 hours.",
-  "cols": ["n"],
-  "rows": [{ "n": 1 }],
+  "sql": "SELECT packets.predicted_label AS \"key\", count(packets.id) AS count FROM packets GROUP BY ...",
+  "answer": "Deauth is the most frequent detected class, with 42 frames in the window.",
+  "cols": ["key", "count"],
+  "rows": [{"key": "Deauth", "count": 42}],
   "error": null
 }
 ```
 
-**Response — 503, no API key** (verified):
-
-```json
-{ "detail": "OPENROUTER_API_KEY is not configured; the assistant is disabled." }
-```
-
 | Field | Meaning |
 |---|---|
-| `cached` | the answer came from the TTL cache; the rest of the object is the cached response |
-| `mode` | `SQL` — a query was generated and run · `DOCS` — answered from the knowledge base · `OOS` — out of scope · `ERROR` — generation or execution failed |
-| `sql` | the generated query (`""` for `DOCS` / `OOS`) |
-| `answer` | prose answer; humanised by a second model call when `HUMANIZE_SQL=1`, otherwise a deterministic template |
-| `cols` / `rows` | the result set (empty for `DOCS` / `OOS`) |
-| `error` | present only in `ERROR` mode |
+| `cached` | served from the TTL cache (200 entries / 600 s, key = sha256 of `session_id\|\|question`) |
+| `mode` | `SQL` \| `DOCS` \| `OOS` \| `ERROR` — see below |
+| `sql` | the last tabular tool's real `SELECT`, values inlined; `""` when no tool ran SQL |
+| `answer` | the prose answer |
+| `cols` / `rows` | the last tabular result; `rows` are objects keyed by column name |
+| `error` | `null` on success; a string when the run failed (`mode` is then `ERROR`) |
 
-Safety rails, all env-tunable: generated SQL must be a **single read-only `SELECT`**; an unbounded
-`SELECT` gets a `LIMIT` appended (`RAG_MAX_ROWS`, default 500); on PostgreSQL every query runs under a
-`statement_timeout` (`RAG_SQL_TIMEOUT_MS`, default 15000 ms). The knowledge base is
-`backend/app/rag/knowledge/attacks.md`, overridable with `ATTACKS_FILE`.
+**`mode` is derived from which tools actually executed**, never from anything the model says about itself:
+`SQL` when any tool that reads packet data ran, `DOCS` when only `explain_attack_class` ran, `OOS` when no
+tool ran, `ERROR` on failure. That matters because the shipped dashboard branches on the literal string
+`"SQL"` and only that branch renders the rows table — a wrong `mode` shows a plausible answer with the
+table silently missing. `backend/scripts/check_frontend.py` asserts it.
 
-An `ERROR` mode is still HTTP **200** with the message in `error`. A **500** means an unhandled
-failure — check `journalctl -u hawkshield-api`.
+An `ERROR` mode is still HTTP **200** with the message in `error`. **503** means no `OPENROUTER_API_KEY`
+or `SAQR_ENABLED=0`. A **500** means an unhandled failure — check `journalctl -u hawkshield-api`.
 
-### The SQL matches the database
+### What it can reach
 
-`/ask` is dialect-aware. `packet_qa._sql_dialect()` reads `DATABASE_URL` and picks the notes that go
-into the system prompt, so the model writes **PostgreSQL** on the Pi and **SQLite** on a laptop demo
-(where `run.py` falls back to a local file). The executor follows: SQLite runs through the app's
-SQLAlchemy engine, PostgreSQL through `psycopg` with the statement timeout applied.
+Only the `packets` table. Every statement the agent runs — including the `run_sql` escape hatch — must be
+a single `SELECT`/`WITH`, may name only `packets` and CTEs defined in the same statement, is row-capped by
+`SAQR_MAX_ROWS` and, on PostgreSQL, bounded by `SAQR_SQL_TIMEOUT_MS`. `documents`, `sqlite_master`,
+`pg_catalog.*` and `information_schema.*` are unreachable. (The old RAG path enforced SELECT-only but had
+no table allow-list; that gap closed when `/ask` was flipped.)
 
-| | PostgreSQL | SQLite |
-|---|---|---|
-| last 24 h | `ts >= NOW() - INTERVAL '24 hours'` | `ts >= datetime('now', '-24 hours')` |
-| today | `ts >= date_trunc('day', NOW())` | `ts >= date('now')` |
-| hour bucket | `date_trunc('hour', ts)`, `EXTRACT(HOUR FROM ts)` | `strftime('%H', ts)` |
-| JSON | `raw->>'ssid'` | `json_extract(raw, '$.ssid')` |
-| cast | `(raw->>'sig')::float` | `CAST(x AS REAL)` |
-
-Verified on the SQLite demo database: the model emitted `datetime('now', '-24 hours')`, not the
-PostgreSQL form, which would have failed outright.
+The knowledge base is still `backend/app/rag/knowledge/attacks.md`, overridable with `ATTACKS_FILE`.
 
 ### Configuration
+
+`/ask` and `/agent/ask` share one configuration block — see `docs/CONTRACT.md` section 3 for the full
+table. The ones that matter here:
 
 | Variable | Default | Notes |
 |---|---|---|
 | `OPENROUTER_API_KEY` | *(empty)* | empty ⇒ this endpoint is 503. Keys: <https://openrouter.ai/keys> |
-| `GEN_MODEL` | `deepseek/deepseek-v4-flash` | alternatives: `z-ai/glm-5.3-flash`, `qwen/qwen3.7-flash` (cheapest), `qwen/qwen3-235b-a22b-2507` (largest) |
-| `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | change only for a proxy or a self-hosted OpenAI-compatible API |
-| `OPENROUTER_SITE_URL` / `OPENROUTER_APP_NAME` | repo URL / `HawkShield` | attribution headers OpenRouter shows on its dashboard |
-| `HUMANIZE_SQL` | `1` | `0` ⇒ deterministic template answers, one fewer model call |
-| `RAG_MAX_ROWS` | `500` | `LIMIT` appended to unbounded `SELECT`s |
-| `RAG_SQL_TIMEOUT_MS` | `15000` | PostgreSQL `statement_timeout` |
+| `SAQR_ENABLED` | `1` | `0` ⇒ both `/ask` and `/agent/*` answer 503 |
+| `SAQR_MODEL` | *(empty ⇒ `GEN_MODEL`)* | must be a tool-calling model |
+| `SAQR_MAX_ROWS` | `500` | `LIMIT` appended to unbounded `SELECT`s (`RAG_MAX_ROWS` is a deprecated alias) |
+| `SAQR_SQL_TIMEOUT_MS` | `15000` | PostgreSQL `statement_timeout` (`RAG_SQL_TIMEOUT_MS` is a deprecated alias) |
+| `SAQR_ALLOW_RAW_SQL` | `1` | publish the guarded `run_sql` tool, so eight tools rather than seven |
 | `ATTACKS_FILE` | *(empty = packaged)* | knowledge-base override |
 
-### Pre-flight: `check_rag.py`
+`/ask` has no rate limit and no concurrency gate, matching its historical behaviour; `/agent/ask` has both.
 
-Run this before you demo `/ask`. It exercises the whole path so a failure tells you *which* part is
-broken, instead of a 503 or an `ERROR` mode with no context.
+### Pre-flight
 
 ```bash
-python backend/scripts/check_rag.py
-python backend/scripts/check_rag.py --skip-db     # model only; generate the SQL, do not run it
+python backend/scripts/check_saqr.py        # the assistant end to end (needs a key + network)
+python backend/scripts/check_frontend.py    # the shipped frontend/out build against this backend
 ```
 
-| Step | Checks |
-|---|---|
-| configuration | `OPENROUTER_API_KEY` is set and a client can be built |
-| catalogue | `GEN_MODEL` exists on OpenRouter; prints its context length and live per-million price |
-| `DOCS` mode | a knowledge-base question comes back with a real answer, routed as `DOCS` |
-| `SQL` mode | a text-to-SQL question is routed as `SQL` and produces a query |
-| execution | that query runs against the live database and is humanised |
-
-| Exit | Meaning |
-|---|---:|
-| `0` | `POST /ask` will work |
-| `2` | no key, or `GEN_MODEL` is not a real OpenRouter model id (it suggests near matches) |
-| `3` | the `DOCS` call failed or returned an empty answer |
-| `4` | the `SQL` call misrouted, failed to generate, or the query would not execute |
-
-An exit of `4` with a database error means the model is fine and your database is not — re-run with
-`--skip-db` to confirm.
-
----
+`check_saqr.py` verifies key → model exists in the OpenRouter catalogue → it advertises `tools` → a live
+one-tool round-trip. `check_frontend.py` is the go/no-go gate for the built bundle and asserts this exact
+envelope, including `mode == "SQL"`. Both exit `0` on success and name what broke otherwise; both degrade
+to a clear "not verified" block with no API key. See `docs/CONTRACT.md` section 8.6.
 
 ## POST `/simulate`
 

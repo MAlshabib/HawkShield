@@ -83,28 +83,30 @@ def test_relative_path_env_resolves_against_repo_root(monkeypatch):
     ],
 )
 def test_sql_dialect_detection(monkeypatch, url, expected):
-    from backend.app.rag import packet_qa
+    """``DATABASE_URL`` selects the dialect the assistant is told it is talking to.
 
-    # _cfg prefers the Settings singleton built at import; drop it so the test
-    # exercises the environment path a freshly started process would see.
-    monkeypatch.setattr(packet_qa, "_settings", None)
+    Lives in ``agent/sqlguard`` now; it was ``packet_qa._sql_dialect`` until the
+    RAG module was deleted. The behaviour, and the reason it matters, are
+    unchanged: the same repository runs on PostgreSQL on the Pi and SQLite on a
+    laptop demo, and SQL written for the wrong one simply fails.
+    """
+    from backend.app.agent.sqlguard import sql_dialect
+
     monkeypatch.setenv("DATABASE_URL", url)
-
-    assert packet_qa._sql_dialect() == expected
+    assert sql_dialect() == expected
 
 
 def test_dialect_notes_match_the_database(monkeypatch):
-    from backend.app.rag import packet_qa
+    from backend.app.agent.sqlguard import dialect_notes, sql_dialect
 
-    monkeypatch.setattr(packet_qa, "_settings", None)
     monkeypatch.setenv("DATABASE_URL", "sqlite:///./x.db")
-    sqlite_notes = packet_qa._dialect_notes()
+    sqlite_notes = dialect_notes(sql_dialect())
     assert "SQLite" in sqlite_notes
     assert "datetime('now'" in sqlite_notes
     assert "json_extract" in sqlite_notes
 
     monkeypatch.setenv("DATABASE_URL", "postgresql://u:p@localhost/db")
-    pg_notes = packet_qa._dialect_notes()
+    pg_notes = dialect_notes(sql_dialect())
     assert "PostgreSQL" in pg_notes
     assert "date_trunc" in pg_notes
     assert "NOW()" in pg_notes
@@ -119,20 +121,21 @@ def test_sqlite_select_executes_without_psycopg(monkeypatch, tmp_path):
     from sqlalchemy import create_engine
 
     from backend.app import db as db_module
+    from backend.app.agent.sqlguard import run_select, sql_dialect
     from backend.app.models import Base
-    from backend.app.rag import packet_qa
 
-    db_file = tmp_path / "rag.db"
+    db_file = tmp_path / "guard.db"
     engine = create_engine(f"sqlite:///{db_file.as_posix()}", future=True)
     Base.metadata.create_all(engine)
 
     monkeypatch.setattr(db_module, "engine", engine)
-    monkeypatch.setattr(packet_qa, "_settings", None)
     monkeypatch.setenv("DATABASE_URL", f"sqlite:///{db_file.as_posix()}")
 
-    assert packet_qa._sql_dialect() == "sqlite"
+    assert sql_dialect() == "sqlite"
 
-    cols, rows = packet_qa._run_sql("SELECT COUNT(*) AS count FROM packets")
+    # No session passed, so this takes the module-engine path -- the one that
+    # exists precisely because psycopg cannot handle a sqlite:// URL.
+    cols, rows = run_select("SELECT COUNT(*) AS count FROM packets", dialect="sqlite")
     assert cols == ["count"]
     assert rows[0][0] == 0
 
