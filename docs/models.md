@@ -10,10 +10,14 @@ fallback and as a post-mortem.
 > [`CONTRACT.md` §5](CONTRACT.md), and the model card with provenance and per-generation detail is
 > [`../models/README.md`](../models/README.md).
 
-> **Status — no trained v2 weights exist in this repository yet.** `models/` currently holds only the
-> two v1 `.joblib` bundles, so `MODEL_VERSION=auto` resolves to **v1** and that is what `run.py` and
-> the detector serve today. Everything below describes the v2 pipeline and how to produce those
-> weights; every measured v2 accuracy figure is deliberately absent until training completes.
+> **Status — v2 is trained and shipping.** `models/` holds `hawkshield_v2_gbdt.txt` (LightGBM,
+> **0.9907** held-out macro-F1, the model `auto` selects), `hawkshield_v2.onnx` (causal TCN, 0.9856,
+> selectable with `--model-version v2-tcn`) and the v1 bundles for fallback. Full per-class tables,
+> confusion matrices and the leakage ablation are in
+> [`ml/reports/eval_report.md`](../ml/reports/eval_report.md) and
+> [`models/README.md` §2.7](../models/README.md). The numbers are an upper bound on field
+> performance: AWID3 recorded each attack once, so the held-out blocks share the training blocks'
+> session and hardware.
 
 ---
 

@@ -27,9 +27,13 @@ and a dashboard plus natural-language assistant served from a single FastAPI pro
 > called by training *and* inference, 46 features that can all actually be produced on a
 > monitor-mode Pi, 9 classes, whole capture blocks held out of the split, and a runtime that refuses
 > to load a model whose feature space is not the one the extractor produces.
-> **But no v2 weights have been trained yet.** `models/` holds only the v1 bundles, so `run.py` and
-> the detector **currently serve v1**, and no v2 accuracy figure appears anywhere in this repository —
-> the numbers land in `ml/reports/eval_report.md` when training completes.
+> **v2 is trained and shipping.** On 5,943,908 held-out frames across all nine classes:
+> **LightGBM 0.9907 macro-F1**, causal TCN 0.9856 — the tree won a fair head-to-head on the same
+> grouped split, so the tree is what the detector loads. Ablating the top feature costs 0.0007
+> retrained (v1's equivalent flipped detection between 0 % and 100 %).
+> **Read the caveat that comes with it:** AWID3 recorded each attack once, so held-out blocks share
+> the session, testbed and radio hardware of the training blocks. That figure measures generalisation
+> across time within one recording, not across deployments — an upper bound on field performance.
 > Post-mortem and design: [Model status](#model-status--v1-post-mortem-and-the-v2-answer),
 > [`models/README.md`](models/README.md), [`docs/models.md`](docs/models.md).
 > Diagrams: [`docs/model-pipeline.md`](docs/model-pipeline.md).
@@ -557,10 +561,14 @@ has no fast int8 Conv1d kernel at these shapes.
 
 ## Model status — v1 post-mortem, and the v2 answer
 
-> **Where things stand: no v2 weights exist in this repository yet.** `models/` holds the two v1
-> `.joblib` bundles and nothing else, so `MODEL_VERSION=auto` resolves to **v1** and that is what
-> `run.py` and the detector serve today. **No v2 accuracy figure appears anywhere in these docs**,
-> because none has been measured. They land in `ml/reports/eval_report.md` when training completes.
+> **Where things stand: v2 is trained and `MODEL_VERSION=auto` resolves to `v2-gbdt`.** `models/`
+> holds the LightGBM winner (0.9907 held-out macro-F1), the causal TCN (0.9856, selectable), and the
+> v1 bundles as a last-resort fallback. Full tables: [`models/README.md` §2.7](models/README.md) and
+> [`ml/reports/eval_report.md`](ml/reports/eval_report.md).
+>
+> The section below is kept as the post-mortem it always was. It is the most instructive thing in
+> this repository: two failures that produced a model scoring ~99 % on a random shuffle and detecting
+> nothing real. Everything in v2's design is a direct response to one of them.
 
 ### What went wrong in v1
 

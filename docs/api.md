@@ -87,11 +87,11 @@ curl -s http://localhost:8000/health
 > ONNX) spec=…` or `ACTIVE MODEL: v1 (two-stage LightGBM) …` — is authoritative. The two disagree only
 > if the artefacts changed after the detector started, which is itself worth noticing.
 
-> **Expected today:** `models.v2` is `false`, `artefact_spec_version` is `null` and `model_version` is
-> `"v1"`, because no trained v2 artefact exists in this repository yet. `spec_version` still reports
-> `"2.1.0"` — that is the contract the *code* implements, not a claim that a matching model exists.
-> When `spec_version` and `artefact_spec_version` differ, `models.v2` is `false` and `model_problems`
-> says exactly why.
+> **Expected today:** `model_version` is `"v2-gbdt"` — the LightGBM model won the held-out
+> head-to-head (0.9907 vs the TCN's 0.9856), so `auto` selects it. `spec_version` and
+> `artefact_spec_version` both report `"2.1.0"`. When they differ, the artefact is refused,
+> `model_version` falls back, and `model_problems` says exactly why — a mismatched model is never
+> served silently, which is the failure v1 shipped with.
 
 ---
 

@@ -16,9 +16,10 @@ Two generations live under this heading.
 > models/stage2_multiclass_bundle.joblib  v1 stage 2
 > models/README.md                        this file
 > ```
-> There is **no `hawkshield_v2.onnx`**. Until `ml/run_training.ps1` produces one,
-> `MODEL_VERSION=auto` resolves to v1 and that is what the detector serves. No v2 accuracy figure
-> appears anywhere in this repository, because none has been measured.
+> `MODEL_VERSION=auto` resolves to **`v2-gbdt`**: the LightGBM model won the held-out head-to-head
+> (0.9907 macro-F1 against the TCN's 0.9856) and is what the detector serves. The TCN remains
+> selectable with `--model-version v2-tcn`, and the v1 bundles remain as a last-resort fallback.
+> Measured results are in §2.7.
 
 Diagrams of both the training and the live path: [`../docs/model-pipeline.md`](../docs/model-pipeline.md).
 Normative interface: [`../docs/CONTRACT.md` §5](../docs/CONTRACT.md). Orientation:
@@ -187,43 +188,99 @@ sets the feature to **NaN, not zero** — zero post-normalises to the training m
 the silent imputation that broke v1. Watch for both failure shapes: a **cliff** (the model is one
 feature in a trenchcoat) and **no movement at all** (ten other columns encode the same artefact).
 
-### 2.7 Results — pending training
+### 2.7 Results
 
-**No v2 weights have been trained yet.** Deliberately, no per-class F1, macro-F1, confusion matrix or
-latency-under-load figure for v2 appears in this repository. Any such number you find in a document is
-a bug, not a measurement.
+Trained 2026-08-27 on the full AWID3 archive: **23,716,279 frames** across **478 blocks**, split by
+whole block into 287 train / 72 val / 119 test. All nine classes are present in the held-out set.
+Reproduced by `ml/run_training.ps1 -Fresh`; raw output in
+[`ml/reports/eval_report.md`](../ml/reports/eval_report.md).
 
-Produce them with:
+**Held-out test macro-F1 over 5,943,908 frames:**
 
-```powershell
-.\ml\run_training.ps1 -Fresh          # Windows, ~50-90 min on an RTX 4070 SUPER
-```
-```bash
-./ml/run_training.sh --fresh          # Git Bash / WSL
-```
+| model | macro-F1 | file | ships |
+|---|---:|---|:--:|
+| **LightGBM** (49 rounds × 9 classes = 441 trees) | **0.9907** | `hawkshield_v2_gbdt.txt`, 3.0 MB | **yes** |
+| Causal TCN (80,471 params) | 0.9856 | `hawkshield_v2.onnx`, 348 KB | selectable |
 
-The run writes:
+The tree ensemble wins. That was a genuine measurement, not a foregone conclusion — the plan was
+always that whichever model won on the same grouped split would ship, and the neural network lost.
 
-| File | Contents |
-|---|---|
-| `ml/reports/train_report.md` | rows per class per split, causality probe (`max_delta_past` must be exactly `0.0`), per-epoch table |
-| `ml/reports/eval_report.md` | **per-class precision / recall / F1 / support, macro-F1, the 9×9 confusion matrix, the head-to-head against LightGBM, and the leakage ablation** |
-| `models/hawkshield_v2.onnx` | fp32 graph — the artefact that ships |
-| `models/hawkshield_v2.int8.onnx` | int8 variant — exported for measurement, not shipped |
-| `models/hawkshield_v2_meta.json` | spec version, class list, feature order, window/context, normalisation constants |
+**Per class, LightGBM (the shipped model):**
 
-> Both report files currently hold output from an earlier **smoke run on a 2.4 M-row subset at spec
-> `2.0.0`**. That is not the shipping model and its numbers must not be quoted. The real run
-> overwrites them.
+| class | precision | recall | F1 | support |
+|---|---:|---:|---:|---:|
+| Normal | 0.9997 | 0.9986 | 0.9992 | 4,449,777 |
+| RogueAP | 1.0000 | 1.0000 | 1.0000 | 331 |
+| Krack | 0.9999 | 0.9999 | 0.9999 | 16,009 |
+| SSDP | 0.9960 | 0.9994 | 0.9977 | 1,374,169 |
+| (Re)Assoc | 0.9971 | 0.9979 | 0.9975 | 1,401 |
+| Evil_Twin | 0.9930 | 0.9871 | 0.9900 | 26,218 |
+| Kr00k | 0.9915 | 0.9836 | 0.9875 | 47,332 |
+| Deauth | 0.9760 | 0.9969 | 0.9863 | 9,851 |
+| Disas | 0.9464 | 0.9694 | 0.9578 | 18,820 |
 
-When reading the eval report:
+Where the two models differ most: LightGBM is far better on **Krack** (0.9999 vs 0.9644 — the TCN
+loses 559 Krack frames to Normal), **(Re)Assoc** (0.9975 vs 0.9671) and **RogueAP** (1.0000 vs
+0.9955). The TCN is better on **Disas** (0.9738 vs 0.9578) and marginally on Kr00k.
 
-* **Support column first.** A class with support in the hundreds gives an F1 with an enormous
-  confidence interval. `RogueAP` is the extreme case. Do not quote a three-decimal F1 on 68 frames.
-* **A class absent from a split is `-`, not `0`.** `ml/windows.py::split_report()` warns loudly when a
-  class has too few blocks to appear everywhere; its metrics there are *undefined*, not zero.
-* **Off-diagonals.** `Deauth ↔ Disas` confusion is meaningful (near-identical management frames).
-  Anything ↔ `Normal` is the number that decides whether the box is usable.
+**Dominant error: Disas ↔ Kr00k**, in both models. 778 of 47,332 Kr00k frames (1.6 %) are called
+Disas, and 342 of 18,820 Disas frames are called Kr00k. This is semantically reasonable — Kr00k is
+*triggered* by a disassociation, and 100 % of both classes carry `mgmt.reason_code` — but it is the
+single largest contributor to the macro-F1 gap. In an earlier run where each class had only one or
+two blocks the same confusion consumed ~46 % of Kr00k; with tens of blocks per class it is 1.6 %.
+
+**Top-gain features** — these are the sanity check that matters. Ranked 3, 4 and 5 are
+`mgmt.reason_code`, `mgmt.tag_len` and `mgmt.has_reason`: real 802.11 management-frame evidence,
+exactly what a human analyst would look at. None of the session artefacts that dominated v1 appear.
+
+| rank | feature | note |
+|---:|---|---|
+| 1 | `roll64.frame.dt_log.mean` | inter-frame timing over the last 65 frames — rate, which is what makes a flood a flood |
+| 2 | `addr.ta_eq_sa` | transmitter ≠ source: a relay/spoof indicator |
+| 3 | `mgmt.reason_code` | present on 100 % of Deauth/Disas/Kr00k attack frames, 0.3 % of Normal |
+| 4 | `mgmt.tag_len` | total tag-body size; was dead until the spec-2.1.0 parser fix |
+| 5 | `mgmt.has_reason` | |
+
+**Leakage probe.** Removing the top-gain feature and re-measuring:
+
+| ablated | model | macro-F1 | Δ |
+|---|---|---:|---:|
+| `roll64.frame.dt_log.mean` | LightGBM, **retrained** without it | 0.9899 | **−0.0007** |
+| `roll64.frame.dt_log.mean` | LightGBM, score-only (set to NaN) | 0.9876 | −0.0030 |
+| `addr.ta_eq_sa` | TCN, score-only | 0.8912 | −0.0944 |
+
+Graceful degradation on both failure shapes: no cliff, and movement rather than the suspicious zero
+that would mean ten other columns encode the same artefact. Compare v1, where nulling
+`frame.time_relative` flipped detection on a deauth capture from 0.41 % of frames to 100 %, and
+nulling `radiotap.channel.freq` flipped it to 0 %.
+
+### 2.7.1 What these numbers do not say
+
+AWID3 recorded **each attack exactly once**, and `frame.number` runs continuously across an attack's
+chunk files, so leave-one-capture-out would delete the class outright. Held-out blocks therefore share
+the session, testbed, radio hardware and RF environment of the training blocks.
+
+**0.9907 measures generalisation across time within one recording, not across deployments.** Read it
+as an upper bound on field performance. A model that has only ever seen one testbed's hardware has
+not been shown to survive different antennas, drivers, channel conditions or a different attacker's
+tooling. Validating that needs a second, independently captured dataset — see §2.9.
+
+### 2.7.2 Runtime cost, measured
+
+5,000 frames of `data/samples/deauth_raw_decrypted.pcapng`, 2 threads, on an x86 laptop:
+
+| model | µs/frame | throughput | share of the capture loop |
+|---|---:|---:|---:|
+| v2-gbdt *(selected by `auto`)* | 75.9 | 947 pkt/s | 7.2 % |
+| v2-tcn | 35.9 | 1023 pkt/s | 3.7 % |
+| v1 | — | 1101 pkt/s | — |
+
+Scapy parsing and feature derivation dominate either way. Within the GBDT's 75.9 µs, `Booster.predict`
+is only 5.4 µs — the causal rollup state is the larger half at 20.1 µs. At runtime the booster is the
+**lighter** of the two models: +7.6 MB RSS against onnxruntime's +9.7 MB, despite the 3 MB file.
+
+Expect roughly 4–8× these figures on a Pi 4, i.e. ~300–600 µs/frame, ~30–60 % of one core at
+1,000 frames/s. If that budget is tight, `--model-version v2-tcn` is supported and costs about half.
 
 ### 2.8 Runtime behaviour
 
