@@ -1009,8 +1009,18 @@ Two behaviours changed with the flip, both deliberate:
 - **`SAQR_ENABLED=0` disables `/ask` too.** After the flip there is one assistant, so its master switch
   governs both routes. The missing-key 503 carries the identical `detail` string it always did.
 
-`/ask` deliberately has **no** rate limit and **no** concurrency gate, matching its previous behaviour;
-`/agent/ask` has both. A run through `/ask` is now materially more expensive than the old two-call RAG path
-(up to `SAQR_MAX_STEPS` model turns), so a host exposing `/ask` to untrusted callers should put the limit in
-front of it. The TTL cache absorbs repeats, which is what made this acceptable for the one legacy bundle it
-serves.
+**`/ask` shares the assistant's rate limit and concurrency gate with `/agent/ask`** — the same
+`SAQR_RATE_MAX` / `SAQR_RATE_WINDOW_S` window and the same `SAQR_MAX_CONCURRENT_RUNS` slots, not a second
+budget of its own. The ceiling belongs to the assistant, not to a URL: a run is now up to `SAQR_MAX_STEPS`
+model turns of real money, and `/ask` stays reachable unauthenticated on whatever network the Pi is sitting
+on. Over either limit is **429** with `Retry-After`, the same shape `/agent/ask` returns.
+
+Budget is checked **after** the TTL cache, so a cache hit costs nothing and spends nothing; what the budget
+bounds is new questions, which is what actually costs money.
+
+One caveat worth knowing, inherited unchanged from the RAG router: the cache key is
+`sha256(session_id || full_question)` and `full_question` embeds the session transcript, which grows by one
+turn after every answer. So asking the *identical* question twice in one session produces two different
+keys and two model calls — the cache only fires when the transcript matches too, which in practice means a
+fresh session. It is a much weaker backstop against repetition than it looks, which is the other reason the
+rate limit is not optional. Pinned by `test_a_repeat_in_one_session_is_not_a_cache_hit`.

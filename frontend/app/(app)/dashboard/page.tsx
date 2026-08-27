@@ -3,23 +3,27 @@
 /**
  * The ops console.
  *
- * Eight instruments over one polling loop. Two rules shaped every decision in
+ * Eight instruments over one polling loop. Three rules shaped every decision in
  * here:
  *
  * **Nothing is recomputed in the browser that the sensor can answer itself.**
  * The V1 dashboard pulled `/attacks?limit=5000` on every refresh and derived
- * the offender table and the channel table from it, then labelled both "local"
- * — a quarter of a megabyte over the wire, on a Pi 4B, to recompute two GROUP
- * BYs the database had already indexed for. Those two modules now read
- * `/top-offenders` and `/channel-usage`; the ledger and the class distribution
- * read `/reports/summary?days=N`, which is the only range-aware endpoint the
- * backend has. The one thing still folded client-side is the activity series,
- * because no endpoint returns a time series (see the note above `SERIES_LIMIT`).
+ * the offender table, the channel table and the activity series from it, then
+ * labelled them "local" — a quarter of a megabyte over the wire, on a Pi 4B, to
+ * recompute GROUP BYs the database had already indexed for. Every one of those
+ * is now a server-side aggregate: `/top-offenders`, `/channel-usage`,
+ * `/heatmap-attack` and `/attacks/series`, alongside `/reports/summary`.
+ *
+ * **The range selector governs the whole page.** Every aggregate here takes
+ * `days`, so there is no module left that quietly answers for all time while
+ * the ones beside it answer for the last 24 hours.
  *
  * **A figure the sensor did not report is not a zero.** Every resource carries
  * its own `failed` flag, a failed refresh leaves the last good value on screen,
  * and a module that has never loaded says so rather than rendering an empty
- * instrument that looks like a quiet network.
+ * instrument that looks like a quiet network. That extends to the sensor
+ * readout: `/health.capture` reports `null` for anything it could not measure,
+ * and `null` is rendered as *not reported*, never as a healthy default.
  */
 import * as React from "react"
 import {
@@ -42,6 +46,7 @@ import { Metric } from "@/components/hs/metric"
 import { Module, ModuleGrid } from "@/components/hs/module"
 import { Radar } from "@/components/hs/radar"
 import { StatusPill } from "@/components/hs/status-pill"
+import { Quantity } from "@/components/quantity"
 import { Button } from "@/components/ui/button"
 import {
   Select,
@@ -62,7 +67,7 @@ import {
   type Severity,
 } from "@/lib/colors"
 import { apiTimeMs, freqToChannel, riyadhParts, toAttackType } from "@/lib/detections"
-import { Mac, Timestamp, useFormatters } from "@/lib/format"
+import { Mac, TIMEZONE, Timestamp, useFormatters } from "@/lib/format"
 import { useLocale, useT, type TranslationKey, type Translate } from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 
@@ -72,21 +77,23 @@ import { cn } from "@/lib/utils"
 const POLL_OK_MS = 20_000
 const POLL_RETRY_MS = 8_000
 
-/** The activity series is heavy, so it refreshes on its own slower clock. */
-const SERIES_MS = 60_000
-
 /** Enough rows for the live tape without pulling the table. */
 const TAPE_LIMIT = 60
 
 /**
- * The backend exposes no time-series endpoint — `/reports/summary` returns one
- * `peakHour` and nothing else with a time axis — so "activity over time" has to
- * be folded from raw rows. This is the one bounded page we still pull, on a
- * one-minute clock rather than the dashboard's own, and it is capped at a
- * fraction of V1's 5000. If a `GET /attacks/series?days=&bucket=` ever lands,
- * this fetch and `activity` below both delete.
+ * How many offenders the table shows. `/top-offenders` defaults to 50 and ties
+ * break on `wlan_sa` ascending, so asking for exactly what is rendered is both
+ * smaller on the wire and deterministic — the page must not depend on the
+ * endpoint handing back every distinct source MAC, which it no longer does.
  */
-const SERIES_LIMIT = 1000
+const OFFENDER_LIMIT = 20
+
+/**
+ * The sensor buckets on this wall clock, so the heatmap and the activity series
+ * agree with the timestamps `lib/format` prints in the tape beside them. An
+ * unknown zone is a 400 from the backend, never a silent fall back to UTC.
+ */
+const TZ = encodeURIComponent(TIMEZONE)
 
 /* ── Range ───────────────────────────────────────────────────────────────── */
 
@@ -99,6 +106,20 @@ const RANGES: readonly { id: RangeId; days: number; key: TranslationKey }[] = [
 ]
 
 const rangeOf = (id: RangeId) => RANGES.find((r) => r.id === id) ?? RANGES[0]
+
+type SeriesBucket = "hour" | "day"
+
+/**
+ * `/attacks/series` answers **400** past these ceilings rather than clamping
+ * quietly (CONTRACT §4), so the page clamps the request instead of firing one
+ * it already knows will fail, and says on the chart that it did. No range in
+ * `RANGES` reaches either ceiling today; this is what keeps that true when one
+ * is added.
+ */
+const SERIES_MAX_DAYS: Record<SeriesBucket, number> = { hour: 31, day: 366 }
+
+/** A day of detections is legible hour by hour; a month of them is not. */
+const bucketFor = (days: number): SeriesBucket => (days <= 1 ? "hour" : "day")
 
 /* ── Wire shapes ─────────────────────────────────────────────────────────── */
 
@@ -116,10 +137,8 @@ type ReportSummary = {
 type PacketRow = {
   id: number | string
   ts?: string | null
-  iface?: string | null
   src_mac?: string | null
   bssid?: string | null
-  channel_freq?: number | null
   predicted_label?: string | null
   proba_attack?: number | null
   raw?: { sim?: boolean } | null
@@ -128,6 +147,20 @@ type PacketRow = {
 type OffenderRow = { wlan_sa: string; count: number }
 type ChannelRow = { channel_freq: number; count: number }
 type HeatRow = { day: string; hours: { hour: number; intensity: number }[] }
+
+/**
+ * `/attacks/series`. Zero-filled by the backend — a quiet hour is a `0` and
+ * never a gap — and `t` carries the local UTC offset, so it parses to the right
+ * instant without being re-stamped.
+ */
+type SeriesPayload = {
+  bucket?: SeriesBucket
+  tz?: string
+  days?: number
+  total?: number
+  outside_range?: number
+  points?: { t?: string | null; count?: number | null }[] | null
+}
 
 /**
  * `data: null` means "never loaded", which is not the same as an empty result;
@@ -255,7 +288,7 @@ export default function DashboardPage() {
 
   const [summary, setSummary] = React.useState<Res<ReportSummary>>(idle)
   const [tape, setTape] = React.useState<Res<PacketRow[]>>(idle)
-  const [series, setSeries] = React.useState<Res<PacketRow[]>>(idle)
+  const [series, setSeries] = React.useState<Res<SeriesPayload>>(idle)
   const [heat, setHeat] = React.useState<Res<HeatRow[]>>(idle)
   const [offenders, setOffenders] = React.useState<Res<OffenderRow[]>>(idle)
   const [channels, setChannels] = React.useState<Res<ChannelRow[]>>(idle)
@@ -264,7 +297,14 @@ export default function DashboardPage() {
 
   const refresh = React.useCallback(() => setTick((n) => n + 1), [])
 
-  /* ---- the light loop: everything except the raw series ------------------ */
+  /** The series request the selected range maps to, clamped to what the bucket allows. */
+  const seriesQuery = React.useMemo(() => {
+    const bucket = bucketFor(range.days)
+    const days = Math.min(range.days, SERIES_MAX_DAYS[bucket])
+    return { bucket, days, clamped: days < range.days }
+  }, [range.days])
+
+  /* ---- one loop: every module, one range --------------------------------- */
   React.useEffect(() => {
     let mounted = true
     const alive = () => mounted
@@ -273,9 +313,14 @@ export default function DashboardPage() {
       await Promise.all([
         read<ReportSummary>(`/reports/summary?days=${range.days}`, setSummary, alive),
         read<PacketRow[]>(`/attacks?limit=${TAPE_LIMIT}&offset=0`, setTape, alive),
-        read<HeatRow[]>("/heatmap-attack", setHeat, alive),
-        read<OffenderRow[]>("/top-offenders", setOffenders, alive),
-        read<ChannelRow[]>("/channel-usage", setChannels, alive),
+        read<SeriesPayload>(
+          `/attacks/series?days=${seriesQuery.days}&bucket=${seriesQuery.bucket}&tz=${TZ}`,
+          setSeries,
+          alive
+        ),
+        read<HeatRow[]>(`/heatmap-attack?days=${range.days}&tz=${TZ}`, setHeat, alive),
+        read<OffenderRow[]>(`/top-offenders?days=${range.days}&limit=${OFFENDER_LIMIT}`, setOffenders, alive),
+        read<ChannelRow[]>(`/channel-usage?days=${range.days}`, setChannels, alive),
       ])
       if (mounted) setUpdatedAt(Date.now())
     })()
@@ -283,7 +328,7 @@ export default function DashboardPage() {
     return () => {
       mounted = false
     }
-  }, [tick, range.days])
+  }, [tick, range.days, seriesQuery])
 
   React.useEffect(() => {
     const every = connState === "online" ? POLL_OK_MS : POLL_RETRY_MS
@@ -291,27 +336,27 @@ export default function DashboardPage() {
     return () => clearInterval(timer)
   }, [connState, refresh])
 
-  /* ---- the heavy loop: raw rows for the activity series ------------------ */
-  React.useEffect(() => {
-    let mounted = true
-    const alive = () => mounted
-    const pull = () => void read<PacketRow[]>(`/attacks?limit=${SERIES_LIMIT}&offset=0`, setSeries, alive)
-
-    pull()
-    const timer = setInterval(pull, SERIES_MS)
-    return () => {
-      mounted = false
-      clearInterval(timer)
-    }
-  }, [rangeId])
-
   /* ---- sensor ------------------------------------------------------------ */
 
   const newest = tape.data?.[0] ?? null
   const lastPacketMs = apiTimeMs(health?.latest_packet_ts ?? newest?.ts ?? null)
   const sensorLive =
     connState === "online" && lastPacketMs !== null && Date.now() - lastPacketMs < LIVE_WINDOW_MS
-  const newestChannel = freqToChannel(newest?.channel_freq)
+
+  /**
+   * What the sensor is set to, and what the API process could actually measure
+   * of it. This replaces reading `iface` and `channel_freq` off the newest
+   * stored packet — an inference the page then had to caption. `capture` is
+   * absent on a backend older than the block, which is a third state: neither
+   * measured nor "measured as null".
+   */
+  const capture = health?.capture ?? null
+  // `source` is `"config"` when nothing could be measured. Each field is still
+  // rendered from its own value, so a `null` reads as unreported either way.
+  const captureMeasured = capture?.source ? capture.source !== "config" : false
+  const observedChannel = freqToChannel(capture?.observed_channel_freq)
+  const configuredChannel =
+    typeof capture?.channel === "number" && Number.isFinite(capture.channel) ? capture.channel : null
 
   /* ---- ledger + class distribution (server-side, range-aware) ------------ */
 
@@ -347,50 +392,33 @@ export default function DashboardPage() {
 
   /* ---- activity over time ------------------------------------------------ */
 
+  /**
+   * The series arrives zero-filled and already bucketed on Riyadh wall clock,
+   * so a bar labelled 14:00 holds exactly the rows the tape prints as 14:xx.
+   * Nothing is folded here — a point is only dropped when it carries no
+   * parseable instant or no finite count, which is a malformed point rather
+   * than a quiet one, and plotting it as a zero would invent a reading.
+   */
   const activity = React.useMemo(() => {
-    const rows = series.data
-    if (!rows) return null
+    const payload = series.data
+    if (!payload) return null
 
-    const now = Date.now()
-    const hourly = range.days <= 1
-    const stepMs = hourly ? 3_600_000 : 86_400_000
-    const buckets = hourly ? 24 : range.days
-
-    // Bucket boundaries are Riyadh wall-clock, so a bar labelled 14:00 holds
-    // exactly the rows the table above prints as 14:xx.
-    const startOf = (ms: number) => {
-      const p = riyadhParts(ms)
-      return hourly
-        ? Date.UTC(p.y, p.m, p.d, p.hour) - 3 * 3_600_000
-        : Date.UTC(p.y, p.m, p.d) - 3 * 3_600_000
-    }
-
-    const head = startOf(now)
-    const counts = new Map<number, number>()
-    for (let i = 0; i < buckets; i += 1) counts.set(head - i * stepMs, 0)
-
-    let inWindow = 0
-    for (const row of rows) {
-      const ms = apiTimeMs(row.ts)
-      if (ms === null) continue
-      const key = startOf(ms)
-      if (!counts.has(key)) continue
-      counts.set(key, (counts.get(key) ?? 0) + 1)
-      inWindow += 1
-    }
-
-    return {
-      empty: inWindow === 0,
-      hourly,
-      points: Array.from(counts.entries())
-        .sort((a, b) => a[0] - b[0])
-        .map(([ms, count]) => ({
+    const hourly = seriesQuery.bucket === "hour"
+    const points = (payload.points ?? []).flatMap((p) => {
+      const ms = apiTimeMs(p.t)
+      if (ms === null) return []
+      if (typeof p.count !== "number" || !Number.isFinite(p.count)) return []
+      return [
+        {
           ms,
-          count,
+          count: p.count,
           label: hourly ? `${String(riyadhParts(ms).hour).padStart(2, "0")}:00` : f.date(ms),
-        })),
-    }
-  }, [series.data, range.days, f])
+        },
+      ]
+    })
+
+    return { empty: points.every((p) => p.count === 0), hourly, points }
+  }, [series.data, seriesQuery.bucket, f])
 
   /* ---- live tape --------------------------------------------------------- */
 
@@ -508,7 +536,8 @@ export default function DashboardPage() {
 
   /* ---- tables ------------------------------------------------------------ */
 
-  const offenderRows = (offenders.data ?? []).slice(0, 20)
+  // Already limited on the wire — `OFFENDER_LIMIT` rows is the whole response.
+  const offenderRows = offenders.data ?? []
   const offenderColumns: DataTableColumn<OffenderRow>[] = React.useMemo(
     () => [
       {
@@ -701,10 +730,65 @@ export default function DashboardPage() {
               </StatusPill>
             </Field>
             <Field label={t("dashboard.sensor.interface")}>
-              {newest?.iface ? <span className="hs-ltr font-mono">{newest.iface}</span> : <Unreported />}
+              {capture?.iface ? (
+                <span className="inline-flex items-center gap-2">
+                  <span className="hs-ltr font-mono">{capture.iface}</span>
+                  {/* `present` is only ever `false` when sysfs was actually read
+                      and the interface was not there — a measured absence, not
+                      an unknown, and the one capture fault worth a pill. */}
+                  {capture.present === false && (
+                    <StatusPill tone="critical">{t("dashboard.sensor.notPresent")}</StatusPill>
+                  )}
+                </span>
+              ) : (
+                <Unreported />
+              )}
             </Field>
             <Field label={t("dashboard.sensor.channel")}>
-              {newestChannel === null ? <Unreported /> : <span className="hs-num">{f.number(newestChannel)}</span>}
+              {configuredChannel === null ? (
+                <Unreported />
+              ) : (
+                <span className="hs-num">{f.number(configuredChannel)}</span>
+              )}
+            </Field>
+            <Field label={t("dashboard.sensor.monitorMode")}>
+              {/* Three states, not two: `true`, a measured `false` that means the
+                  radio is not capturing, and `null` — nothing was measured. */}
+              {capture?.monitor_mode === true ? (
+                <StatusPill tone="info">{t("common.yes")}</StatusPill>
+              ) : capture?.monitor_mode === false ? (
+                <StatusPill tone="high">{t("common.no")}</StatusPill>
+              ) : (
+                <Unreported />
+              )}
+            </Field>
+            <Field label={t("dashboard.sensor.linkState")}>
+              {/* `up` / `down` / `dormant` are kernel identifiers: Latin in both
+                  locales, and isolated so they never join the Arabic run. */}
+              {capture?.operstate ? (
+                <span className="hs-ltr font-mono">{capture.operstate}</span>
+              ) : (
+                <Unreported />
+              )}
+            </Field>
+            <Field label={t("dashboard.sensor.observedIface")}>
+              {capture?.observed_iface ? (
+                <span className="hs-ltr font-mono">{capture.observed_iface}</span>
+              ) : (
+                <Unreported />
+              )}
+            </Field>
+            <Field label={t("dashboard.sensor.observedChannel")}>
+              {observedChannel === null ? (
+                <Unreported />
+              ) : (
+                <span className="inline-flex items-center gap-2">
+                  <span className="hs-num">{f.number(observedChannel)}</span>
+                  <span className="text-ink-faint text-xs">
+                    <Quantity value={f.number(capture?.observed_channel_freq)} unit={t("units.mhz")} />
+                  </span>
+                </span>
+              )}
             </Field>
             <Field label={t("dashboard.sensor.model")}>
               {health?.model_version && health.model_version !== "none" ? (
@@ -731,7 +815,11 @@ export default function DashboardPage() {
               {lastPacketMs === null ? <Unreported /> : <Timestamp value={lastPacketMs} format="relative" />}
             </Field>
           </div>
-          <p className="text-ink-faint mt-3 text-xs">{t("dashboard.sensor.fromLatest")}</p>
+          {capture && (
+            <p className="text-ink-faint mt-3 text-xs">
+              {captureMeasured ? t("dashboard.sensor.measured") : t("dashboard.sensor.configOnly")}
+            </p>
+          )}
         </Module>
 
         <Module
@@ -860,7 +948,9 @@ export default function DashboardPage() {
           label={t("dashboard.activity.title")}
           // Bucket size is a property of the selected range, not of whether
           // any rows arrived — an empty 24h view is still an hourly view.
-          title={range.days <= 1 ? t("dashboard.activity.hourly") : t("dashboard.activity.daily")}
+          title={
+            seriesQuery.bucket === "hour" ? t("dashboard.activity.hourly") : t("dashboard.activity.daily")
+          }
           loading={series.data === null && !series.failed}
         >
           {series.data === null && series.failed ? (
@@ -909,13 +999,18 @@ export default function DashboardPage() {
               </AreaChart>
             </ChartFrame>
           )}
+          {/* Stated whatever the chart shows: the window on screen is not the
+              window the operator picked, and that has to be visible. */}
+          {seriesQuery.clamped && (
+            <p className="text-ink-faint mt-2 text-xs">{t("dashboard.activity.clamped")}</p>
+          )}
         </Module>
       </ModuleGrid>
 
       {/* ---- 6. day × hour heatmap ---------------------------------------- */}
       <Module
         label={t("dashboard.heatmap")}
-        title={t("dashboard.allTime")}
+        title={rangeLabel}
         loading={heat.data === null && !heat.failed}
         actions={
           // Discrete swatches rather than a `linear-gradient`, whose direction
@@ -980,14 +1075,13 @@ export default function DashboardPage() {
                 </React.Fragment>
               ))}
             </div>
-            <p className="text-ink-faint mt-3 text-xs">{t("dashboard.heatmap.utc")}</p>
           </div>
         )}
       </Module>
 
       {/* ---- 7. top offenders · 8. channel occupancy ---------------------- */}
       <ModuleGrid className="lg:grid-cols-2">
-        <Module label={t("dashboard.topSources")} title={t("dashboard.allTime")} flush>
+        <Module label={t("dashboard.topSources")} title={rangeLabel} flush>
           <DataTable
             columns={offenderColumns}
             rows={offenderRows}
@@ -1005,7 +1099,7 @@ export default function DashboardPage() {
           />
         </Module>
 
-        <Module label={t("dashboard.channelUsage")} title={t("dashboard.allTime")} flush>
+        <Module label={t("dashboard.channelUsage")} title={rangeLabel} flush>
           <DataTable
             columns={channelColumns}
             rows={channelRows}
@@ -1024,9 +1118,7 @@ export default function DashboardPage() {
         </Module>
       </ModuleGrid>
 
-      <p className="text-ink-faint text-xs">
-        {t("time.timezone")} {t("dashboard.allTimeNote")}
-      </p>
+      <p className="text-ink-faint text-xs">{t("time.timezone")}</p>
     </div>
   )
 }

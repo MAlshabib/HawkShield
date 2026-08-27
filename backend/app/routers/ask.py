@@ -8,7 +8,10 @@ and the same guards that serve ``POST /agent/ask``.  There is one assistant in
 this system, not two.
 
 What this router still owns, unchanged: the TTL cache, the five-turn per-session
-memory, and a 503 when the assistant is not configured.
+memory, and a 503 when the assistant is not configured.  It **shares** the
+assistant's rate limit and concurrency gate with ``/agent/ask`` rather than
+holding a second budget of its own -- the ceiling belongs to the assistant, not
+to a URL.
 
 **The envelope is the contract, and the bundle is unforgiving about it.**  Its
 handler reads, in order: ``error`` (truthy short-circuits to an error bubble and
@@ -29,6 +32,7 @@ from typing import Any, Dict, List, Optional, Set
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, sessionmaker
 
+from backend.app.agent import ratelimit
 from backend.app.config import settings
 from backend.app.db import get_db
 from backend.app.schemas import AskPayload
@@ -167,7 +171,27 @@ async def ask(payload: AskPayload, db: Session = Depends(get_db)) -> Dict[str, A
     ck = _norm_key(session_id + "||" + full_q)
     cached = cache.get(ck)
     if cached:
+        # Served before the rate limit is consulted, deliberately: a cache hit
+        # costs no model call and no money, so it should not spend budget. What
+        # the budget exists to bound is *new* questions, which is exactly what
+        # gets past this line.
         return {"cached": True, **cached}
+
+    # The same limiter and the same concurrency gate /agent/ask uses -- not a
+    # second budget of this route's own. The ceiling belongs to the assistant,
+    # not to a URL: one run is now up to SAQR_MAX_STEPS model turns of real
+    # money, and this endpoint is reachable unauthenticated on whatever network
+    # the Pi is sitting on.
+    try:
+        ratelimit.limiter().check()
+        ratelimit.gate().acquire()
+    except ratelimit.RateLimited as exc:
+        logger.info("/ask rejected: %s", exc)
+        raise HTTPException(
+            status_code=429,
+            detail=str(exc),
+            headers={"Retry-After": str(max(1, int(exc.retry_after_s)))},
+        ) from exc
 
     # A sessionmaker bound to this request's engine, so the tools honour a get_db
     # override (tests) and the configured database (production) alike -- and so
@@ -179,6 +203,8 @@ async def ask(payload: AskPayload, db: Session = Depends(get_db)) -> Dict[str, A
     except SaqrUnavailable as exc:
         logger.info("/ask rejected: %s", exc)
         raise HTTPException(status_code=503, detail=str(exc)) from exc
+    finally:
+        ratelimit.gate().release()
 
     compact_answer = (result.answer or "")[:800]
     SESSION_MEMORY.setdefault(session_id, []).append(

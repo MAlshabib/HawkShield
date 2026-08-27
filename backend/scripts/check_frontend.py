@@ -30,6 +30,8 @@ be right while the shipped build still breaks.
 
 Exit codes:  0 ok | 2 bundle missing or not served | 3 an API endpoint broke
              4 the /ask envelope broke | 5 the live round-trip broke
+             6 the runtime environment is wrong (Python, tzdata, sysfs, temp dir)
+             7 an /agent/* route broke | 8 the configured database broke
 """
 from __future__ import annotations
 
@@ -229,6 +231,225 @@ def faked_model(sql: str) -> Iterator[None]:
 
 
 # --------------------------------------------------------------------------- #
+# 0. Runtime environment                                                       #
+# --------------------------------------------------------------------------- #
+# Everything here is fine on the laptop and can be broken on the Pi.  Each one
+# was a line on a hand-written pre-flight checklist before it was turned into a
+# check, because a checklist item nobody runs is not a control.
+def check_environment() -> bool:
+    """Interpreter, timezone database, sysfs access, and writability."""
+    healthy = True
+
+    version = ".".join(str(n) for n in sys.version_info[:3])
+    if sys.version_info < (3, 11):
+        fail(f"Python {version} is too old; the code targets 3.11+")
+        healthy = False
+    else:
+        ok(f"Python {version} on {sys.platform}")
+        if sys.version_info >= (3, 13):
+            info("Newer than the development laptop (3.12). Watch for missing wheels.")
+
+    # zoneinfo needs a timezone database.  Debian ships `tzdata`, but a slim
+    # image may not, and CPython only falls back to the PyPI `tzdata` package if
+    # it happens to be installed.  A missing database is not subtle: every
+    # ?tz= request on /heatmap-attack and /attacks/series raises and 400s.
+    try:
+        from zoneinfo import ZoneInfo, available_timezones
+
+        for zone in ("UTC", "Asia/Riyadh"):
+            ZoneInfo(zone)
+        ok(
+            f"zoneinfo has a timezone database "
+            f"({len(available_timezones())} zones; UTC and Asia/Riyadh resolve)"
+        )
+    except Exception as exc:  # noqa: BLE001 - any failure here is the same problem
+        fail(f"zoneinfo cannot resolve a timezone: {exc}")
+        info("Every ?tz= request on /heatmap-attack and /attacks/series will 400.")
+        info("Fix on Debian / Raspberry Pi OS:  sudo apt install tzdata")
+        info("Or inside a venv with no system tzdata:  pip install tzdata")
+        healthy = False
+
+    # The capture block reads /sys/class/net.  Under a hardened systemd unit
+    # those reads can fail or see nothing, and that has to degrade to nulls
+    # rather than raising -- a raise here would 500 /health on the Pi only.
+    try:
+        from backend.app.config import capture_status
+
+        capture = capture_status()
+        ok(f"capture status readable (source={capture['source']})")
+        if capture["source"] == "config+sysfs":
+            info(
+                f"iface={capture['iface']} link_type={capture['link_type']} "
+                f"monitor_mode={capture['monitor_mode']} operstate={capture['operstate']}"
+            )
+            if capture["monitor_mode"] is False:
+                warn(f"{capture['iface']} is not in monitor mode; the detector will see nothing")
+                info("Advisory only: the API process is not the capture process.")
+        else:
+            info(
+                "No /sys/class/net readings -- not Linux, interface absent, or the unit "
+                "cannot see it. Reported as null rather than guessed, which is correct."
+            )
+    except Exception as exc:  # noqa: BLE001 - this must never raise
+        fail(f"capture_status() raised instead of degrading to nulls: {exc}")
+        info("/health would 500 on a hardened unit. It must return nulls instead.")
+        healthy = False
+
+    # The API process writes nothing to disk, but this gate does, and a unit with
+    # ProtectSystem=strict may have no writable temp directory.
+    try:
+        with tempfile.TemporaryDirectory() as probe:
+            (Path(probe) / "probe").write_text("ok", encoding="utf-8")
+        ok(f"temp directory is writable ({tempfile.gettempdir()})")
+    except OSError as exc:
+        fail(f"no writable temp directory: {exc}")
+        info("This gate needs one. The API process itself does not write to disk.")
+        healthy = False
+
+    return healthy
+
+
+# --------------------------------------------------------------------------- #
+# 2b. The agent routes the dashboard actually uses                             #
+# --------------------------------------------------------------------------- #
+def check_agent_routes(client: Any) -> bool:
+    """``/agent/ask`` in both transports, with the model faked."""
+    healthy = True
+    with faked_model(""):
+        response = client.post("/agent/ask", json={"question": "how many attacks by class?"})
+        if response.status_code != 200:
+            fail(f"POST /agent/ask (JSON) -> {response.status_code}: {response.text[:200]}")
+            return False
+        body = response.json()
+        for key in ("answer", "locale", "model", "steps", "run_id", "stop_reason", "tool_calls"):
+            if key not in body:
+                fail(f"/agent/ask JSON reply is missing {key!r}")
+                healthy = False
+        if not str(body.get("answer") or "").strip():
+            fail("/agent/ask returned an empty answer")
+            healthy = False
+        else:
+            ok(f"POST /agent/ask (JSON): {len(body.get('tool_calls') or [])} tool call(s)")
+
+        stream = client.post(
+            "/agent/ask",
+            json={"question": "how many attacks by class?"},
+            headers={"Accept": "text/event-stream"},
+        )
+        content_type = stream.headers.get("content-type", "")
+        if stream.status_code != 200 or "text/event-stream" not in content_type:
+            fail(f"POST /agent/ask (SSE) -> {stream.status_code} {content_type or '(no type)'}")
+            return False
+        events = [
+            line[len("event: "):]
+            for line in stream.text.splitlines()
+            if line.startswith("event: ")
+        ]
+        if not events or events[0] != "run_start":
+            fail(f"the SSE stream does not open with run_start: {events[:3]}")
+            healthy = False
+        elif events[-1] != "done":
+            fail(f"the SSE stream does not end with done: {events[-3:]}")
+            healthy = False
+        else:
+            ok(f"POST /agent/ask (SSE): {len(events)} events, run_start .. done")
+        if stream.headers.get("x-accel-buffering") != "no":
+            fail("the SSE response is missing X-Accel-Buffering: no")
+            info("Behind nginx the whole answer buffers and the pane looks frozen.")
+            healthy = False
+    return healthy
+
+
+# --------------------------------------------------------------------------- #
+# 5. The configured database, whatever it really is                            #
+# --------------------------------------------------------------------------- #
+def check_live_database() -> Optional[bool]:
+    """Run the Python-bucketing endpoints against the **configured** database.
+
+    Everything above runs on a seeded SQLite file.  On the Pi the real database
+    is PostgreSQL, and two recently shipped endpoints bucket timestamps in
+    Python rather than in SQL -- so what the driver hands back (``datetime`` vs
+    string, naive vs aware) is exactly the kind of thing that differs between
+    engines and that no SQLite test can catch.
+
+    Returns ``None`` when the configured database is unreachable, which is the
+    normal case on a laptop and is a skip rather than a failure.
+    """
+    from fastapi.testclient import TestClient
+    from sqlalchemy import create_engine, text as sa_text
+    from sqlalchemy.orm import Session, sessionmaker
+
+    from backend.app.config import settings
+    from backend.app.db import get_db
+    from backend.app.main import app
+
+    try:
+        engine = create_engine(settings.DATABASE_URL, pool_pre_ping=True, future=True)
+        with engine.connect() as conn:
+            conn.execute(sa_text("SELECT 1"))
+    except Exception as exc:  # noqa: BLE001 - unreachable is a skip, not a failure
+        info(f"configured database not reachable: {str(exc).splitlines()[0][:160]}")
+        return None
+
+    ok(f"connected to the configured database ({settings.safe_database_url()})")
+    dialect = engine.dialect.name
+
+    def override_get_db() -> Iterator[Session]:
+        maker = sessionmaker(bind=engine, autocommit=False, autoflush=False)
+        session: Session = maker()
+        try:
+            yield session
+        finally:
+            session.close()
+
+    previous = app.dependency_overrides.get(get_db)
+    app.dependency_overrides[get_db] = override_get_db
+    healthy = True
+    try:
+        with TestClient(app) as live:
+            probes = (
+                ("/attacks/series?days=1&bucket=hour&tz=Asia/Riyadh", _check_series),
+                ("/attacks/series?days=3&bucket=day&tz=UTC", None),
+                ("/heatmap-attack?tz=Asia/Riyadh&days=7", _check_heatmap),
+                ("/heatmap-attack", _check_heatmap),
+                ("/top-offenders?days=7&limit=10", _check_top_offenders),
+                ("/channel-usage?days=7", _check_channel_usage),
+                ("/reports/summary?days=7", _check_summary),
+                ("/health", _check_health),
+            )
+            for path, checker in probes:
+                response = live.request("GET", path)
+                if response.status_code != 200:
+                    fail(f"{dialect}: GET {path} -> {response.status_code}")
+                    info(response.text[:200])
+                    healthy = False
+                    continue
+                problems: List[str] = []
+                if checker is not None:
+                    checker(response.json(), problems)
+                if problems:
+                    fail(f"{dialect}: GET {path} answered 200 with the wrong shape")
+                    for problem in problems:
+                        info(problem)
+                    healthy = False
+                else:
+                    ok(f"{dialect}: GET {path}")
+    finally:
+        if previous is None:
+            app.dependency_overrides.pop(get_db, None)
+        else:
+            app.dependency_overrides[get_db] = previous
+        engine.dispose()
+
+    if healthy and dialect != "sqlite":
+        info(
+            "Timestamp bucketing verified against the real engine: both endpoints "
+            "convert in Python, so the driver's datetime shape is what matters."
+        )
+    return healthy
+
+
+# --------------------------------------------------------------------------- #
 # 1. The bundle is present and served                                          #
 # --------------------------------------------------------------------------- #
 def check_bundle_served(client: Any) -> bool:
@@ -344,15 +565,69 @@ def _check_summary(body: Any, problems: List[str]) -> None:
         _require(key in headline, f"summary missing {key!r}", problems)
 
 
+def _check_series(body: Any, problems: List[str]) -> None:
+    _require(isinstance(body, dict), "not a JSON object", problems)
+    if not isinstance(body, dict):
+        return
+    for key in ("bucket", "tz", "days", "total", "points"):
+        _require(key in body, f"missing key {key!r}", problems)
+    points = body.get("points") or []
+    _require(isinstance(points, list) and bool(points), "points must be a non-empty list", problems)
+    if isinstance(points, list) and points:
+        _require(
+            all(isinstance(pt, dict) and "t" in pt and "count" in pt for pt in points),
+            "each point needs `t` and `count`", problems,
+        )
+        # Zero-filled: a quiet hour is a 0, never a gap. 24 hours per day.
+        _require(
+            len(points) == int(body.get("days", 0)) * 24,
+            f"expected {int(body.get('days', 0)) * 24} hourly buckets, got {len(points)}",
+            problems,
+        )
+
+
+def _check_ap_locations(body: Any, problems: List[str]) -> None:
+    _require(isinstance(body, list), "not a JSON array", problems)
+    if isinstance(body, list) and body:
+        for key in ("bssid", "name", "lat", "lng"):
+            _require(key in body[0], f"entries missing {key!r}", problems)
+
+
+def _check_source_rssi(body: Any, problems: List[str]) -> None:
+    _require(isinstance(body, dict), "not a JSON object", problems)
+    if isinstance(body, dict):
+        _require("sa" in body and "points" in body, "expected {'sa', 'points'}", problems)
+
+
+def _check_tools(body: Any, problems: List[str]) -> None:
+    _require(isinstance(body, list) and bool(body), "not a non-empty JSON array", problems)
+    if isinstance(body, list) and body:
+        for key in ("name", "label_key", "mutating", "args_schema"):
+            _require(key in body[0], f"tool entries missing {key!r}", problems)
+        _require(
+            all(str(t.get("label_key", "")).startswith("saqr.tool.") for t in body),
+            "every label_key must be saqr.tool.<name>; the UI looks them up",
+            problems,
+        )
+
+
+# Extracted from frontend/out/_next/static/chunks/ -- from what the bundle
+# *does*, not from the contract. Re-extract after every frontend build: this
+# list silently went stale once already, when phases 2-3 added /attacks/series,
+# the map endpoints and /agent/* and the gate went on testing the old surface.
 ENDPOINTS: Tuple[Tuple[str, str, Optional[Dict[str, Any]], Optional[Callable]], ...] = (
     ("GET", "/health", None, _check_health),
     ("GET", "/attacks?limit=5&offset=0", None, _check_attacks),
     ("GET", "/attacks/analysis", None, _check_analysis),
+    ("GET", "/attacks/series?days=1&bucket=hour&tz=UTC", None, _check_series),
     ("GET", "/packets/count", None, _check_count),
     ("GET", "/top-offenders", None, _check_top_offenders),
     ("GET", "/channel-usage", None, _check_channel_usage),
     ("GET", "/heatmap-attack", None, _check_heatmap),
     ("GET", "/reports/summary?days=30", None, _check_summary),
+    ("GET", "/map/ap-locations", None, _check_ap_locations),
+    ("GET", "/map/source-rssi?sa=AA:BB:CC:DD:EE:00&minutes=10", None, _check_source_rssi),
+    ("GET", "/agent/tools", None, _check_tools),
 )
 
 
@@ -676,10 +951,15 @@ def main() -> int:
     print("\n  HawkShield frontend gate")
     print(f"  bundle: {settings.FRONTEND_DIST}\n")
 
+    print("-- runtime environment " + "-" * 48)
+    if not check_environment():
+        return 6
+
+    live_db: Optional[bool] = None
     with tempfile.TemporaryDirectory() as scratch:
         db_path = Path(scratch) / "gate.db"
         with app_client(db_path) as client:
-            print("-- built bundle " + "-" * 55)
+            print("\n-- built bundle " + "-" * 54)
             if not check_bundle_served(client):
                 return 2
 
@@ -689,7 +969,14 @@ def main() -> int:
                 info("without breaking a request, so this is checked by field, not status.")
                 return 3
 
-            print("\n-- POST /ask envelope " + "-" * 48)
+            print("\n-- the agent routes the dashboard uses " + "-" * 31)
+            if not check_agent_routes(client):
+                return 7
+
+            # The current bundle no longer calls /ask -- it uses /agent/ask. The
+            # envelope is still checked because /ask remains a published route,
+            # and because the previous bundle (kept as a fallback) depends on it.
+            print("\n-- POST /ask envelope (legacy route) " + "-" * 33)
             if not check_ask_envelope(client):
                 return 4
             if not check_ask_unavailable(client):
@@ -706,12 +993,27 @@ def main() -> int:
                     if args.skip_live
                     else "OPENROUTER_API_KEY is not set"
                 )
-                skipped([
+                not_verified = [
                     f"a live POST /ask through the real model ({reason})",
                     "that the configured model routes a database question to SQL mode",
-                ])
+                ]
+                skipped(not_verified)
                 info("Everything above ran against a faked model and real SQL, so the")
                 info("envelope is verified; only the model's routing is not.")
+
+    print("\n-- the configured database " + "-" * 43)
+    live_db = check_live_database()
+    if live_db is False:
+        info("Everything above passed against SQLite; this section is the real engine,")
+        info("which is where the Python timestamp bucketing actually has to hold up.")
+        return 8
+
+    if live_db is None:
+        skipped([
+            "the analytics endpoints against the configured database "
+            "(it was not reachable from here, so the timestamp bucketing in "
+            "/attacks/series and /heatmap-attack was only exercised on SQLite)"
+        ])
 
     print(f"\n  {GREEN}The shipped frontend/out build works against this backend.{RESET}\n")
     return 0

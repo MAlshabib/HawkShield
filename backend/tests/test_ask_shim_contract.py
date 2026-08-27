@@ -51,6 +51,7 @@ if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
 
 from backend.app import db as db_module  # noqa: E402
+from backend.app.agent import ratelimit  # noqa: E402
 from backend.app.config import ATTACK_CLASSES, FRONT_TYPES, settings  # noqa: E402
 from backend.app.db import Base, get_db  # noqa: E402
 from backend.app.main import app  # noqa: E402
@@ -138,9 +139,14 @@ def client(engine, monkeypatch) -> Iterator[TestClient]:
     app.dependency_overrides[get_db] = override_get_db
     ask_router.cache.store.clear()
     ask_router.SESSION_MEMORY.clear()
+    # The limiter and the gate are process-wide singletons shared with
+    # /agent/ask, so without this they accumulate across tests in this file and
+    # start returning 429 to whichever test happens to run twentieth.
+    ratelimit.reset_all()
     with TestClient(app) as test_client:
         yield test_client
     app.dependency_overrides.pop(get_db, None)
+    ratelimit.reset_all()
 
 
 @pytest.fixture()
@@ -572,3 +578,133 @@ def test_ask_still_allows_a_legitimate_cte_over_packets(client, monkeypatch):
     body = client.post("/ask", json={"question": "cte please"}).json()
     assert body["mode"] == "SQL"
     assert body["rows"], "a legitimate CTE over packets must still run"
+
+
+# --------------------------------------------------------------------------- #
+# The assistant's budget is shared, not per-route                              #
+# --------------------------------------------------------------------------- #
+# /ask is reachable unauthenticated, and one call is now up to SAQR_MAX_STEPS
+# model turns of real money. It shares the limiter and the gate with /agent/ask
+# so the ceiling belongs to the assistant rather than to a URL.
+def test_ask_is_429_over_the_rate_limit(client, monkeypatch):
+    from backend.app.agent import llm as agent_llm
+    from backend.app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "SAQR_RATE_MAX", 2)
+    monkeypatch.setattr(app_settings, "SAQR_RATE_WINDOW_S", 60.0)
+    ratelimit.reset_all()
+    monkeypatch.setattr(
+        agent_llm, "chat",
+        lambda messages, **kw: SimpleNamespace(content="fine", tool_calls=None),
+    )
+    ask_router.cache.store.clear()
+
+    # Distinct questions: a cache hit must not spend budget, so it cannot be
+    # used to prove the limiter fires.
+    assert client.post("/ask", json={"question": "first question"}).status_code == 200
+    assert client.post("/ask", json={"question": "second question"}).status_code == 200
+    third = client.post("/ask", json={"question": "third question"})
+    assert third.status_code == 429
+    assert "rate limit" in third.json()["detail"]
+    assert "Retry-After" in third.headers
+    ratelimit.reset_all()
+
+
+def test_a_cache_hit_does_not_spend_rate_limit_budget(client, monkeypatch):
+    """A cached answer costs no model call, so it must not consume budget.
+
+    Note what it takes to *get* a cache hit. The key is
+    ``sha256(session_id || full_question)`` and ``full_question`` embeds the
+    session transcript, which grows by one turn after every answer -- so asking
+    the identical question twice in one session produces two different keys and
+    two model calls. The cache only fires when the transcript is also identical,
+    which in practice means a fresh session. That is pre-existing behaviour,
+    inherited unchanged from the RAG router, and it is the reason the cache is a
+    much weaker backstop against repeated calls than it looks.
+    """
+    from backend.app.agent import llm as agent_llm
+    from backend.app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "SAQR_RATE_MAX", 1)
+    ratelimit.reset_all()
+    monkeypatch.setattr(
+        agent_llm, "chat",
+        lambda messages, **kw: SimpleNamespace(content="fine", tool_calls=None),
+    )
+    ask_router.cache.store.clear()
+
+    body = {"question": "the same question", "session_id": "cache-budget"}
+    first = client.post("/ask", json=body)
+    assert first.status_code == 200 and first.json()["cached"] is False
+
+    for _ in range(5):
+        # Reset the transcript so the key matches -- what a fresh session does.
+        ask_router.SESSION_MEMORY.clear()
+        repeat = client.post("/ask", json=body)
+        assert repeat.status_code == 200, "a cache hit must never be rate limited"
+        assert repeat.json()["cached"] is True
+    ratelimit.reset_all()
+
+
+def test_a_repeat_in_one_session_is_not_a_cache_hit(client, monkeypatch):
+    """Pins the surprising half of the above, so nobody relies on the cache.
+
+    The session transcript is part of the cache key, so the second identical
+    question in a session misses and costs another model call.
+    """
+    from backend.app.agent import llm as agent_llm
+
+    calls = []
+
+    def counting_chat(messages, **kw):
+        calls.append(1)
+        return SimpleNamespace(content="fine", tool_calls=None)
+
+    monkeypatch.setattr(agent_llm, "chat", counting_chat)
+    ask_router.cache.store.clear()
+    ask_router.SESSION_MEMORY.clear()
+
+    body = {"question": "same words", "session_id": "one-session"}
+    assert client.post("/ask", json=body).json()["cached"] is False
+    assert client.post("/ask", json=body).json()["cached"] is False
+    assert len(calls) == 2, "the transcript changed the key, so the model ran twice"
+
+
+def test_ask_and_agent_ask_share_one_budget(client, monkeypatch):
+    """Two routes, one ceiling: the limit is on the assistant, not the URL."""
+    from backend.app.agent import llm as agent_llm
+    from backend.app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "SAQR_RATE_MAX", 2)
+    ratelimit.reset_all()
+    monkeypatch.setattr(
+        agent_llm, "chat",
+        lambda messages, **kw: SimpleNamespace(content="fine", tool_calls=None),
+    )
+    ask_router.cache.store.clear()
+
+    assert client.post("/ask", json={"question": "via the legacy route"}).status_code == 200
+    assert client.post("/agent/ask", json={"question": "via the agent route"}).status_code == 200
+    # Budget spent by both routes together.
+    assert client.post("/ask", json={"question": "one too many"}).status_code == 429
+    ratelimit.reset_all()
+
+
+def test_the_gate_is_released_after_every_ask(client, monkeypatch):
+    """Including when the run explodes -- a leaked slot wedges the assistant."""
+    from backend.app.agent import llm as agent_llm
+    from backend.app.config import settings as app_settings
+
+    monkeypatch.setattr(app_settings, "SAQR_MAX_CONCURRENT_RUNS", 1)
+    monkeypatch.setattr(app_settings, "SAQR_RATE_MAX", 100)
+    ratelimit.reset_all()
+
+    def boom(messages, **kw):
+        raise RuntimeError("upstream exploded")
+
+    monkeypatch.setattr(agent_llm, "chat", boom)
+    for i in range(3):
+        ask_router.cache.store.clear()
+        assert client.post("/ask", json={"question": f"q{i}"}).status_code == 200
+    assert ratelimit.gate().in_flight == 0
+    ratelimit.reset_all()

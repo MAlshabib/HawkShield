@@ -11,6 +11,37 @@
 import { useCallback, useEffect, useRef, useState } from "react"
 import { apiUrl } from "@/lib/api"
 
+/**
+ * What the sensor is *set to*, and — only where the API process can actually
+ * measure it — what the interface is doing. See CONTRACT §4.
+ *
+ * `iface`, `channel`, `target_ssid` and `source` are always present. **Every
+ * other field is `null` when it genuinely cannot be known** — off Linux there
+ * is no `/sys/class/net`, so nothing is measured and `source` is `"config"`.
+ * `null` never means "probably fine", so a consumer must render it as *not
+ * reported* rather than as a healthy default.
+ */
+export type CapturePayload = {
+  /** Configured `CAPTURE_IFACE`. */
+  iface?: string | null
+  /** Configured `CAPTURE_CHANNEL` — what the radio was set to, not a readback. */
+  channel?: number | null
+  /** Configured `TARGET_SSID`; null when unset (no filter). */
+  target_ssid?: string | null
+  /** Interface exists in sysfs. */
+  present?: boolean | null
+  /** Link type is a radiotap/prism monitor interface. */
+  monitor_mode?: boolean | null
+  link_type?: string | null
+  /** Kernel operstate (`up`, `down`, …). */
+  operstate?: string | null
+  /** Interface on the newest stored packet — what the sensor is actually delivering. */
+  observed_iface?: string | null
+  observed_channel_freq?: number | null
+  /** `"config+sysfs"` when something was measured, `"config"` when nothing was. */
+  source?: string | null
+}
+
 export type HealthPayload = {
   status?: string
   database?: boolean
@@ -22,6 +53,8 @@ export type HealthPayload = {
   spec_version?: string
   /** Version the on-disk artefact claims — differs from `spec_version` when the export is stale. */
   artefact_spec_version?: string
+  /** Capture-interface state. Absent on a backend older than the `capture` block. */
+  capture?: CapturePayload | null
   version?: string
 }
 
