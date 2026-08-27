@@ -124,8 +124,12 @@ class AgentAskResponse(BaseModel):
     locale: str
     model: str
     steps: int
+    #: uuid4 hex.  The same value every SSE event of this run carries in
+    #: ``run_id``, so the two transports correlate in a log.
+    run_id: str = ""
     #: ``answered`` | ``step_limit`` | ``call_limit`` | ``timeout`` | ``error``
     stop_reason: str = "answered"
+    elapsed_ms: int = 0
     #: The last SQL a tool ran, mirroring ``/ask``'s ``sql`` field.
     sql: Optional[str] = None
     cols: List[str] = Field(default_factory=list)

@@ -118,6 +118,7 @@ credentials, or thresholds anywhere in the codebase. `backend/detector/*` reads 
 | `SAQR_ALLOW_RAW_SQL` | `0` | agent — publish the `run_sql` escape hatch |
 | `SAQR_ALLOW_SIMULATION_TOOL` | `1` | agent — publish `run_simulation`; also requires `ALLOW_SIMULATION=1` |
 | `SAQR_SIM_TOOL_MAX_COUNT` | `50` | agent — per-class cap; effective cap is `min(requested, this, SIM_MAX_COUNT)` |
+| `SAQR_STREAM_KEEPALIVE_S` | `15` | agent — seconds between liveness beats while streaming (`status` event + `: ka` comment) |
 | `SAQR_RATE_MAX` | `20` | agent — calls per `SAQR_RATE_WINDOW_S`; over it ⇒ 429 |
 | `SAQR_RATE_WINDOW_S` | `60` | agent |
 | `SAQR_MAX_CONCURRENT_RUNS` | `2` | agent — runs in flight at once; over it ⇒ 429 |
@@ -167,7 +168,7 @@ All routes are registered on the app **without** a prefix (the frontend calls `$
 | GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool, "v2": bool, "v2_gbdt": bool}, "model_version": "v2-gbdt"\|"v2-tcn"\|"v1"\|"none", "spec_version": str, "artefact_spec_version": str\|null, "model_problems": [str], "version": str}` |
 | POST | `/simulate` | body `{"attacks": "all"\|[str], "count": int, "intensity": "burst"\|"trickle"}` → `{"sim_batch": hex, "model_version": str, "intensity": str, "classes": [str], "count_per_class": int, "total_persisted": int, "per_class": {cls: {"requested","frames_pushed","detected","persisted","top_label","labels":{lbl:int}}}}`. **403** when `ALLOW_SIMULATION=0`; **400** on an unknown class; **429** over the rate limit; **503** when no model or no corpus loads. See §9 |
 | GET | `/stream?since_id=-1` | `text/event-stream`. One SSE `data:` event per new `packets` row: `{"id","ts","predicted_label","p1","p2","src_mac","bssid","sim"}`. `since_id=-1` (default) starts from the current tail; a non-negative value resumes after that id. Opens with an `event: hello` carrying `{"since_id": int}` |
-| POST | `/agent/ask` | body `{"question": str (1–4000), "locale": "en"\|"ar"?, "session_id": str?}` → `{"answer": str, "locale": str, "model": str, "steps": int, "stop_reason": "answered"\|"step_limit"\|"call_limit"\|"timeout"\|"error", "sql": str\|null, "cols": [str], "rows": [obj], "tool_calls": [{"step","name","arguments","ok","duration_ms","cached","sql_preview","row_count","error"}], "error": str?}`. **400** on a malformed body (validated in the handler, so FastAPI's 422 is not used here); **429** over `SAQR_RATE_MAX` or `SAQR_MAX_CONCURRENT_RUNS`, with `Retry-After`; **503** when `SAQR_ENABLED=0`, when no `OPENROUTER_API_KEY` is set (same `detail` string `/ask` returns), or when no model is configured. See §10 |
+| POST | `/agent/ask` | **Two transports on one route, chosen by `Accept`.** Body `{"question": str (1–4000), "locale": "en"\|"ar"?, "session_id": str?}`.<br>*Default (`Accept` anything but `text/event-stream`)* → JSON `{"answer": str, "locale": str, "model": str, "steps": int, "run_id": str, "stop_reason": "answered"\|"step_limit"\|"call_limit"\|"timeout"\|"error", "elapsed_ms": int, "sql": str\|null, "cols": [str], "rows": [obj], "tool_calls": [{"step","name","arguments","ok","duration_ms","cached","sql_preview","row_count","error"}], "error": str?}`.<br>*`Accept: text/event-stream`* → `text/event-stream`, the run as it happens; see §10.7.<br>Both: **400** on a malformed body (validated in the handler, so FastAPI's 422 is not used here); **429** over `SAQR_RATE_MAX` or `SAQR_MAX_CONCURRENT_RUNS`, with `Retry-After`; **503** when `SAQR_ENABLED=0`, when no `OPENROUTER_API_KEY` is set (same `detail` string `/ask` returns), or when no model is configured. Every rejection is decided **before** the stream opens, because a started `StreamingResponse` is 200 forever. See §10 |
 | GET | `/agent/tools` | `[{"name": str, "label_key": str, "description": str, "mutating": bool, "tags": [str], "args_schema": {JSON Schema}}, …]` — the tools the agent can currently call, honouring `SAQR_ALLOW_RAW_SQL` / `SAQR_ALLOW_SIMULATION_TOOL`. Published unconditionally, so a UI can render the catalogue and explain why the agent is unavailable. `label_key` is `saqr.tool.<name>`: **the frontend generates its label table from this**, it does not hand-copy one |
 
 Label mapping used by `/reports/summary` (DB label → frontend key). **Derived, not hand-maintained** —
@@ -453,8 +454,9 @@ backend/
       knowledge.py  section index over rag/knowledge/attacks.md, by class
       schemas.py    one pydantic arg model per tool (the single schema source)
       tools.py      the tool registry: name -> (arg model, executor, flags)
-      llm.py        OpenRouter client factory, SaqrUnavailable, chat()
+      llm.py        OpenRouter client factory, SaqrUnavailable, chat(), chat_stream()
       prompts.py    build_system_prompt(locale, dialect)
+      events.py     SSE vocabulary, the Emitter, seq/run_id ordering
       ratelimit.py  rolling-window limiter + concurrency gate
       loop.py       run_agent() -> AgentResult
   detector/     Capture + inference only.  MUST NOT import backend.app.routers.*
@@ -555,12 +557,26 @@ def sql_dialect(database_url: str | None = None) -> str: ...   # "sqlite" | "pos
 class SaqrUnavailable(RuntimeError): ...
 def chat(messages, *, tools=None, tool_choice=None, temperature=None, model=None):
     """One chat completion. Returns the assistant *message* (.content and .tool_calls)."""
+def chat_stream(messages, *, tools=None, tool_choice=None, temperature=None,
+                model=None) -> Iterator[str]:
+    """Text deltas only. Use ONLY for the tool_choice="none" composing turn --
+    never for a tool-selection turn; see section 10.7."""
+
+# backend/app/agent/events.py
+class Emitter:
+    """Stamps run_id + a gapless seq on every payload; buffered=True adds a queue
+    that .stream() drains as SSE frames. Typed methods per event (section 10.7)."""
+def sse(event: str, data: dict) -> str: ...
+def coerce_emitter(emitter, run_id=None) -> Emitter: ...   # None | callable | Emitter
 
 # backend/app/agent/loop.py
 async def run_agent(question: str, *, locale=None, session_factory=None, emitter=None,
-                    registry=None, model=None) -> "AgentResult":
+                    registry=None, model=None, run_id=None,
+                    stream_tokens=False) -> "AgentResult":
     """`session_factory` is a sessionmaker bound to the request's engine, so a
-    get_db override is honoured. `emitter(event, payload)` may be None."""
+    get_db override is honoured. `emitter` is an Emitter, a plain
+    (event, payload) callable, or None. `stream_tokens` additionally emits the
+    final answer as `token` events. Emits `done` exactly once, always last."""
 ```
 
 ---
@@ -827,3 +843,76 @@ returns), or when no model is configured. `429` over `SAQR_RATE_MAX` or `SAQR_MA
 `Retry-After`. `400` on a malformed body — validated inside the handler, so FastAPI's default 422 handler is
 left alone for every other route. Anything the run itself survives is reported inside a 200 response
 (`stop_reason`, `error`), because a partially answered question tells an operator more than an opaque 500.
+
+### 10.7 Streaming — `Accept: text/event-stream`
+
+`POST /agent/ask` returns `text/event-stream` when the client's `Accept` header names it, and the JSON
+envelope otherwise. Same route, same loop, same tools. A bare `*/*` gets JSON, so nothing that worked
+before streaming existed starts receiving a stream it cannot parse.
+
+**Not POST-then-GET with a run id.** That needs a run registry, a GC timer, and it leaks an orphaned run
+every time a browser tab closes mid-answer. Here the run *is* the response body: cancellation is an
+`AbortController` client-side and `await request.is_disconnected()` server-side, exactly as
+`routers/stream.py` already does, and the run task is cancelled when the drain ends.
+
+Headers are `stream.py`'s, `X-Accel-Buffering: no` included — without it a reverse proxy buffers the whole
+body and the agent pane looks frozen, which is the exact opposite of why this streams.
+
+#### Event vocabulary
+
+Every payload carries `run_id` (uuid4 hex) and `seq`, **strictly increasing from 0 with no gaps**, so a
+client can detect a dropped frame instead of silently rendering an incomplete transcript.
+
+| Event | Payload |
+|---|---|
+| `run_start` | `{run_id, seq, ts, question, locale, model, max_steps, tools: [name]}` |
+| `status` | `{run_id, seq, ts, phase, step}` — `phase` ∈ `calling_model` \| `executing_tool` \| `composing`; also emitted as a liveness beat every `SAQR_STREAM_KEEPALIVE_S` during a long model call |
+| `tool_call` | `{run_id, seq, ts, step, call_id, tool, label_key, mutating, args}` — `args` are the **validated** arguments with unset optionals omitted, so a hallucinated field never renders as though the tool accepted it |
+| `tool_result` | `{run_id, seq, ts, step, call_id, tool, ok, duration_ms, summary, data, row_count, truncated, sql_preview, error, cached}` |
+| `token` | `{run_id, seq, delta}` — a fragment of the final answer. No `ts`: it is the highest-volume event |
+| `answer` | `{run_id, seq, ts, text, used_tools}` — the complete text, so a client never has to reassemble tokens to persist a transcript |
+| `error` | `{run_id, seq, ts, code, message, fatal}` |
+| `done` | `{run_id, seq, ts, steps, tool_calls, elapsed_ms, stop_reason}` |
+
+`done` is **always last, including after `error`**, and is emitted at most once — one termination condition,
+never a guess about whether a stream that stopped was finished or broken. The transport emits it even if
+the loop somehow does not. Idle ticks send a `: ka` SSE comment, which resets a proxy's idle timer without
+reaching the client's message handler.
+
+`phase` values are `saqr.phase.<phase>` on the frontend and `code` values are `saqr.error.<code>`; both
+vocabularies are closed. `code` ∈ `no_api_key` \| `no_credit` \| `model_error` \| `tool_error` \|
+`bad_args` \| `step_limit` \| `timeout` \| `internal`. Internal tool-error types (`invalid_arguments`,
+`rejected_sql`, `tool_timeout`, …) are mapped onto that fixed set in `tool_result.error.code`, with the
+finer `type` kept alongside for an operator reading the raw stream. A tool the registry does not know
+reports `label_key: "saqr.tool.unknown"`.
+
+#### Only the composing turn streams from the provider
+
+Intermediate tool-selection turns are **never** streamed. With `stream=True` the SDK delivers a tool call
+in fragments — `id` and `function.name` only on the first chunk, `function.arguments` as partial JSON
+spread across many chunks indexed by `delta.tool_calls[i].index` — and a wrong accumulator silently
+produces calls with truncated arguments. The `status` / `tool_call` / `tool_result` events already give the
+UI its motion during those turns, so there is nothing to buy.
+
+The consequence, which a live run exposed and which is worth stating plainly: **the answer usually does not
+come from the composing turn at all.** Whenever the model decides it has enough, it just returns prose on a
+tool-selection turn, and the forced `tool_choice="none"` turn never runs. So the loop emits `token` events
+on both paths — streamed from the provider when the composing turn ran, replayed locally (split on word
+boundaries) when the answer arrived whole. A client cannot tell and must not need to: a `token` is defined
+as *a fragment of the final answer*, not as a provider-side chunk. The honest-looking alternative — throwing
+away a paid-for answer and re-asking with `stream=True` — would double the cost and latency of every
+question on a Pi. If a provider refuses `stream=True` the answer is still delivered, replayed the same way.
+
+`run_start` is emitted and flushed before the first model call, so the pane never sits blank through the
+1–3 s of first-token latency.
+
+#### Notes for a client
+
+- Correlate `tool_call` → `tool_result` on `call_id`, but key UI rows on `(step, call_id)`: `call_id` is the
+  model's own id, and uniqueness across a run is the provider's promise, not this API's.
+- `row_count` is `null` for aggregations; use `data.group_count` / `data.total` there.
+- `data` is a trimmed preview capped at `SAQR_UI_ROWS` rows and 8 KB. Over that it becomes
+  `{"omitted": true, "reason": …}` rather than half a JSON object. It never repeats `sql_preview`,
+  `row_count`, `truncated` or `error`, which the event already carries as its own fields.
+- `stop_reason` on `done` is the same field, with the same vocabulary, as `stop_reason` in the JSON
+  envelope: one concept, one name, both transports.

@@ -2,33 +2,41 @@
 
 Two routes:
 
-* ``POST /agent/ask`` -- ask a question.  JSON in, JSON out.  Streaming is a
-  later change; the loop already accepts an emitter, so this handler will not
-  need restructuring for it.
+* ``POST /agent/ask`` -- ask a question.  **One endpoint, two transports**,
+  chosen by the ``Accept`` header: ``text/event-stream`` streams the run as it
+  happens, anything else returns the JSON envelope.  Not POST-then-GET with a
+  run id: that needs a run registry, a GC timer, and leaks an orphaned run
+  every time a browser tab closes mid-answer.  Here the run *is* the response,
+  so cancellation is an ``AbortController`` client-side and
+  ``request.is_disconnected()`` server-side -- exactly what ``stream.py`` does.
 * ``GET /agent/tools`` -- publish the tool catalogue (name, i18n label key,
   whether it mutates, and its argument schema) so the frontend generates its
   label table from the server instead of hand-copying one that then drifts.
 
-Pre-flight ordering matters and is deliberate: configuration is checked before
-any work, so a misconfigured host answers instantly and identically every time.
-Missing key or ``SAQR_ENABLED=0`` -> **503** with the same sentence ``/ask``
-returns today; over the rate limit or the concurrency gate -> **429**; a body
-FastAPI cannot validate -> **400** (via pydantic); anything else the run itself
-survives and reports inside a 200 response, because a half-answered question is
-more useful to an operator than an opaque 500.
+Pre-flight ordering matters and is deliberate: **every rejection is decided
+before the stream opens**, because once a ``StreamingResponse`` starts the
+status is 200 forever and a 503 can no longer be sent.  Missing key or
+``SAQR_ENABLED=0`` -> **503** with the same sentence ``/ask`` returns today;
+over the rate limit or the concurrency gate -> **429**; a body that fails
+validation -> **400**.  Anything the run itself survives is reported inside the
+200 (as ``stop_reason``/``error``, or as an ``error`` event followed by
+``done``), because a half-answered question is more useful to an operator than
+an opaque 500.
 """
 from __future__ import annotations
 
-import logging
-from typing import Any, Dict, List
-
+import asyncio
 import json
+import logging
+import uuid
+from typing import Any, AsyncIterator, Dict, List, Optional
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
+from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.app.agent import ratelimit, tools as tools_module
+from backend.app.agent import events, ratelimit, tools as tools_module
 from backend.app.agent.llm import SaqrUnavailable
 from backend.app.agent.loop import run_agent
 from backend.app.config import settings
@@ -83,6 +91,83 @@ async def _parse_body(request: Request) -> AgentAskPayload:
         raise HTTPException(status_code=400, detail=exc.errors(include_url=False)) from exc
 
 
+def _wants_sse(request: Request) -> bool:
+    """True when the client asked for the event stream.
+
+    Naming ``text/event-stream`` in ``Accept`` is the signal.  A bare ``*/*``
+    (curl, the test client, any ordinary JSON caller) is deliberately **not**
+    enough: the JSON envelope stays the default, so nothing that worked before
+    streaming existed starts receiving a stream it cannot parse.
+    """
+    accept = (request.headers.get("accept") or "").lower()
+    return "text/event-stream" in accept
+
+
+async def _sse_body(
+    request: Request,
+    payload: AgentAskPayload,
+    maker: sessionmaker,
+) -> AsyncIterator[str]:
+    """Stream one run as SSE frames, then release the concurrency slot.
+
+    The run is driven by a background task that writes into the emitter's queue;
+    this generator drains that queue.  Two properties matter and are tested:
+
+    * ``done`` terminates the stream, and the loop emits it on every path
+      including a fatal one -- so a consumer has exactly one end condition;
+    * if the client goes away, ``request.is_disconnected()`` ends the drain and
+      the ``finally`` cancels the run rather than letting it keep billing.
+    """
+    run_id = uuid.uuid4().hex
+    emitter = events.Emitter(run_id, buffered=True)
+    released = False
+
+    def release() -> None:
+        nonlocal released
+        if not released:
+            released = True
+            ratelimit.gate().release()
+
+    async def drive() -> None:
+        try:
+            await run_agent(
+                payload.question,
+                locale=payload.locale,
+                session_factory=maker,
+                emitter=emitter,
+                run_id=run_id,
+                stream_tokens=True,
+            )
+        except SaqrUnavailable:
+            # The loop has already emitted `error` + `done`; the status line was
+            # committed as 200 the moment the stream opened, so there is no 503
+            # left to send and nothing further to do here.
+            logger.info("Saqr run %s ended: assistant unavailable", run_id)
+        except Exception:  # noqa: BLE001 - the loop reports; this must not escape
+            logger.exception("Saqr run %s failed outside the loop", run_id)
+            await emitter.error(events.ERR_INTERNAL, "The run failed unexpectedly.", fatal=True)
+        finally:
+            # Belt and braces: whatever happened, the stream must terminate.
+            await emitter.done(
+                steps=0, tool_calls=0, elapsed_ms=0, stop_reason="error",
+            )
+
+    runner: Optional[asyncio.Task] = None
+    try:
+        runner = asyncio.create_task(drive())
+        async for frame in emitter.stream(
+            keepalive_s=float(settings.SAQR_STREAM_KEEPALIVE_S),
+            is_disconnected=request.is_disconnected,
+        ):
+            yield frame
+    finally:
+        if runner is not None and not runner.done():
+            runner.cancel()
+            await asyncio.gather(runner, return_exceptions=True)
+        release()
+        logger.debug("Saqr SSE stream closed for run %s", run_id)
+
+
 @router.get("/agent/tools", response_model=List[AgentToolInfo])
 def agent_tools() -> List[Dict[str, Any]]:
     """The tools Saqr can currently call, with their argument schemas.
@@ -113,8 +198,12 @@ async def agent_ask(
     request: Request,
     response: Response,
     db: Session = Depends(get_db),
-) -> Dict[str, Any]:
-    """Answer a question about the captured traffic by calling tools."""
+) -> Any:
+    """Answer a question about the captured traffic by calling tools.
+
+    Returns ``text/event-stream`` when the client accepts it, else the JSON
+    envelope.  Both transports run the identical loop over the identical tools.
+    """
     _preflight()
     payload = await _parse_body(request)
 
@@ -133,7 +222,19 @@ async def agent_ask(
     # get_db dependency override (tests) and the configured database alike --
     # the pattern stream.py and simulate.py already use.  Never self-HTTP: one
     # uvicorn worker calling back into itself would deadlock on a Pi.
+    #
+    # It is built here, in the handler, and the request's own session is never
+    # touched inside the streaming generator: a `yield` dependency is torn down
+    # before the streaming body runs, so `db` is closed by then.  `stream.py`
+    # takes the bind for exactly this reason.
     maker = sessionmaker(bind=db.get_bind(), autocommit=False, autoflush=False)
+
+    if _wants_sse(request):
+        return StreamingResponse(
+            _sse_body(request, payload, maker),
+            media_type="text/event-stream",
+            headers=events.SSE_HEADERS,
+        )
 
     try:
         result = await run_agent(
@@ -154,7 +255,9 @@ async def agent_ask(
         "locale": result.locale,
         "model": result.model,
         "steps": result.steps,
+        "run_id": result.run_id,
         "stop_reason": result.stop_reason,
+        "elapsed_ms": result.elapsed_ms,
         "sql": result.sql,
         "cols": result.cols,
         "rows": result.rows,

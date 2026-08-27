@@ -15,13 +15,15 @@ whole assistant *message* rather than its text, because the loop needs
 from __future__ import annotations
 
 import logging
-from typing import Any, Dict, List, Optional, Sequence
+from typing import Any, Dict, Iterator, List, Optional, Sequence
 
 from backend.app.config import settings
 
 logger = logging.getLogger(__name__)
 
-__all__ = ["SaqrUnavailable", "get_client", "model_name", "chat", "reset_client"]
+__all__ = [
+    "SaqrUnavailable", "get_client", "model_name", "chat", "chat_stream", "reset_client",
+]
 
 
 class SaqrUnavailable(RuntimeError):
@@ -119,3 +121,51 @@ def chat(
     if not choices:
         raise SaqrUnavailable("The model returned no choices; the request was refused upstream.")
     return choices[0].message
+
+
+def chat_stream(
+    messages: Sequence[Dict[str, Any]],
+    *,
+    tools: Optional[Sequence[Dict[str, Any]]] = None,
+    tool_choice: Optional[str] = None,
+    temperature: Optional[float] = None,
+    model: Optional[str] = None,
+) -> Iterator[str]:
+    """Yield the assistant's text deltas, one chunk at a time.
+
+    Deliberately **text only**.  Use this for the final composing turn, which is
+    forced to ``tool_choice="none"`` and therefore cannot emit a tool call.
+
+    Do not use it for a tool-selection turn: with ``stream=True`` the SDK
+    delivers a tool call in fragments -- ``id`` and ``function.name`` arrive only
+    on the first chunk of each call, and ``function.arguments`` arrives as a
+    partial JSON string spread over many chunks, indexed by
+    ``delta.tool_calls[i].index``.  Reassembling that correctly is fiddly and
+    getting it subtly wrong produces calls with truncated arguments.  The
+    ``status`` / ``tool_call`` / ``tool_result`` events already give the UI its
+    motion during those turns, so there is nothing to buy by streaming them.
+
+    This is a blocking generator (the SDK's stream is synchronous); the caller
+    drives it on a worker thread.
+    """
+    client = get_client()
+    kwargs: Dict[str, Any] = {
+        "model": model or model_name(),
+        "temperature": settings.SAQR_TEMPERATURE if temperature is None else float(temperature),
+        "messages": list(messages),
+        "stream": True,
+    }
+    if tools:
+        kwargs["tools"] = list(tools)
+        if tool_choice is not None:
+            kwargs["tool_choice"] = tool_choice
+
+    for chunk in client.chat.completions.create(**kwargs):
+        choices = list(getattr(chunk, "choices", None) or [])
+        if not choices:
+            # OpenRouter interleaves usage-only and comment chunks; skip them.
+            continue
+        delta = getattr(choices[0], "delta", None)
+        text = getattr(delta, "content", None) if delta is not None else None
+        if text:
+            yield text

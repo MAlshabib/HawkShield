@@ -22,10 +22,11 @@ the model so it can correct itself, which is far more useful than a 500.
 """
 from __future__ import annotations
 
+import json
 import logging
 from dataclasses import dataclass, field
 from datetime import datetime, timedelta, timezone
-from typing import Any, Callable, Dict, List, Optional, Sequence
+from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple
 
 from pydantic import BaseModel
 from sqlalchemy import Select, func, select
@@ -63,6 +64,9 @@ __all__ = [
     "ToolSpec",
     "ToolError",
     "build_registry",
+    "compact",
+    "summarise",
+    "validate_args",
     "tool_definitions",
     "public_catalogue",
     "execute",
@@ -832,6 +836,137 @@ def public_catalogue(registry: Optional[Dict[str, ToolSpec]] = None) -> List[Dic
     ]
 
 
+def validate_args(
+    name: str,
+    raw_args: Dict[str, Any],
+    registry: Optional[Dict[str, ToolSpec]] = None,
+) -> Tuple[Optional[BaseModel], Optional[Dict[str, Any]]]:
+    """Check one tool call's arguments.  Returns ``(model, None)`` or ``(None, error)``.
+
+    Split out of :func:`execute` so the streaming loop can publish the
+    **validated** arguments in its ``tool_call`` event.  Echoing the model's raw
+    arguments there would let a hallucinated field ("severity", "region") render
+    in the UI as though the tool had accepted it.
+    """
+    specs = registry if registry is not None else build_registry()
+    spec = specs.get(name)
+    if spec is None:
+        return None, {
+            "type": "unknown_tool",
+            "message": f"There is no tool called {name!r}.",
+            "hint": "Available tools: " + ", ".join(specs),
+        }
+    try:
+        return spec.arg_model.model_validate(raw_args or {}), None
+    except Exception as exc:  # noqa: BLE001 - pydantic's own error is the message
+        return None, {
+            "type": "invalid_arguments",
+            "message": f"Arguments rejected: {exc}",
+            "hint": "Correct the arguments against the tool's schema and retry once.",
+        }
+
+
+# --------------------------------------------------------------------------- #
+# Presentation: what a tool result looks like on the event stream              #
+# --------------------------------------------------------------------------- #
+#: Fields the ``tool_result`` event carries in its own right, so ``data`` does
+#: not repeat them, and fields that are pure bookkeeping for the model.
+_DATA_DROP = frozenset({
+    "ok", "tool", "sql_preview", "row_count", "truncated", "error",
+    "note", "repeat_note", "capped_note",
+})
+
+#: List fields inside a tool result that can be long enough to matter.
+_DATA_LIST_FIELDS = ("rows", "groups", "rssi_points", "used", "classes")
+
+#: Hard ceiling on the serialised ``data`` blob of one ``tool_result`` event.
+#: A UI showing a preview does not need 500 rows, and an SSE frame that large
+#: stalls the pane it is meant to animate.
+_MAX_DATA_CHARS = 8000
+
+
+def summarise(name: str, result: Dict[str, Any]) -> str:
+    """One line describing a tool result, for the UI's timeline.
+
+    Written here rather than in the loop because the shape of each result is
+    this module's knowledge.  English only and deliberately terse: it is a
+    debugging affordance beside the answer, not part of the answer.
+    """
+    if not result.get("ok", True):
+        error = result.get("error") or {}
+        return str(error.get("message") or "failed")
+
+    if name in ("query_threats", "run_sql"):
+        count = result.get("row_count", 0)
+        return f"{count} row(s)"
+    if name == "aggregate_threats":
+        group_by = result.get("group_by", "?")
+        return (
+            f"{result.get('total', 0)} detection(s) across "
+            f"{result.get('group_count', 0)} group(s) by {group_by}"
+        )
+    if name == "threat_overview":
+        headline = result.get("headline") or {}
+        return (
+            f"{headline.get('totalAttacks', 0)} attack(s) in "
+            f"{result.get('period', 'the window')}; most frequent "
+            f"{headline.get('mostFrequentType', 'n/a')}"
+        )
+    if name == "explain_attack_class":
+        return f"knowledge-base section for {result.get('attack_class', '?')}"
+    if name == "locate_source":
+        if result.get("center"):
+            return f"position estimated from {result.get('aps_used', 0)} access point(s)"
+        return f"no position: {result.get('aps_used', 0)} of {result.get('aps_configured', 0)} AP(s) matched"
+    if name == "system_status":
+        database = result.get("database") or {}
+        detector = result.get("detector") or {}
+        state = "reachable" if database.get("reachable") else "unreachable"
+        return (
+            f"database {state}, {database.get('packets_stored', 0)} packet(s), "
+            f"model {detector.get('model_version', 'unknown')}"
+        )
+    if name == "run_simulation":
+        return (
+            f"{result.get('total_persisted', 0)} detection(s) persisted across "
+            f"{len(result.get('classes') or [])} class(es)"
+        )
+    return "ok"
+
+
+def compact(name: str, result: Dict[str, Any], max_rows: Optional[int] = None) -> Dict[str, Any]:
+    """The part of a tool result worth putting on the wire for a UI preview.
+
+    Trims the long lists, caps the knowledge-base text (the model's answer will
+    quote what matters), and drops what the event already carries in its own
+    fields.  If the outcome is still too big it is replaced by an explicit
+    marker rather than silently truncated mid-structure -- a client parsing
+    half a JSON object is worse than a client told there was too much.
+    """
+    limit = int(max_rows if max_rows is not None else settings.SAQR_UI_ROWS)
+    data: Dict[str, Any] = {}
+    for key, value in result.items():
+        if key in _DATA_DROP:
+            continue
+        if key in _DATA_LIST_FIELDS and isinstance(value, list):
+            data[key] = value[:limit]
+            continue
+        if key == "content" and isinstance(value, str):
+            data[key] = value[:600] + ("..." if len(value) > 600 else "")
+            continue
+        data[key] = value
+
+    try:
+        if len(json.dumps(data, ensure_ascii=False, default=str)) > _MAX_DATA_CHARS:
+            return {
+                "omitted": True,
+                "reason": "result too large for the event stream; see the answer text",
+            }
+    except (TypeError, ValueError):  # pragma: no cover - jsonable() ran first
+        return {"omitted": True, "reason": "result is not serialisable"}
+    return data
+
+
 def execute(
     name: str,
     raw_args: Dict[str, Any],
@@ -845,30 +980,10 @@ def execute(
     them to the model and let it correct itself.
     """
     specs = registry if registry is not None else build_registry()
-    spec = specs.get(name)
-    if spec is None:
-        return {
-            "ok": False,
-            "tool": name,
-            "error": {
-                "type": "unknown_tool",
-                "message": f"There is no tool called {name!r}.",
-                "hint": "Available tools: " + ", ".join(specs),
-            },
-        }
-
-    try:
-        args = spec.arg_model.model_validate(raw_args or {})
-    except Exception as exc:  # noqa: BLE001 - pydantic's own error is the message
-        return {
-            "ok": False,
-            "tool": name,
-            "error": {
-                "type": "invalid_arguments",
-                "message": f"Arguments rejected: {exc}",
-                "hint": "Correct the arguments against the tool's schema and retry once.",
-            },
-        }
+    args, arg_error = validate_args(name, raw_args, specs)
+    if arg_error is not None:
+        return {"ok": False, "tool": name, "error": arg_error}
+    spec = specs[name]
 
     if spec.needs_db and db is None:
         return {

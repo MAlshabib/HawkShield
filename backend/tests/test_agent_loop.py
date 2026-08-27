@@ -530,8 +530,9 @@ def test_the_emitter_sees_every_milestone(monkeypatch, session_factory):
         loop.run_agent(question="how many?", session_factory=session_factory, emitter=emitter)
     )
     assert seen[0] == "run_start"
+    assert "status" in seen
     assert "tool_call" in seen and "tool_result" in seen
-    assert seen[-2:] == ["answer", "run_end"]
+    assert seen[-2:] == ["answer", "done"]
 
 
 def test_a_broken_emitter_does_not_break_the_run(monkeypatch, session_factory):

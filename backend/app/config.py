@@ -207,6 +207,11 @@ class Settings(BaseSettings):
     #: Per-class detection cap the agent may ask ``/simulate`` for.  The effective
     #: cap is ``min(requested, this, SIM_MAX_COUNT)``.
     SAQR_SIM_TOOL_MAX_COUNT: int = 50
+    #: Seconds between liveness beats while ``/agent/ask`` streams: one ``status``
+    #: event plus an SSE ``: ka`` comment.  A model call can take several seconds
+    #: with nothing to say, and a silent stream is indistinguishable from a hung
+    #: one -- to the user and to any proxy's idle timer.
+    SAQR_STREAM_KEEPALIVE_S: float = 15.0
     #: Rolling-window rate limit on ``/agent/ask``.
     SAQR_RATE_MAX: int = 20
     SAQR_RATE_WINDOW_S: float = 60.0
