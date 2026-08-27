@@ -27,13 +27,14 @@ from backend.app.config import (
     APP_VERSION,
     SPEC_VERSION,
     canonical_model_version,
+    capture_status,
     gbdt_status,
     settings,
     v2_status,
 )
 from backend.app.db import get_db
 from backend.app.models import Packet
-from backend.app.schemas import HealthOut, ModelsPresent
+from backend.app.schemas import CaptureStatus, HealthOut, ModelsPresent
 
 logger = logging.getLogger(__name__)
 
@@ -46,13 +47,32 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
     database_ok = True
     packets = 0
     latest_ts: Optional[object] = None
+    observed_iface: Optional[str] = None
+    observed_freq: Optional[int] = None
 
     try:
         packets = int(db.query(func.count(Packet.id)).scalar() or 0)
         latest_ts = db.query(func.max(Packet.ts)).scalar()
+        # What the sensor is actually delivering, from the newest row. The
+        # dashboard derives this itself today and has to caption that it did;
+        # reporting it here lets the caption go away.
+        newest = (
+            db.query(Packet.iface, Packet.channel_freq)
+            .order_by(Packet.id.desc())
+            .first()
+        )
+        if newest is not None:
+            observed_iface = newest[0]
+            observed_freq = int(newest[1]) if newest[1] is not None else None
     except Exception as exc:  # noqa: BLE001 - health must never raise
         database_ok = False
         logger.warning("Health check: database unreachable: %s", exc)
+
+    capture = CaptureStatus(
+        **capture_status(),
+        observed_iface=observed_iface,
+        observed_channel_freq=observed_freq,
+    )
 
     v2 = v2_status()
     gbdt = gbdt_status()
@@ -104,5 +124,6 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
             [f"v2-tcn: {p}" for p in (v2["problems"] if v2["present"] else [])]
             + [f"v2-gbdt: {p}" for p in (gbdt["problems"] if gbdt["present"] else [])]
         ),
+        capture=capture,
         version=APP_VERSION,
     )

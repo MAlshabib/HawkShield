@@ -208,6 +208,40 @@ class ModelsPresent(BaseModel):
     v2_gbdt: bool = False
 
 
+class CaptureStatus(BaseModel):
+    """What the sensor is configured to do, and what the kernel says it is doing.
+
+    Configuration fields (``iface``, ``channel``, ``target_ssid``) are always
+    present.  Everything else is ``None`` when it genuinely cannot be known from
+    inside the API process -- off Linux, or when the interface does not exist.
+    ``None`` never means "probably fine": the dashboard's existing defect is that
+    it infers the interface and channel from the newest stored packet, so a
+    guessed value here would be the same bug wearing a better label.
+    """
+
+    #: Configured ``CAPTURE_IFACE``.
+    iface: Optional[str] = None
+    #: Configured ``CAPTURE_CHANNEL``. What the radio is *set to*, not a readback.
+    channel: Optional[int] = None
+    #: Configured ``TARGET_SSID``; ``None`` when unset (no filter).
+    target_ssid: Optional[str] = None
+    #: The interface exists in sysfs. ``None`` off Linux, where absence is unknowable.
+    present: Optional[bool] = None
+    #: True when the link type is a radiotap/prism monitor interface.
+    monitor_mode: Optional[bool] = None
+    #: Human-readable link type: "monitor-radiotap", "managed", "ethernet", ...
+    link_type: Optional[str] = None
+    #: Kernel ``operstate``: "up", "down", "unknown", ...
+    operstate: Optional[str] = None
+    #: ``iface`` on the newest stored packet -- what the sensor is *actually*
+    #: delivering, as opposed to what it was told to use. ``None`` when no rows.
+    observed_iface: Optional[str] = None
+    #: ``channel_freq`` (MHz) on the newest stored packet. ``None`` when no rows.
+    observed_channel_freq: Optional[int] = None
+    #: "config" or "config+sysfs" -- whether any field here was measured at all.
+    source: str = "config"
+
+
 class HealthOut(BaseModel):
     # ``model_version`` / ``model_problems`` collide with pydantic's protected
     # ``model_`` namespace.  The names are the ones the contract publishes, so
@@ -228,4 +262,8 @@ class HealthOut(BaseModel):
     artefact_spec_version: Optional[str] = None
     #: Why the v2 artefact was rejected, when it was present but unusable.
     model_problems: List[str] = Field(default_factory=list)
+    #: Capture interface and channel. Additive: an older client that does not
+    #: know this key ignores it, which is why it could be added to a frozen
+    #: response shape.
+    capture: CaptureStatus = Field(default_factory=CaptureStatus)
     version: str

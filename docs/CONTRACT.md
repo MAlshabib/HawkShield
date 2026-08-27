@@ -156,16 +156,17 @@ All routes are registered on the app **without** a prefix (the frontend calls `$
 | GET | `/attacks?limit=5000&offset=0` | `[ {…full packets row…}, … ]`, newest first. `limit` 1–100000, `offset` ≥ 0 |
 | GET | `/packets/count` | `{"count": int}` |
 | GET | `/attacks/analysis` | `{"Deauth": int, "Disas": int, "(Re)Assoc": int, "RogueAP": int, "Krack": int, "Kr00k": int, "Evil_Twin": int, "SSDP": int}` — always all **eight** attack keys, zero-filled, in `feature_spec.ATTACK_CLASSES` order. `Normal` is never a key: only attacks are persisted |
-| GET | `/top-offenders` | `[{"wlan_sa": mac, "count": int}, …]` desc by count (key name is `wlan_sa`, kept for the frontend) |
-| GET | `/channel-usage` | `[{"channel_freq": int, "count": int}, …]` desc by count |
-| GET | `/heatmap-attack` | `[{"day": "Sun".."Sat", "hours": [{"hour": 0..23, "intensity": int} × 24]}, …]` — Sun-first order |
+| GET | `/top-offenders?days=&limit=50` | `[{"wlan_sa": mac, "count": int}, …]` desc by count (key name is `wlan_sa`, kept for the frontend). `days` 1–3650, omitted ⇒ all time. `limit` 1–500, **default 50** — the one added default that changes an existing response: this used to return every distinct source MAC. Ties break on `wlan_sa` ascending, which is what makes `limit` deterministic |
+| GET | `/channel-usage?days=` | `[{"channel_freq": int, "count": int}, …]` desc by count. `days` 1–3650, omitted ⇒ all time. Never truncated, so no tie-breaker and the no-parameter response is byte-identical to before |
+| GET | `/heatmap-attack?days=&tz=UTC` | `[{"day": "Sun".."Sat", "hours": [{"hour": 0..23, "intensity": int} × 24]}, …]` — Sun-first order. `days` 1–3650, omitted ⇒ all time. `tz` is an IANA name (default `UTC`) and buckets on that wall clock; an unknown zone is **400**, never a silent fall back to UTC. `tz=UTC` is byte-identical to omitting it |
+| GET | `/attacks/series?days=7&bucket=hour&tz=UTC&label=` | `{"bucket": "hour"\|"day", "tz": str, "days": int, "label": str\|null, "start": iso8601\|null, "end": iso8601\|null, "total": int, "outside_range": int, "points": [{"t": iso8601, "count": int}, …]}`. Zero-filled: every bucket in the window is present, so a quiet hour is a `0` and not a gap. `t` carries the local UTC offset and is directly `new Date(t)`-parseable. `bucket=hour` allows `days` 1–31, `bucket=day` allows 1–366; over that is **400** rather than a silent clamp. Unknown `tz` or unknown `label` is **400** |
 | GET | `/map/ap-locations` | `[{"bssid": str, "name": str, "lat": float, "lng": float}, …]` from `AP_LOCATIONS_FILE` |
 | GET | `/map/source-rssi?sa=<mac>&minutes=10` | `{"sa": str, "points": [{"bssid": str, "avg_rssi": float, "n": int}, …]}` |
 | POST | `/map/estimate-origin` | body `{"sa","minutes","ap_locations":[…]}` → `{"sa","method":"weighted-centroid","used":int,"center":{"lat","lng"}|null}` |
 | GET | `/reports/summary?days=30` | `{"period": str, "totals": {deauth,ssdp,evil_twin,reassoc,rogueap,krack,disas,kr00k,other}, "summary": {"totalAttacks","mostFrequentType","peakHour","uniqueSources"}}` |
 | POST | `/reports/export` | body `{"days": int}` → `application/pdf` stream, `Content-Disposition: attachment; filename="hawkshield_report_<days>d.pdf"` |
 | POST | `/ask` | body `{"question": str, "session_id": str?}` → `{"cached": bool, "mode": "SQL"\|"DOCS"\|"OOS"\|"ERROR", "sql": str, "answer": str, "cols": [str], "rows": [obj], "error": str?}`; **503** `{"detail": "..."}` when no `OPENROUTER_API_KEY` |
-| GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool, "v2": bool, "v2_gbdt": bool}, "model_version": "v2-gbdt"\|"v2-tcn"\|"v1"\|"none", "spec_version": str, "artefact_spec_version": str\|null, "model_problems": [str], "version": str}` |
+| GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool, "v2": bool, "v2_gbdt": bool}, "model_version": "v2-gbdt"\|"v2-tcn"\|"v1"\|"none", "spec_version": str, "artefact_spec_version": str\|null, "model_problems": [str], "capture": {…see below…}, "version": str}` |
 | POST | `/simulate` | body `{"attacks": "all"\|[str], "count": int, "intensity": "burst"\|"trickle"}` → `{"sim_batch": hex, "model_version": str, "intensity": str, "classes": [str], "count_per_class": int, "total_persisted": int, "per_class": {cls: {"requested","frames_pushed","detected","persisted","top_label","labels":{lbl:int}}}}`. **403** when `ALLOW_SIMULATION=0`; **400** on an unknown class; **429** over the rate limit; **503** when no model or no corpus loads. See §9 |
 | GET | `/stream?since_id=-1` | `text/event-stream`. One SSE `data:` event per new `packets` row: `{"id","ts","predicted_label","p1","p2","src_mac","bssid","sim"}`. `since_id=-1` (default) starts from the current tail; a non-negative value resumes after that id. Opens with an `event: hello` carrying `{"since_id": int}` |
 | POST | `/agent/ask` | **Two transports on one route, chosen by `Accept`.** Body `{"question": str (1–4000), "locale": "en"\|"ar"?, "session_id": str?}`.<br>*Default (`Accept` anything but `text/event-stream`)* → JSON `{"answer": str, "locale": str, "model": str, "steps": int, "run_id": str, "stop_reason": "answered"\|"step_limit"\|"call_limit"\|"timeout"\|"error", "elapsed_ms": int, "sql": str\|null, "cols": [str], "rows": [obj], "tool_calls": [{"step","name","arguments","ok","duration_ms","cached","sql_preview","row_count","error"}], "error": str?}`.<br>*`Accept: text/event-stream`* → `text/event-stream`, the run as it happens; see §10.7.<br>Both: **400** on a malformed body (validated in the handler, so FastAPI's 422 is not used here); **429** over `SAQR_RATE_MAX` or `SAQR_MAX_CONCURRENT_RUNS`, with `Retry-After`; **503** when `SAQR_ENABLED=0`, when no `OPENROUTER_API_KEY` is set (same `detail` string `/ask` returns), or when no model is configured. Every rejection is decided **before** the stream opens, because a started `StreamingResponse` is 200 forever. See §10 |
@@ -195,6 +196,33 @@ contract this build of the code implements; `artefact_spec_version` is what the 
 claims. When they differ, `models.v2` is `false` and `model_problems` says exactly why. Both v2 targets
 share that meta file, so a stale export usually rules out both; each entry in `model_problems` is
 prefixed with the target it rules out (`v2-tcn:` / `v2-gbdt:`) so one fault does not read as two.
+
+**`/health.capture`** reports what the sensor is set to and, where the API process can actually know it,
+what the interface is doing. Added after Phase 1 shipped a dashboard that inferred the interface and channel
+from the newest stored packet and had to caption that it had.
+
+```json
+"capture": {
+  "iface": "wlan1",            // configured CAPTURE_IFACE
+  "channel": 6,                // configured CAPTURE_CHANNEL - what the radio was SET to, not a readback
+  "target_ssid": null,         // configured TARGET_SSID; null when unset (no filter)
+  "present": true,             // interface exists in sysfs
+  "monitor_mode": true,        // link type is a radiotap/prism monitor interface
+  "link_type": "monitor-radiotap",
+  "operstate": "up",           // kernel operstate
+  "observed_iface": "wlan1",   // iface on the NEWEST stored packet - what the sensor is actually delivering
+  "observed_channel_freq": 2437,
+  "source": "config+sysfs"     // "config" when nothing could be measured
+}
+```
+
+`iface`, `channel`, `target_ssid` and `source` are always present. **Every other field is `null` when it
+genuinely cannot be known from inside the API process** — off Linux there is no `/sys/class/net`, so
+`present`, `monitor_mode`, `link_type` and `operstate` are all `null` and `source` is `"config"`. `null`
+never means "probably fine": reporting `monitor_mode: false` when nothing was measured would be the same
+guess the dashboard is making today, wearing a better label. The channel the radio is *actually* parked on
+needs an ioctl or a shell out to `iw` and is deliberately not guessed — `channel` is configuration, and
+`observed_channel_freq` is the last frequency a stored frame arrived on.
 
 `models.v2_gbdt` is checked without loading LightGBM: a LightGBM text model states its own
 `feature_names` and `num_class` in its header, and `/health` reads those. That check is structural

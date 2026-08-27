@@ -50,6 +50,7 @@ __all__ = [
     "MODEL_VERSIONS",
     "MODEL_VERSION_ALIASES",
     "canonical_model_version",
+    "capture_status",
     "configure_logging",
     "front_key",
     "gbdt_status",
@@ -652,6 +653,94 @@ def gbdt_status(model_dir: Optional[Path] = None) -> Dict[str, Any]:
 
     out["problems"] = problems
     out["usable"] = not problems
+    return out
+
+
+# --------------------------------------------------------------------------- #
+# Capture interface status                                                      #
+# --------------------------------------------------------------------------- #
+# Lives here for the same reason ``v2_status`` does: ``GET /health`` needs to
+# report what the sensor is set to without importing ``backend.detector.*``, and
+# this is a pure filesystem read.
+#
+# The honest scope of this: the API process is not the capture process.  It can
+# report what the *configuration* says, and on Linux it can read what the kernel
+# says about the interface -- but it cannot read the channel the radio is
+# actually parked on without an ioctl or a shell out to `iw`, and it will not
+# guess.  Every field it cannot know is ``None``, never a plausible-looking
+# default, because the dashboard's whole problem today is that it infers these
+# from the newest stored packet and has to admit so in a footnote.
+
+#: ``/sys/class/net/<iface>/type`` values, from ``linux/if_arp.h``.  803 is
+#: ARPHRD_IEEE80211_RADIOTAP: the interface is in monitor mode and delivering
+#: radiotap headers, which is exactly what the detector needs.
+_ARPHRD_ETHER = 1
+_ARPHRD_IEEE80211 = 801
+_ARPHRD_IEEE80211_PRISM = 802
+_ARPHRD_IEEE80211_RADIOTAP = 803
+
+_ARPHRD_NAMES = {
+    _ARPHRD_ETHER: "ethernet",
+    _ARPHRD_IEEE80211: "managed",
+    _ARPHRD_IEEE80211_PRISM: "monitor-prism",
+    _ARPHRD_IEEE80211_RADIOTAP: "monitor-radiotap",
+}
+
+
+def _read_sysfs(iface: str, attribute: str) -> Optional[str]:
+    """One ``/sys/class/net/<iface>/<attribute>`` value, or ``None``.
+
+    ``None`` covers every "cannot know" case identically: not Linux, interface
+    absent, permissions, or a kernel that does not expose the attribute.
+    """
+    try:
+        path = Path("/sys/class/net") / iface / attribute
+        return path.read_text(encoding="utf-8").strip() or None
+    except (OSError, ValueError):  # not Linux, no such interface, unreadable
+        return None
+
+
+def capture_status(iface: Optional[str] = None) -> Dict[str, Any]:
+    """What the sensor is configured to do, and what the kernel says it is doing.
+
+    Returned under ``capture`` by ``GET /health``.  ``iface`` and ``channel``
+    are configuration and are always present; ``monitor_mode``, ``link_type``,
+    ``operstate`` and ``present`` are read from sysfs and are ``None`` off Linux
+    or when the interface does not exist.
+    """
+    name = str(iface if iface is not None else settings.CAPTURE_IFACE).strip()
+    out: Dict[str, Any] = {
+        "iface": name or None,
+        "channel": int(settings.CAPTURE_CHANNEL),
+        "target_ssid": settings.TARGET_SSID.strip() or None,
+        "present": None,
+        "monitor_mode": None,
+        "link_type": None,
+        "operstate": None,
+        # Names where the numbers came from, so a reader never has to guess
+        # whether a field is measured or merely configured.
+        "source": "config",
+    }
+    if not name:
+        return out
+
+    raw_type = _read_sysfs(name, "type")
+    if raw_type is None:
+        # No sysfs: the interface may still exist (macOS, Windows), so "absent"
+        # would be a guess. Everything measured stays None.
+        return out
+
+    out["present"] = True
+    out["source"] = "config+sysfs"
+    out["operstate"] = _read_sysfs(name, "operstate")
+    try:
+        link_type = int(raw_type)
+    except ValueError:  # pragma: no cover - kernel would have to be lying
+        return out
+    out["link_type"] = _ARPHRD_NAMES.get(link_type, f"arphrd-{link_type}")
+    out["monitor_mode"] = link_type in (
+        _ARPHRD_IEEE80211_RADIOTAP, _ARPHRD_IEEE80211_PRISM,
+    )
     return out
 
 

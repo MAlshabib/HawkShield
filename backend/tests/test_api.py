@@ -165,6 +165,10 @@ def test_health(client: TestClient) -> None:
         "spec_version",
         "artefact_spec_version",
         "model_problems",
+        # Additive: the capture block tells the dashboard which interface and
+        # channel the sensor is configured for, so the sensor module no longer
+        # has to infer both from the newest stored packet.
+        "capture",
         "version",
     }
     assert body["status"] in ("ok", "degraded")
