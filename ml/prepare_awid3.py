@@ -47,7 +47,7 @@ if str(REPO_ROOT) not in sys.path:
 
 from backend.detector.feature_spec import (  # noqa: E402
     AWID3_SOURCE_COLUMNS,
-    AWID3_CLASS_MAP,
+    normalise_label,
     CLASSES,
     FEATURE_ORDER,
     SPEC_VERSION,
@@ -231,7 +231,7 @@ def process_file(args: Tuple[str, str, str]) -> Dict[str, Any]:
                     return {"member": member, "rows": 0, "malformed": malformed,
                             "error": f"format mismatch -- {problem}"}
             raw_label = row[label_i].strip()
-            cls = AWID3_CLASS_MAP.get(raw_label)
+            cls = normalise_label(raw_label)
             if cls is None:
                 unknown_labels[raw_label] = unknown_labels.get(raw_label, 0) + 1
                 continue

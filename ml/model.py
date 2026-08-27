@@ -203,16 +203,22 @@ def assert_causal(model: nn.Module, n_features: int = N_FEATURES, window: int = 
     non-zero or the test itself is vacuous.
     """
     model.eval()
+    # Build on CPU for a reproducible generator, then follow the model. The probe
+    # runs after the model is moved to the training device, so allocating here
+    # without the move crashes on CUDA -- which is exactly what happened, because
+    # this had only ever been exercised CPU-only.
+    device = next(model.parameters()).device
     g = torch.Generator().manual_seed(seed)
     x = torch.randn(2, n_features, window, generator=g)
     # sprinkle NaN so the missing-value path is exercised too
     nan_pos = torch.rand(x.shape, generator=g) < 0.1
-    x = torch.where(nan_pos, torch.full_like(x, float("nan")), x)
+    x = torch.where(nan_pos, torch.full_like(x, float("nan")), x).to(device)
 
     with torch.no_grad():
         base = model(x)
         x2 = x.clone()
-        x2[:, :, t + 1:] = torch.randn(x2[:, :, t + 1:].shape, generator=g) * 5.0
+        noise = (torch.randn(x2[:, :, t + 1:].shape, generator=g) * 5.0).to(device)
+        x2[:, :, t + 1:] = noise
         pert = model(x2)
 
     past = (base[:, :, : t + 1] - pert[:, :, : t + 1]).abs().max().item()

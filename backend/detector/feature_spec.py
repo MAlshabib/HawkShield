@@ -43,6 +43,7 @@ __all__ = [
     "EXCLUDED_COLUMNS",
     "AWID3_SOURCE_COLUMNS",
     "AWID3_CLASS_MAP",
+    "normalise_label",
     "WINDOW_SIZE",
     "WINDOW_STRIDE",
     "derive_frame_features",
@@ -85,6 +86,47 @@ AWID3_CLASS_MAP: Dict[str, str] = {
     "Evil_Twin": "Evil_Twin",
     "SSDP": "SSDP",
 }
+
+# AWID3's own Label column is not internally consistent: it contains typos and
+# case variants that an exact-match lookup drops on the floor. Measured over the
+# full 23.7M-row archive: 43,456 rows labelled "SDDP" and 5,630 labelled "Kr00K"
+# (capital K). Silently discarding 49,086 attack rows -- 23% of all Kr00k, and a
+# meaningful slice of SSDP -- is a data-loss bug, not a curiosity.
+_LABEL_ALIASES: Dict[str, str] = {
+    "sddp": "SSDP",          # transposed
+    "ssdp": "SSDP",
+    "kr00k": "Kr00k",        # also covers "Kr00K"
+    "krook": "Kr00k",
+    "krack": "Krack",
+    "deauth": "Deauth",
+    "disas": "Disas",
+    "(re)assoc": "(Re)Assoc",
+    "re)assoc": "(Re)Assoc",
+    "reassoc": "(Re)Assoc",
+    "rogueap": "RogueAP",
+    "rogue_ap": "RogueAP",
+    "evil_twin": "Evil_Twin",
+    "eviltwin": "Evil_Twin",
+    "normal": "Normal",
+}
+
+
+def normalise_label(raw: Any) -> Optional[str]:
+    """Map a raw AWID3 ``Label`` cell onto a class name, or None if unknown.
+
+    Exact match first, then a case-folded alias table covering the typos the
+    dataset actually contains. Returns None for genuinely blank/unknown labels so
+    the caller can count them rather than guess.
+    """
+    if raw is None:
+        return None
+    s = str(raw).strip()
+    if not s:
+        return None
+    hit = AWID3_CLASS_MAP.get(s)
+    if hit is not None:
+        return hit
+    return _LABEL_ALIASES.get(s.casefold())
 
 # --------------------------------------------------------------------------- #
 # Explicitly excluded columns, with the reason. Enforced by a training test.    #
