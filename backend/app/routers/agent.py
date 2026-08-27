@@ -12,6 +12,23 @@ Two routes:
 * ``GET /agent/tools`` -- publish the tool catalogue (name, i18n label key,
   whether it mutates, and its argument schema) so the frontend generates its
   label table from the server instead of hand-copying one that then drifts.
+  It honours the same admin gate the model does, so a page loaded without the
+  operator token cannot even render a control for a tool it could not invoke.
+
+**Capability is resolved here, once, before anything else runs.**  Two headers
+are read: ``X-HawkShield-Admin`` (compared against ``SAQR_ADMIN_TOKEN`` in
+constant time) and ``X-HawkShield-Confirm`` (looked up in the server's own
+confirmation store).  Both become plain Python values that are handed to
+``run_agent`` as arguments.  Nothing downstream re-derives them, so no model
+turn, no tool result and no SSID can influence what this request is allowed to
+do.  The token itself is never logged, never echoed and never reaches the model.
+
+The question is admitted or refused here too, by ``guard.sanitise_question``:
+over ``SAQR_MAX_QUESTION_CHARS`` is a **400**, and so is a question carrying C0
+control characters or invisible/bidi-override codepoints.  Those are the two
+tricks that work on a length-bounded prompt -- push the system prompt out of the
+window, or hide text from the human reading the transcript -- and both are
+refused before a single token is spent.
 
 Pre-flight ordering matters and is deliberate: **every rejection is decided
 before the stream opens**, because once a ``StreamingResponse`` starts the
@@ -30,14 +47,14 @@ import json
 import logging
 import time
 import uuid
-from typing import Any, AsyncIterator, Dict, List, Optional
+from typing import Any, AsyncIterator, Dict, List, Optional, Tuple
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response
 from fastapi.responses import StreamingResponse
 from pydantic import ValidationError
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.app.agent import events, ratelimit, tools as tools_module
+from backend.app.agent import confirm, events, guard, ratelimit, tools as tools_module
 from backend.app.agent.llm import SaqrUnavailable
 from backend.app.agent.loop import run_agent
 from backend.app.config import settings
@@ -87,9 +104,46 @@ async def _parse_body(request: Request) -> AgentAskPayload:
             status_code=400, detail=f"Body must be a JSON object, got {type(raw).__name__}."
         )
     try:
-        return AgentAskPayload.model_validate(raw)
+        payload = AgentAskPayload.model_validate(raw)
     except ValidationError as exc:
         raise HTTPException(status_code=400, detail=exc.errors(include_url=False)) from exc
+
+    # The admissibility gate. Deliberately after pydantic and before anything
+    # that costs money: a question that is too long, or that carries hidden
+    # characters, never reaches a model, a tool or the rate limiter's budget.
+    try:
+        cleaned = guard.sanitise_question(payload.question)
+    except guard.InputRejected as exc:
+        logger.info("/agent/ask rejected a question: %s", exc.reason)
+        raise HTTPException(
+            status_code=400, detail={"reason": exc.reason, "message": str(exc)}
+        ) from exc
+    return payload.model_copy(update={"question": cleaned})
+
+
+def _capability(request: Request) -> Tuple[bool, Optional[confirm.Confirmation]]:
+    """``(is_admin, confirmation)`` for this request, from its headers alone.
+
+    Called once, before the loop starts.  ``is_admin`` is a boolean that has
+    already been decided by the time any model sees any text, and the token that
+    produced it is not carried any further -- what travels down is the boolean.
+    An unknown or expired confirmation resolves to ``None`` rather than an error:
+    the request may not have concerned a destructive tool at all, and if it did,
+    the tool will simply propose again instead of acting.
+    """
+    is_admin = guard.resolve_admin(request.headers.get(guard.ADMIN_HEADER))
+    confirmation = confirm.resolve(request.headers.get(guard.CONFIRM_HEADER))
+    if confirmation is not None and not is_admin:
+        # A confirmation without operator authorisation authorises nothing:
+        # every destructive tool is admin-gated, so carrying it further could
+        # only ever produce a more confusing refusal.
+        logger.info("A Saqr confirmation was presented without operator authorisation.")
+        confirmation = None
+    logger.info(
+        "Saqr request capability resolved: admin=%s confirmation=%s",
+        is_admin, bool(confirmation),
+    )
+    return is_admin, confirmation
 
 
 def _wants_sse(request: Request) -> bool:
@@ -108,6 +162,8 @@ async def _sse_body(
     request: Request,
     payload: AgentAskPayload,
     maker: sessionmaker,
+    is_admin: bool = False,
+    confirmation: Optional[confirm.Confirmation] = None,
 ) -> AsyncIterator[str]:
     """Stream one run as SSE frames, then release the concurrency slot.
 
@@ -139,6 +195,8 @@ async def _sse_body(
                 emitter=emitter,
                 run_id=run_id,
                 stream_tokens=True,
+                is_admin=is_admin,
+                confirmation=confirmation,
             )
         except SaqrUnavailable:
             # The loop has already emitted `error` + `done`; the status line was
@@ -177,15 +235,20 @@ async def _sse_body(
 
 
 @router.get("/agent/tools", response_model=List[AgentToolInfo])
-def agent_tools() -> List[Dict[str, Any]]:
+def agent_tools(request: Request) -> List[Dict[str, Any]]:
     """The tools Saqr can currently call, with their argument schemas.
 
     Published unconditionally -- a UI that knows the agent is switched off can
     still render the catalogue and explain why nothing is available.  The list
-    honours ``SAQR_ALLOW_RAW_SQL`` and ``SAQR_ALLOW_SIMULATION_TOOL``, so what
-    it shows is what the model is really offered.
+    honours ``SAQR_ALLOW_RAW_SQL`` and ``SAQR_ALLOW_SIMULATION_TOOL``, and the
+    operator tools appear only when the request carries ``SAQR_ADMIN_TOKEN`` --
+    exactly the list that request's model would be offered, so the catalogue can
+    never advertise a capability the caller does not have.
+
+    It reports no model identifier: which model answers is a server detail.
     """
-    return tools_module.public_catalogue()
+    is_admin = guard.resolve_admin(request.headers.get(guard.ADMIN_HEADER))
+    return tools_module.public_catalogue(is_admin=is_admin)
 
 
 @router.post(
@@ -214,6 +277,7 @@ async def agent_ask(
     """
     _preflight()
     payload = await _parse_body(request)
+    is_admin, confirmation = _capability(request)
 
     try:
         ratelimit.limiter().check()
@@ -239,7 +303,7 @@ async def agent_ask(
 
     if _wants_sse(request):
         return StreamingResponse(
-            _sse_body(request, payload, maker),
+            _sse_body(request, payload, maker, is_admin, confirmation),
             media_type="text/event-stream",
             headers=events.SSE_HEADERS,
         )
@@ -249,7 +313,9 @@ async def agent_ask(
             payload.question,
             locale=payload.locale,
             session_factory=maker,
-            emitter=None,  # streaming transport lands later
+            emitter=None,
+            is_admin=is_admin,
+            confirmation=confirmation,
         )
     except SaqrUnavailable as exc:
         logger.info("/agent/ask rejected: %s", exc)
@@ -261,8 +327,8 @@ async def agent_ask(
     return {
         "answer": result.answer,
         "locale": result.locale,
-        "model": result.model,
         "steps": result.steps,
+        "is_admin": is_admin,
         "run_id": result.run_id,
         "stop_reason": result.stop_reason,
         "elapsed_ms": result.elapsed_ms,

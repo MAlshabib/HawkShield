@@ -93,9 +93,21 @@ class AskPayload(BaseModel):
 # Agent (Saqr)
 # ---------------------------------------------------------------------------
 class AgentAskPayload(BaseModel):
-    """Request body for ``POST /agent/ask``."""
+    """Request body for ``POST /agent/ask``.
 
-    question: str = Field(min_length=1, max_length=4000)
+    The ``max_length`` here is a schema-level backstop, not the policy: a schema
+    constraint has to be a constant, and the real, env-configurable limit is
+    ``SAQR_MAX_QUESTION_CHARS``, applied by ``guard.sanitise_question`` in the
+    handler along with the control- and hidden-character checks.  Both refuse
+    with 400.
+
+    There is deliberately no field for an admin token or a confirmation token.
+    Both travel in request *headers* and are resolved by the router before the
+    model runs, so neither can be smuggled into a body that some other component
+    later echoes into a prompt.
+    """
+
+    question: str = Field(min_length=1, max_length=64_000)
     #: ``en`` or ``ar``.  ``None`` means "use ``SAQR_DEFAULT_LOCALE``".
     locale: Optional[Literal["en", "ar"]] = None
     session_id: Optional[str] = None
@@ -118,12 +130,18 @@ class AgentToolCall(BaseModel):
 
 
 class AgentAskResponse(BaseModel):
-    """Response body for ``POST /agent/ask``."""
+    """Response body for ``POST /agent/ask``.
+
+    No ``model`` field: which model answered is a server detail, it was being
+    rendered in the UI, and it is now written to the server log instead.
+    """
 
     answer: str
     locale: str
-    model: str
     steps: int
+    #: Whether the server granted this request the operator tool surface. The
+    #: client renders destructive controls from this, never from its own guess.
+    is_admin: bool = False
     #: uuid4 hex.  The same value every SSE event of this run carries in
     #: ``run_id``, so the two transports correlate in a log.
     run_id: str = ""
@@ -139,14 +157,24 @@ class AgentAskResponse(BaseModel):
 
 
 class AgentToolInfo(BaseModel):
-    """One entry of ``GET /agent/tools``."""
+    """One entry of ``GET /agent/tools``.
+
+    The list itself is already filtered by the request's capability, so an entry
+    appearing here is one this caller could actually reach.  ``admin`` and
+    ``destructive`` are still published because the UI needs them to decide how
+    a control is labelled and whether it needs a confirm step.
+    """
 
     name: str
     #: Stable i18n key, so the frontend generates its label table from here.
     label_key: str
     description: str
-    #: True for the one tool that writes to the database (``run_simulation``).
+    #: True for a tool that writes to the database.
     mutating: bool = False
+    #: True for a tool published only to a request carrying ``SAQR_ADMIN_TOKEN``.
+    admin: bool = False
+    #: True for a tool that destroys data and therefore proposes before acting.
+    destructive: bool = False
     tags: List[str] = Field(default_factory=list)
     args_schema: Dict[str, Any] = Field(default_factory=dict)
 

@@ -24,6 +24,7 @@ import { RotateCcw } from "lucide-react"
 
 import { TechnicalText } from "@/components/saqr/markdown"
 import { Button } from "@/components/ui/button"
+import { useFormatters } from "@/lib/format"
 import { useT } from "@/lib/i18n"
 import { cn } from "@/lib/utils"
 
@@ -32,6 +33,15 @@ export const QUESTION_MAX = 4000
 
 /** Ceiling for the auto-grow, in px. Past it the field scrolls itself. */
 const MAX_FIELD_PX = 168
+
+/**
+ * How close to the ceiling the counter appears.
+ *
+ * A counter that is always on is a counter nobody reads, and `maxLength`
+ * silently stops accepting characters — so the one moment it has to be visible
+ * is the moment before that happens.
+ */
+const COUNTER_FROM = 240
 
 export function SaqrComposer({
   value,
@@ -53,7 +63,12 @@ export function SaqrComposer({
   className?: string
 }) {
   const t = useT()
+  const f = useFormatters()
   const ref = React.useRef<HTMLTextAreaElement>(null)
+  const hintId = React.useId()
+
+  const remaining = QUESTION_MAX - value.length
+  const showCounter = remaining <= COUNTER_FROM
 
   // Grow with the question up to a ceiling; past that the field scrolls rather
   // than pushing the document off the screen.
@@ -98,6 +113,7 @@ export function SaqrComposer({
           }}
           placeholder={t("saqr.placeholder")}
           aria-label={t("saqr.placeholder")}
+          aria-describedby={hintId}
           disabled={isRunning}
           className={cn(
             "text-ink-0 placeholder:text-ink-3 min-w-0 flex-1 resize-none bg-transparent",
@@ -128,11 +144,28 @@ export function SaqrComposer({
         </div>
       </div>
 
-      {/* `Enter` / `Shift` are key names, not prose: pinned LTR so they do not
-          reorder inside the Arabic hint around them. */}
-      <p className="text-ink-3 px-1 text-xs">
-        <TechnicalText text={t("saqr.enterHint")} />
-      </p>
+      {/* The helper line. It stays one row at every width by wrapping rather
+          than truncating, and the counter takes the inline-end edge so the hint
+          never has to move to make room for it. */}
+      <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1 px-1 text-xs">
+        {/* `Enter` / `Shift` are key names, not prose: pinned LTR so they do not
+            reorder inside the Arabic hint around them. */}
+        <p id={hintId} className="text-ink-3 min-w-0">
+          <TechnicalText text={t("saqr.enterHint")} />
+        </p>
+        {showCounter && (
+          <p
+            className={cn(
+              "ms-auto shrink-0",
+              // Only once it actually matters does it stop being grey.
+              remaining <= 0 ? "text-sev-high" : "text-ink-2"
+            )}
+            aria-live="polite"
+          >
+            {t("saqr.charsLeft", { n: f.number(Math.max(0, remaining)) })}
+          </p>
+        )}
+      </div>
     </div>
   )
 }

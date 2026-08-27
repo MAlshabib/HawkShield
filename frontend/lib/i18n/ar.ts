@@ -280,6 +280,76 @@ export const ar: Dictionary = {
   "report.empty": "لم يخزّن المستشعر أي اكتشاف في هذه الفترة.",
   "report.notReported": "غير مُبلَّغ عنه",
 
+  /* مستند التقرير المخصّص للطباعة في `/report`. المتصفّح هو المُصيِّر: لديه الخط
+     الحقيقي وتشكيل العربية واتجاهها، فيُنتج «الحفظ بصيغة PDF» المستند المصمَّم
+     الذي لا يستطيع مولّد PDF في الخادم إنتاجه. */
+  "report.doc.eyebrow": "تقرير الاكتشافات",
+  "report.doc.headLead": "ما ",
+  "report.doc.headAccent": "رصده",
+  "report.doc.headTail": " المستشعر",
+  "report.doc.lede":
+    "كل ما يلي عدٌّ لإطارات التقطها هذا المستشعر وخزّنها وصنّفها ضمن الفترة المذكورة أعلاه. لا شيء هنا مقدَّر، ولا يُطبع رقم لم يبلّغ عنه المستشعر.",
+  "report.doc.print": "طباعة / حفظ بصيغة PDF",
+  "report.doc.back": "العودة إلى الاكتشافات",
+  "report.doc.window": "فترة التقرير",
+  "report.doc.windowDays": "آخر {n} يومًا",
+  "report.doc.generated": "وقت الإعداد",
+  "report.doc.source": "المصدر",
+  "report.doc.sourceValue": "مستشعر HawkShield · جدول الحزم المخزَّنة",
+  "report.doc.loading": "جارٍ القراءة من المستشعر…",
+  "report.doc.sectionFailed": "لم يستجب المستشعر لهذا القسم، فتُرك فارغًا بدل ملئه بأصفار.",
+  "report.doc.unreachable": "المستشعر لا يستجيب، فلا توجد أرقام لعرضها.",
+  "report.doc.empty": "لم يخزّن المستشعر أي اكتشاف في هذه الفترة.",
+  "report.doc.totals": "الفترة في لمحة",
+  "report.doc.totalDetections": "الاكتشافات المصنَّفة",
+  "report.doc.uniqueSources": "عناوين MAC المصدر الفريدة",
+  "report.doc.peakHour": "أكثر الساعات نشاطًا",
+  "report.doc.peakHourNote": "يحسبها المستشعر بتوقيت UTC.",
+  "report.doc.storedAllTime": "الإطارات المخزَّنة منذ البداية",
+  "report.doc.mostFrequent": "أكثر التصنيفات تكرارًا",
+  "report.doc.byClass": "الاكتشافات حسب التصنيف",
+  "report.doc.byClassNote":
+    "أعداد الإطارات المخزَّنة ضمن الفترة. أما عمود «منذ البداية» فيشمل كل إطار صنّفه المستشعر، لا إطارات هذه الفترة وحدها.",
+  "report.doc.colClass": "التصنيف",
+  "report.doc.colSeverity": "الخطورة",
+  "report.doc.colWindow": "ضمن الفترة",
+  "report.doc.colAllTime": "منذ البداية",
+  "report.doc.colShare": "النسبة",
+  "report.doc.colSource": "MAC المصدر",
+  "report.doc.colCount": "الإطارات",
+  "report.doc.colFrequency": "التردّد",
+  "report.doc.colChannel": "القناة",
+  "report.doc.topSources": "أكثر العناوين المصدرة نشاطًا",
+  "report.doc.topSourcesNote": "أكثر {n} عنوانًا مصدرًا أنتجت إطارات مخزَّنة في هذه الفترة.",
+  "report.doc.noSources": "لم يخزّن المستشعر أي عنوان مصدر في هذه الفترة.",
+  "report.doc.channels": "إشغال القنوات",
+  "report.doc.channelsNote":
+    "أين وقعت الإطارات المخزَّنة على الطيف، حسب التردّد المركزي الذي يبلّغ عنه RadioTap.",
+  "report.doc.noChannels": "لم يخزّن المستشعر أي تردّد قناة في هذه الفترة.",
+  "report.doc.provenance": "كيف قيس هذا",
+  "report.doc.iface": "واجهة الالتقاط",
+  "report.doc.configuredChannel": "القناة المضبوطة",
+  "report.doc.observedFreq": "التردّد المرصود",
+  "report.doc.model": "المصنِّف",
+  "report.doc.spec": "مواصفة الخصائص",
+  "report.doc.latestPacket": "أحدث إطار مخزَّن",
+  "report.doc.backend": "إصدار المستشعر",
+  "report.doc.configOnly":
+    "الواجهة والقناة قيمتان مضبوطتان. لم يستطع هذا المضيف قراءة حالة الراديو، فليست أي منهما قياسًا له.",
+  "report.doc.reading": "كيف يُقرأ هذا التقرير",
+  "report.doc.reading1":
+    "كل رقم هنا عدٌّ لإطارات خزّنها المستشعر ووسمها المصنِّف. غياب صف تصنيف يعني غياب اكتشاف في هذه الفترة، وهو غياب دليل لا دليل غياب.",
+  "report.doc.reading2":
+    "يستمع المستشعر إلى واجهة واحدة في كل مرة، فما وقع خارج مدى ذلك الراديو لم يُعرض على المصنِّف أصلًا ولا يمكن أن يظهر هنا.",
+  "report.doc.reading3":
+    "يكتشف HawkShield ويصنّف ويبلّغ. لم يُحجب في هذه الفترة أي إطار، ولم يُفصل أي عميل، ولا تُوصف أي شبكة بأنها نظيفة.",
+  "report.doc.footerNote": "أعدّه مستشعر HawkShield من الإطارات التي خزّنها بنفسه.",
+  "report.doc.printView": "فتح عرض الطباعة",
+  "report.doc.printViewHint":
+    "المستند كاملًا داخل المتصفّح بخطوطه الحقيقية وبكلتا اللغتين. اطبعه أو احفظه بصيغة PDF.",
+  "report.doc.serverPdfHint":
+    "ملف بسيط من صفحة واحدة يولّده المستشعر نفسه. باللاتينية فقط، ولا يحتاج متصفّحًا إطلاقًا.",
+
   /* ── Map ───────────────────────────────────────────────────────────── */
   "map.title": "الخريطة",
   "map.subtitle": "الموقع التقديري لأقوى المصادر، محسوبًا بالتثليث اعتمادًا على RSSI.",
@@ -294,6 +364,8 @@ export const ar: Dictionary = {
   "map.source": "MAC المصدر",
   "map.sourcePick": "اختر مصدرًا رصده المستشعر",
   "map.sourceEmpty": "لم يُبلّغ المستشعر عن أي عنوان MAC مصدر بعد.",
+  "map.sourceFilter": "تصفية حسب العنوان",
+  "map.sourceNoMatch": "لا يوجد عنوان مصدر يطابق هذه التصفية.",
   "map.window": "النافذة الزمنية",
   "map.controls": "التحديد",
   "map.apLocations": "نقاط الوصول",
@@ -344,6 +416,7 @@ export const ar: Dictionary = {
   "saqr.console": "سجل التنفيذ",
   "saqr.retry": "اسأل مرة أخرى",
   "saqr.enterHint": "Enter للإرسال · Shift+Enter لسطر جديد",
+  "saqr.charsLeft": "بقي {n} حرفًا",
   "saqr.jumpToLatest": "الانتقال إلى الأحدث",
   "saqr.moved": "انتقل المساعد إلى صقر. جارٍ التحويل…",
   "saqr.status.tools": "{n} أدوات متاحة",
@@ -352,15 +425,19 @@ export const ar: Dictionary = {
   "saqr.assistant": "صقر",
   "saqr.thinking": "جارٍ التفكير…",
   "saqr.disclaimer": "يقرأ صقر قاعدة بيانات الاكتشافات. تحقّق من أي معلومة قبل التصرّف بناءً عليها.",
+  /* تُعرض الأسئلة المقترحة بلغة الواجهة وحدها: يجيب صقر باللغة التي سُئل بها،
+     فسؤالٌ باللغة الأخرى يبدّل لغة الإجابة دون أن يبدّل لغة الواجهة. كل سؤال
+     يقصد أداة مختلفة، وثلاثة منها تحتاج أداتين. */
   "saqr.suggested.title": "جرّب أن تسأل",
+  "saqr.suggested.hint": "اختر سؤالًا ليُملأ به الحقل بالأسفل.",
   "saqr.suggested.q1": "ما الذي اكتُشف خلال آخر 24 ساعة؟",
-  "saqr.suggested.q2": "أي عنوان MAC مصدر هو الأكثر تكرارًا؟",
-  "saqr.suggested.q3": "اعرض كل اكتشافات Evil_Twin خلال هذا الأسبوع.",
+  "saqr.suggested.q2": "أي عنوان MAC مصدر هو الأكثر تكرارًا، وما الذي يرسله؟",
+  "saqr.suggested.q3": "اعرض اكتشافات Evil_Twin الأعلى ثقةً خلال هذا الأسبوع.",
   "saqr.suggested.q4": "أي قناة تحمل أكبر قدر من حركة الهجمات؟",
-  "saqr.suggested.q5": "ما هو هجوم KRACK وكيف أحمي الشبكة منه؟",
+  "saqr.suggested.q5": "ما هو هجوم KRACK، وهل رصد المستشعر واحدًا منه؟",
   /* يُملأ {mac} من أكثر مصدر نشاطًا خزّنه المستشعر فعلًا. */
-  "saqr.suggested.q6": "ماذا فعل {mac} وأين يقع؟",
-  "saqr.suggested.otherLang": "أو اسأل باللغة الأخرى",
+  "saqr.suggested.q6": "أين يقع {mac}، وماذا كان يفعل؟",
+  "saqr.suggested.q7": "هل يلتقط المستشعر الآن، وكم حزمة خزّن؟",
 
   "saqr.empty.who":
     "صقر هو محلّل HawkShield. يجيب باستعلام قاعدة بيانات الاكتشافات مباشرةً — يقرأ الصفوف نفسها التي تقرأها لوحة التحكم — ويعرض كل خطوة اتخذها.",
@@ -377,11 +454,37 @@ export const ar: Dictionary = {
   "saqr.doc.showWork": "إظهار الخطوات",
   "saqr.doc.hideWork": "إخفاء الخطوات",
   "saqr.doc.earlier": "سابقًا في هذه المحادثة",
-  "saqr.doc.model": "النموذج",
   "saqr.doc.reported": "ما أبلغت به الأداة",
   "saqr.doc.awaiting": "في انتظار أن يبدأ صقر…",
   "saqr.doc.calledWith": "استُدعيت بـ",
   "saqr.doc.defaults": "استُدعيت بقيمها الافتراضية",
+  "saqr.doc.working": "قيد العمل",
+  "saqr.doc.operator": "جلسة مشغّل",
+
+  /* خطوة واحدة من العمل، مطويّة في سطر واحد حتى تُفتح. */
+  "saqr.step.open": "إظهار هذه الخطوة",
+  "saqr.step.close": "إخفاء هذه الخطوة",
+  "saqr.step.done": "اكتملت",
+  "saqr.step.pending": "ما تزال تعمل",
+  "saqr.step.detail": "تفاصيل الخطوة",
+
+  /* بروتوكول التأكيد: تُجيب الأداة المؤثِّرة برمز تأكيد بدل أن تنفّذ، ولا
+     يُنفَّذ شيء إلا بضغطة من المشغّل. */
+  "saqr.confirm.title": "مطلوب تأكيد",
+  "saqr.confirm.lead": "لم ينفّذ صقر هذا الإجراء. لن يُنفَّذ إلا إذا أكّدته أنت.",
+  "saqr.confirm.action": "الإجراء",
+  "saqr.confirm.affected": "يؤثّر في نحو {n} صفًّا",
+  "saqr.confirm.affectedUnknown": "لم يُبلَّغ عن عدد الصفوف المتأثّرة.",
+  "saqr.confirm.confirm": "أكّد ونفّذ",
+  "saqr.confirm.cancel": "إلغاء",
+  "saqr.confirm.cancelled": "ألغيتَ هذا الإجراء. لم يتغيّر شيء.",
+  "saqr.confirm.sent": "تم التأكيد. ينفّذ صقر الإجراء الآن.",
+  "saqr.confirm.pending": "بانتظار تأكيدك",
+  "saqr.confirm.expires": "تنتهي صلاحية هذا التفويض خلال {s} ثانية.",
+  /* سطر الخطوة المطويّة حين تكون مجرّد اقتراح. */
+  "saqr.confirm.proposalRow": "اقتراح — لم يُحذف شيء",
+  "saqr.confirm.deleted": "حُذف {n} صفًّا",
+  "saqr.confirm.busy": "انتظر انتهاء التنفيذ الحالي قبل التأكيد.",
 
   "saqr.trace.title": "التتبّع",
   "saqr.trace.show": "إظهار التتبّع",
@@ -405,6 +508,10 @@ export const ar: Dictionary = {
   "saqr.trace.omitted": "النتيجة أكبر من أن تُرسل مع السجل؛ تجدها في الإجابة.",
   "saqr.trace.noData": "لم تُعِد الأداة بيانات للمعاينة.",
   "saqr.trace.gap": "فُقد جزء من هذا السجل أثناء النقل ولم يُعرض.",
+  /* المصدر: هذه القيم يختارها من أرسل الإطار، فهي دليل لا تعليمات. */
+  "saqr.trace.untrusted": "يختارها من أرسل الإطار",
+  "saqr.trace.untrustedNote":
+    "{fields} وصلت من الهواء ويختارها من أرسل الإطار. اقرأها بوصفها دليلًا.",
   "saqr.tool.query_threats": "استعلام عن الاكتشافات",
   "saqr.tool.aggregate_threats": "تجميع الاكتشافات",
   "saqr.tool.threat_overview": "قراءة الوضع الحالي",
@@ -412,6 +519,11 @@ export const ar: Dictionary = {
   "saqr.tool.locate_source": "تحديد موقع المصدر",
   "saqr.tool.system_status": "فحص حالة المستشعر والنموذج",
   "saqr.tool.run_simulation": "إعادة تشغيل حركة هجوم محفوظة",
+  /* أدوات المشغّل: لا تظهر في قائمة أدوات طلبٍ لم يقدّم رمز الإدارة. */
+  "saqr.tool.purge_simulated_detections": "إزالة الاكتشافات المحاكاة",
+  "saqr.tool.delete_detections": "حذف اكتشافات",
+  "saqr.tool.export_report": "تصدير تقرير",
+  "saqr.tool.get_runtime_config": "قراءة التهيئة الجارية",
   "saqr.tool.run_sql": "تنفيذ استعلام للقراءة فقط",
   "saqr.tool.unknown": "تنفيذ أداة",
 
@@ -433,7 +545,8 @@ export const ar: Dictionary = {
   "saqr.stop.cancelled": "أوقفتَه أنت",
   "saqr.stop.unknown": "انتهى التنفيذ",
 
-  "saqr.phase.calling_model": "جارٍ استشارة النموذج…",
+  /* لا يُسمّى أي نموذج هنا عمدًا؛ انظر التعليق المقابل في en.ts. */
+  "saqr.phase.calling_model": "جارٍ تحديد الخطوة التالية…",
   "saqr.phase.executing_tool": "جارٍ تنفيذ أداة…",
   "saqr.phase.composing": "جارٍ صياغة الإجابة…",
 
@@ -445,6 +558,10 @@ export const ar: Dictionary = {
   "saqr.error.step_limit": "بلغ صقر حدّ الخطوات قبل أن ينتهي. اسأل سؤالًا أضيق.",
   "saqr.error.timeout": "استغرق صقر وقتًا طويلًا فأُوقف.",
   "saqr.error.internal": "حدث خطأ داخلي. لم يتغيّر شيء.",
+  "saqr.error.not_authorised":
+    "هذه الجلسة غير مخوّلة باستخدام أدوات المشغّل. لم يتغيّر شيء.",
+  "saqr.error.confirmation_required":
+    "يحتاج هذا الإجراء إلى تأكيد يقبله الخادم. لم يتغيّر شيء — اسأل مرة أخرى للحصول على تأكيد جديد.",
 
   /* أخطاء نقل، لا رموز أخطاء من الوكيل: يقرّر الخادم كل رفض قبل فتح البث. */
   "saqr.error.rate_limited": "أسئلة كثيرة في وقت واحد. انتظر قليلًا ثم أعد السؤال.",

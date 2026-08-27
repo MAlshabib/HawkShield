@@ -59,8 +59,11 @@ export function SaqrAnswer({
 
   return (
     <section className={cn("flex min-w-0 flex-col gap-4", className)}>
+      {/* The accent tone is spent here and nowhere else in the run document.
+          The work above it is evidence set quietly; this is the thing the
+          reader came for, and it is the only section head that says so. */}
       <header className="border-rule flex flex-wrap items-center gap-x-4 gap-y-1 border-b pb-2">
-        <Eyebrow>{t("saqr.answer.title")}</Eyebrow>
+        <Eyebrow tone="accent">{t("saqr.answer.title")}</Eyebrow>
         {text && (
           <Button
             size="sm"
@@ -80,8 +83,11 @@ export function SaqrAnswer({
       {/* A reading measure. Prose that runs the full width of a result table is
           prose nobody finishes; the tables above are allowed to be wider than
           the sentence that explains them. */}
+      {/* One step above body size. The rest of the page sits at `base`; the
+          answer is the only prose on it, and the half-step is what makes the
+          section read as the destination rather than as another block. */}
       <div className="min-w-0 max-w-[68ch]">
-        <SaqrMarkdown text={text} />
+        <SaqrMarkdown text={text} className="text-md" />
         {streaming && (
           // A block caret on the prose baseline, shown only while `token`
           // events are actually arriving.

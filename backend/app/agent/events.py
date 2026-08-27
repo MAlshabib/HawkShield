@@ -80,10 +80,18 @@ ERR_BAD_ARGS = "bad_args"
 ERR_STEP_LIMIT = "step_limit"
 ERR_TIMEOUT = "timeout"
 ERR_INTERNAL = "internal"
+#: The request did not present the admin token, so an operator tool refused.
+#: Normally unreachable through the model -- a non-admin run is never shown an
+#: operator tool -- so seeing this code means something bypassed the registry.
+ERR_NOT_AUTHORISED = "not_authorised"
+#: A destructive call arrived without a confirmation the server would accept:
+#: absent, forged, expired, already spent, or minted for different arguments.
+ERR_CONFIRMATION = "confirmation_required"
 
 ERROR_CODES = (
     ERR_NO_API_KEY, ERR_NO_CREDIT, ERR_MODEL, ERR_TOOL,
     ERR_BAD_ARGS, ERR_STEP_LIMIT, ERR_TIMEOUT, ERR_INTERNAL,
+    ERR_NOT_AUTHORISED, ERR_CONFIRMATION,
 )
 
 #: Internal tool-error ``type`` -> published ``code``.  The ``type`` stays in the
@@ -96,6 +104,12 @@ _TOOL_ERROR_CODES: Dict[str, str] = {
     "budget_exhausted": ERR_STEP_LIMIT,
     "time_budget_exhausted": ERR_TIMEOUT,
     "tool_timeout": ERR_TIMEOUT,
+    "not_authorised": ERR_NOT_AUTHORISED,
+    "confirmation_missing": ERR_CONFIRMATION,
+    "confirmation_expired": ERR_CONFIRMATION,
+    "confirmation_unknown_or_spent": ERR_CONFIRMATION,
+    "confirmation_action_mismatch": ERR_CONFIRMATION,
+    "confirmation_argument_mismatch": ERR_CONFIRMATION,
 }
 
 #: Substrings that identify a spent account rather than a broken request.  A 402
@@ -214,15 +228,29 @@ class Emitter:
 
     # -- typed events ------------------------------------------------------ #
     async def run_start(
-        self, *, question: str, locale: str, model: str, max_steps: int, tools: List[str]
+        self,
+        *,
+        question: str,
+        locale: str,
+        max_steps: int,
+        tools: List[str],
+        is_admin: bool = False,
     ) -> None:
+        """Open a run.
+
+        Carries no model identifier, by decision: which model answers is a
+        server detail, the client has no use for it, and it was being rendered
+        in the UI. ``loop.run_agent`` logs it instead. ``is_admin`` replaces it
+        as the field a client actually needs -- it is what decides whether the
+        pane should offer destructive controls at all.
+        """
         await self._emit(EVENT_RUN_START, {
             "ts": _now_iso(),
             "question": question,
             "locale": locale,
-            "model": model,
             "max_steps": int(max_steps),
             "tools": list(tools),
+            "is_admin": bool(is_admin),
         })
 
     async def status(self, phase: str, step: int) -> None:

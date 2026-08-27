@@ -42,7 +42,7 @@ function SheetOverlay({
     <SheetPrimitive.Overlay
       data-slot="sheet-overlay"
       className={cn(
-        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-50 bg-[color-mix(in_oklch,var(--bg)_80%,transparent)]",
+        "data-[state=open]:animate-in data-[state=closed]:animate-out data-[state=closed]:fade-out-0 data-[state=open]:fade-in-0 fixed inset-0 z-(--z-overlay) bg-[color-mix(in_oklch,var(--bg)_80%,transparent)]",
         className
       )}
       {...props}
@@ -64,7 +64,7 @@ function SheetContent({
       <SheetPrimitive.Content
         data-slot="sheet-content"
         className={cn(
-          "bg-paper-1 border-rule-soft data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-50 flex flex-col gap-4 transition ease-in-out data-[state=closed]:duration-200 data-[state=open]:duration-300",
+          "bg-paper-1 border-rule-soft data-[state=open]:animate-in data-[state=closed]:animate-out fixed z-(--z-overlay) flex flex-col gap-4 transition ease-in-out data-[state=closed]:duration-200 data-[state=open]:duration-300",
           // `right`/`left` are read as inline-end/inline-start: the panel and its
           // slide both flip under RTL, so the sheet always arrives from the
           // reading edge rather than from a fixed side of the glass.

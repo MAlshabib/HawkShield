@@ -8,7 +8,7 @@
     "start": "next start",
     "lint": "next lint",
     "fonts": "node scripts/fonts.mjs",
-    "prebuild": "node scripts/fonts.mjs",
+    "prebuild": "node scripts/fonts.mjs && node scripts/check-build-env.mjs",
     "predev": "node scripts/fonts.mjs"
   },
   "dependencies": {

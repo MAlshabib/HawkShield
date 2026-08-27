@@ -4,7 +4,7 @@
  * The Leaflet canvas: access points, the estimated origin, and the links
  * between them.
  *
- * Three things about this component are deliberate and easy to undo by accident.
+ * Four things about this component are deliberate and easy to undo by accident.
  *
  * **The map is pinned `dir="ltr"`, the chrome around it is not.** Leaflet's own
  * stylesheet is physically left/right — the zoom control is `.leaflet-top
@@ -26,6 +26,19 @@
  * rectangle inside the dark console is unreadable next to it. The dark theme
  * inverts the tile pane, which is a rendering treatment of the same tiles — no
  * geometry, label or coordinate changes.
+ *
+ * **The container is a sealed stacking context.** Leaflet numbers its own panes
+ * and controls from 200 to 1000 — tile 200, overlay 400, shadow 500, marker
+ * 600, tooltip 650, popup 700, controls 800-1000. That order is right *inside a
+ * map* and catastrophic outside one: left in the root stacking context those
+ * numbers compete with the application's own layers and win every time, because
+ * no sane app layer is numbered 400. A `z-50` select portalled to <body> lost to
+ * the tile pane, and the middle of a long dropdown on `/map` rendered behind the
+ * basemap. `isolation: isolate` on the container (with the `relative` and the
+ * `z-(--z-map)` that make the intent explicit) seals all of it: the map
+ * composites as one box on the application's scale, Leaflet keeps its internal
+ * order, and neither has to know the other's numbers. Remove the `isolate` and
+ * the dropdown goes back under the map.
  */
 import * as React from "react"
 import {
@@ -220,7 +233,7 @@ export default function LeafletMap({
       {/* `dir="ltr"` stops here. Everything outside this box mirrors normally. */}
       <div
         dir="ltr"
-        className="hs-map bg-paper-0 relative min-w-0 overflow-hidden"
+        className="hs-map bg-paper-0 relative isolate z-(--z-map) min-w-0 overflow-hidden"
         style={{ blockSize: height }}
         role="img"
         aria-label={t("map.mapLabel")}
@@ -229,6 +242,11 @@ export default function LeafletMap({
           <div
             // `dir` is restored here because this is prose, not geography.
             dir={dir}
+            // `z-[1000]` is deliberately a *Leaflet* number, not an application
+            // one: this banner has to clear Leaflet's own controls, which top
+            // out at 1000. It is safe precisely because the container above is
+            // `isolate`d — the number cannot escape the map and compete with
+            // the app's layer scale, which is what `--z-*` exists to prevent.
             className="border-rule bg-paper-1 pointer-events-none absolute inset-x-0 top-0 z-[1000] border-b px-3 py-1.5 text-center"
           >
             <span className="hs-label text-sev-high">{t("map.tilesOffline")}</span>

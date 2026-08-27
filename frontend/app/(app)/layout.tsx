@@ -28,7 +28,12 @@ export default function AppLayout({ children }: { children: React.ReactNode }) {
 
       <Navbar />
 
-      <main id="main">{children}</main>
+      {/* The bar is fixed — see the note in `components/navbar.tsx` — so the
+          shell reserves its height here. Padding rather than a margin: the page
+          background then runs under the bar instead of stopping at it. */}
+      <main id="main" className="pt-(--app-bar-block-size)">
+        {children}
+      </main>
     </div>
   )
 }

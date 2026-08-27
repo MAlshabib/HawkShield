@@ -3,7 +3,7 @@
 ``POST /ask`` predates the agent.  The already-built ``frontend/out`` bundle
 calls it and destructures a fixed envelope out of the reply, so the route
 survives, but everything behind it is now
-:func:`backend.app.agent.loop.run_agent` -- the same loop, the same eight tools
+:func:`backend.app.agent.loop.run_agent` -- the same loop, the same read-only tools
 and the same guards that serve ``POST /agent/ask``.  There is one assistant in
 this system, not two.
 
@@ -12,6 +12,21 @@ memory, and a 503 when the assistant is not configured.  It **shares** the
 assistant's rate limit and concurrency gate with ``/agent/ask`` rather than
 holding a second budget of its own -- the ceiling belongs to the assistant, not
 to a URL.
+
+It also shares ``/agent/ask``'s input gate, which matters more here than there.
+This route keeps a per-session transcript and splices it into the next prompt,
+so an unbounded question is not merely one long prompt -- it is one long prompt
+*per turn, for five turns*, which is precisely the shape of "write past the
+context limit until the system prompt falls out of the window".  So every
+question goes through ``guard.sanitise_question`` (length, C0 controls,
+invisible and bidi-override codepoints; a 400 on any of them), the stored answer
+was already clipped, and the assembled prompt is clamped to
+``SAQR_MAX_CONTEXT_CHARS`` with the oldest turns dropped first.
+
+This route is never an operator session.  It has no header contract and no UI
+that could show a confirmation, so it runs with ``is_admin=False`` and no
+confirmation, always -- the writing and deleting tools are not in its registry
+at all.  Operator actions belong to ``/agent/ask``.
 
 **The envelope is the contract, and the bundle is unforgiving about it.**  Its
 handler reads, in order: ``error`` (truthy short-circuits to an error bubble and
@@ -32,7 +47,7 @@ from typing import Any, Dict, List, Optional, Set
 from fastapi import APIRouter, Depends, HTTPException
 from sqlalchemy.orm import Session, sessionmaker
 
-from backend.app.agent import ratelimit
+from backend.app.agent import guard, ratelimit
 from backend.app.config import settings
 from backend.app.db import get_db
 from backend.app.schemas import AskPayload
@@ -112,6 +127,12 @@ def _norm_key(text: str) -> str:
     return hashlib.sha256(text.strip().lower().encode("utf-8")).hexdigest()
 
 
+#: Characters of one remembered question kept in the transcript.  The answer was
+#: already clipped to 800; the question was not, and a 4000-character question
+#: repeated over five turns is 20 KB of prompt an attacker chose the whole of.
+MAX_REMEMBERED_QUESTION = 500
+
+
 def _build_context(session_id: str) -> str:
     turns = SESSION_MEMORY.get(session_id, [])
     if not turns:
@@ -157,16 +178,27 @@ async def ask(payload: AskPayload, db: Session = Depends(get_db)) -> Dict[str, A
             status_code=503, detail="The Saqr agent is disabled (SAQR_ENABLED=0)."
         )
 
+    # The input gate, before the cache key is computed and before any budget is
+    # spent: too long, or carrying control / invisible / direction-overriding
+    # characters, is a 400 that costs nothing.
+    try:
+        question = guard.sanitise_question(payload.question)
+    except guard.InputRejected as exc:
+        logger.info("/ask rejected a question: %s", exc.reason)
+        raise HTTPException(
+            status_code=400, detail={"reason": exc.reason, "message": str(exc)}
+        ) from exc
+
     session_id = payload.session_id or "default-session"
     context = _build_context(session_id)
     if context:
-        full_q = (
+        full_q = guard.clamp_context(
             "Use the prior short transcript as conversational context ONLY if needed.\n\n"
             f"Transcript (most-recent first):\n{context}\n\n"
-            f"Now the new user question: {payload.question.strip()}"
+            f"Now the new user question: {question}"
         )
     else:
-        full_q = payload.question.strip()
+        full_q = question
 
     ck = _norm_key(session_id + "||" + full_q)
     cached = cache.get(ck)
@@ -208,7 +240,7 @@ async def ask(payload: AskPayload, db: Session = Depends(get_db)) -> Dict[str, A
 
     compact_answer = (result.answer or "")[:800]
     SESSION_MEMORY.setdefault(session_id, []).append(
-        {"q": payload.question.strip(), "a": compact_answer}
+        {"q": question[:MAX_REMEMBERED_QUESTION], "a": compact_answer}
     )
     if len(SESSION_MEMORY[session_id]) > MAX_TURNS:
         SESSION_MEMORY[session_id] = SESSION_MEMORY[session_id][-MAX_TURNS:]

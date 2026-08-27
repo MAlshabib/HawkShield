@@ -1,0 +1,354 @@
+/* ---------------------------------------------------------------------------
+ * FIELD AND LANGUAGE — the two transitions
+ *
+ * Two controls in the nav pill change the whole page: the field toggle
+ * (dark/light) and the language switch. Both used to be hard cuts. A hard cut
+ * on the field repaints every surface in one frame and reads as a glitch; a
+ * hard cut on the language flips `dir` and the layout jumps sides with nothing
+ * to tell the eye it moved on purpose.
+ *
+ * This file is the whole of the motion for both. It is deliberately separate
+ * from `globals.css` — nothing here is a token or a base rule, it is one
+ * self-contained behaviour, and it must be possible to delete the import in
+ * `app/layout.tsx` and get the old instant swap back with no other edit.
+ *
+ * THREE RULES
+ *
+ * 1. **Nothing in here is armed at rest.** Every rule below is scoped under a
+ *    class on `<html>` that only exists while a transition is in flight. The
+ *    pre-hydration script in `app/layout.tsx` sets the theme and the direction
+ *    before React mounts; if any of this were unscoped, every page load would
+ *    animate from the build-time default to the stored preference — a 360ms
+ *    flash of the wrong field on every single navigation.
+ * 2. **Opacity, transform and clip-path only.** No `width`, no `height`, no
+ *    `inset`, no `transition: all`. The target is a Raspberry Pi 4 driving an
+ *    external display; anything that dirties layout on every frame is out.
+ * 3. **`prefers-reduced-motion: reduce` removes both entirely**, leaving the
+ *    instant swap. The block at the foot of this file is the CSS half; the
+ *    providers check the same query in JS and never start a transition at all,
+ *    so the reduced-motion path costs nothing rather than running a 0.01ms
+ *    animation. Both halves exist because the setting can change between the
+ *    JS check and the paint.
+ *
+ * The `@media (prefers-reduced-motion)` block in `globals.css` neutralises
+ * `*`, `*::before` and `*::after`. `::view-transition-*` is none of those — the
+ * universal selector does not match a pseudo-element — so the guard at the foot
+ * of this file extends that block rather than duplicating it.
+ * ------------------------------------------------------------------------- */
+
+:root {
+  /* -- new timings ------------------------------------------------------- */
+  /* The scale in `globals.css` is 140 / 240 / 420. The field reveal wants a
+     value between the last two: 240ms is too brisk for a wipe that crosses the
+     whole viewport, and at 420ms a judge toggling twice feels it lag. 360ms is
+     the only genuinely new duration in this file. */
+  --hs-dur-theme: 360ms;
+
+  /* The language swap is a sequence, not a cross-fade, so it needs two offsets
+     the duration scale has no opinion about: when the incoming page starts
+     (deliberately 20ms before the outgoing one finishes, so there is never a
+     frame with nothing on screen) and how far the main content trails the
+     chrome. */
+  --hs-locale-in-delay: 120ms;
+  --hs-locale-stagger: 70ms;
+
+  /* -- runtime values ---------------------------------------------------- */
+  /* Written onto `<html>` by the providers; the values here are the fallbacks
+     that apply if a transition somehow starts without them. The reveal origin
+     defaults to the middle of the viewport, which is what a toggle triggered
+     from somewhere other than the nav pill should look like. */
+  --hs-vt-x: 50vw;
+  --hs-vt-y: 50vh;
+  --hs-vt-r: 100vmax;
+
+  /* Signed, because a translate is physical and `dir` is logical: the sign has
+     to be computed from the direction of travel rather than inherited from the
+     document. See `components/providers/locale-provider.tsx`. */
+  --hs-locale-out-shift: -10px;
+  --hs-locale-in-shift: 14px;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * FIELD — a circular reveal, via the View Transition API
+ *
+ * The browser holds the old frame still and paints the new one over it through
+ * a circle growing from the toggle itself, so the new field reads as something
+ * that button did rather than something that happened to the page.
+ *
+ * Everything here is one compositor property (`clip-path` on a snapshot), which
+ * is why it is affordable: no element in the tree is asked to re-transition its
+ * own colours, so the hundred-odd hairlines, chart fills and surfaces that
+ * differ between the two fields cost exactly nothing extra.
+ *
+ * Only Chromium ships `startViewTransition` today. The provider feature-detects
+ * it and falls through to the colour-property transition further down.
+ * ═════════════════════════════════════════════════════════════════════════ */
+
+html.hs-vt-theme::view-transition-group(root) {
+  /* The root group is the viewport in both states — there is nothing to morph,
+     and the default group animation would only add work. */
+  animation: none;
+}
+
+/* Chromium composites the two snapshots with `mix-blend-mode: plus-lighter`
+   inside an isolated pair. That is right for a cross-fade — it keeps the
+   midpoint from going grey — and wrong here: the old frame stays fully opaque
+   for the whole reveal, so plus-lighter would blow the overlap out to white.
+   Normal blending in a non-isolated pair is a straight overlay. */
+html.hs-vt-theme::view-transition-image-pair(root) {
+  isolation: auto;
+}
+
+html.hs-vt-theme::view-transition-old(root),
+html.hs-vt-theme::view-transition-new(root) {
+  animation: none;
+  mix-blend-mode: normal;
+}
+
+/* The outgoing field simply holds. It is a still image for 360ms; fading it out
+   under a growing circle would show the page double-exposed at the edge. */
+html.hs-vt-theme::view-transition-old(root) {
+  z-index: 0;
+}
+
+html.hs-vt-theme::view-transition-new(root) {
+  z-index: 1;
+  animation: hs-theme-reveal var(--hs-dur-theme) var(--ease-out) both;
+}
+
+@keyframes hs-theme-reveal {
+  from {
+    clip-path: circle(0px at var(--hs-vt-x) var(--hs-vt-y));
+  }
+  to {
+    clip-path: circle(var(--hs-vt-r) at var(--hs-vt-x) var(--hs-vt-y));
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * FIELD — fallback for browsers without view transitions.
+ *
+ * A named list of colour properties, not `all`. `all` would also transition
+ * every geometric property in the tree, which on a page of this size is a
+ * layout pass per frame — and it would catch `opacity` and `transform` too, so
+ * an unrelated hover or an arriving detection would be dragged out to 360ms.
+ *
+ * `outline-color` is deliberately absent: `globals.css` requires the focus ring
+ * to appear instantly, and a transitioned outline colour means a keyboard user
+ * watches their focus ring resolve. `box-shadow` is absent for cost — the two
+ * elevation tokens do differ between fields, but a shadow transition on every
+ * element in the tree is the most expensive thing this could ask for, so the
+ * shadows snap.
+ * ------------------------------------------------------------------------- */
+
+html.hs-fade-theme,
+html.hs-fade-theme *,
+html.hs-fade-theme *::before,
+html.hs-fade-theme *::after {
+  transition-property:
+    background-color, border-color, color, fill, stroke, text-decoration-color,
+    -webkit-text-fill-color, caret-color, column-rule-color;
+  transition-duration: var(--hs-dur-theme);
+  transition-timing-function: var(--ease-out);
+  transition-delay: 0s;
+}
+
+/* The page ground is two radial gradients over a flat colour, so here it is
+   `background-image` that carries the field, not `background-color`. Both
+   states are the same gradient shape with different stops, which is the case
+   engines can interpolate. Scoped to `body` alone — asking the whole tree to
+   interpolate gradients would be genuinely expensive. */
+html.hs-fade-theme body {
+  transition-property: background-color, background-image, color;
+}
+
+/* ═══════════════════════════════════════════════════════════════════════════
+ * LANGUAGE — out, swap, in
+ *
+ * `dir` flips, so the content really does change sides. There is no honest way
+ * to tween that: the layout is different, not moved, and interpolating between
+ * the two is both expensive and wrong-looking mid-flight. So the page leaves,
+ * changes, and comes back — with a small horizontal offset that says which way
+ * it went, and the main content trailing the chrome by 70ms so the eye has an
+ * order to read it in.
+ *
+ * Same mechanism as the field where it is available: the browser snapshots the
+ * old page, the swap happens against a still image, and the new page fades up.
+ * That matters more here than for the field — reflowing an entire page from LTR
+ * to RTL is not free, and doing it behind a snapshot puts the cost in a frame
+ * nobody is looking at.
+ *
+ * Budget: 120ms delay + 240ms in + 70ms stagger = 430ms end to end.
+ * ═════════════════════════════════════════════════════════════════════════ */
+
+/* `main` gets a name of its own so it can be animated apart from the chrome.
+   Applied by class, only for the duration of the transition, so no element in
+   this app carries a `view-transition-name` at rest — a name left lying around
+   is a uniqueness constraint waiting to be violated by a second instance. */
+html.hs-vt-locale main#main {
+  view-transition-name: hs-main;
+}
+
+html.hs-vt-locale::view-transition-group(root),
+html.hs-vt-locale::view-transition-group(hs-main) {
+  /* Arabic reflows to a slightly different height, and the default group
+     animation would interpolate that height — scaling the snapshots, which is
+     the one thing that makes a swap like this look broken. Hold the geometry
+     and let opacity do the work. */
+  animation: none;
+}
+
+html.hs-vt-locale::view-transition-image-pair(root),
+html.hs-vt-locale::view-transition-image-pair(hs-main) {
+  isolation: auto;
+}
+
+html.hs-vt-locale::view-transition-old(root),
+html.hs-vt-locale::view-transition-old(hs-main),
+html.hs-vt-locale::view-transition-new(root),
+html.hs-vt-locale::view-transition-new(hs-main) {
+  mix-blend-mode: normal;
+}
+
+html.hs-vt-locale::view-transition-old(root),
+html.hs-vt-locale::view-transition-old(hs-main) {
+  animation: hs-locale-out var(--dur-fast) var(--ease-in) both;
+}
+
+html.hs-vt-locale::view-transition-new(root) {
+  animation: hs-locale-in var(--dur-base) var(--ease-out) var(--hs-locale-in-delay) both;
+}
+
+html.hs-vt-locale::view-transition-new(hs-main) {
+  animation: hs-locale-in var(--dur-base) var(--ease-out)
+    calc(var(--hs-locale-in-delay) + var(--hs-locale-stagger)) both;
+}
+
+@keyframes hs-locale-out {
+  from {
+    opacity: 1;
+    transform: translateX(0);
+  }
+  to {
+    opacity: 0;
+    transform: translateX(var(--hs-locale-out-shift));
+  }
+}
+
+@keyframes hs-locale-in {
+  from {
+    opacity: 0;
+    transform: translateX(var(--hs-locale-in-shift));
+  }
+  to {
+    opacity: 1;
+    transform: translateX(0);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * LANGUAGE — fallback for browsers without view transitions.
+ *
+ * The same shape, driven off two classes the provider adds and removes around
+ * the swap. Two constraints decide which elements are animated:
+ *
+ *   · The app bar and the nav pill are `position: fixed`. A `transform` on any
+ *     ancestor of a fixed element makes that element resolve against the
+ *     ancestor instead of the viewport — the bar would drop to the top of the
+ *     document and scroll away mid-transition. So `body` takes opacity only
+ *     (which creates a stacking context but not a containing block) and the
+ *     translate is applied to `main` alone, which has no fixed descendants.
+ *   · Animations, not transitions, so that removing the out-class and adding
+ *     the in-class in the same frame restarts cleanly instead of interpolating
+ *     from wherever the previous one happened to have got to.
+ * ------------------------------------------------------------------------- */
+
+html.hs-fade-locale-out body {
+  animation: hs-locale-fade-out var(--dur-fast) var(--ease-in) both;
+}
+
+html.hs-fade-locale-in body {
+  animation: hs-locale-fade-in var(--dur-base) var(--ease-out) both;
+}
+
+html.hs-fade-locale-out main#main {
+  animation: hs-locale-slide-out var(--dur-fast) var(--ease-in) both;
+}
+
+html.hs-fade-locale-in main#main {
+  animation: hs-locale-slide-in var(--dur-base) var(--ease-out) var(--hs-locale-stagger) both;
+}
+
+@keyframes hs-locale-fade-out {
+  from {
+    opacity: 1;
+  }
+  to {
+    opacity: 0;
+  }
+}
+
+@keyframes hs-locale-fade-in {
+  from {
+    opacity: 0;
+  }
+  to {
+    opacity: 1;
+  }
+}
+
+@keyframes hs-locale-slide-out {
+  from {
+    transform: translateX(0);
+  }
+  to {
+    transform: translateX(var(--hs-locale-out-shift));
+  }
+}
+
+@keyframes hs-locale-slide-in {
+  from {
+    transform: translateX(var(--hs-locale-in-shift));
+  }
+  to {
+    transform: translateX(0);
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Reduced motion.
+ *
+ * Extends the block at the foot of `globals.css`, which cannot reach any of
+ * this: `*, *::before, *::after` does not match `::view-transition-*`, and the
+ * two fallback paths are `!important`-proofed here so a half-applied class can
+ * never leave the page sitting at opacity 0.
+ *
+ * The still frame is the complete frame in both cases — neither transition
+ * carries information that exists only while it is moving — so removing them
+ * costs the reader nothing, which is the test in `brand-spec.md` §Motion.
+ * ------------------------------------------------------------------------- */
+@media (prefers-reduced-motion: reduce) {
+  html::view-transition-group(*),
+  html::view-transition-image-pair(*),
+  html::view-transition-old(*),
+  html::view-transition-new(*) {
+    animation: none !important;
+  }
+
+  html.hs-fade-theme,
+  html.hs-fade-theme *,
+  html.hs-fade-theme *::before,
+  html.hs-fade-theme *::after,
+  html.hs-fade-theme body {
+    transition: none !important;
+  }
+
+  html.hs-fade-locale-out body,
+  html.hs-fade-locale-in body,
+  html.hs-fade-locale-out main#main,
+  html.hs-fade-locale-in main#main {
+    animation: none !important;
+    opacity: 1 !important;
+    transform: none !important;
+  }
+}

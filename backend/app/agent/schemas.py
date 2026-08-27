@@ -17,9 +17,13 @@ from pydantic import BaseModel, ConfigDict, Field
 
 __all__ = [
     "AggregateThreatsArgs",
+    "DeleteDetectionsArgs",
     "ExplainAttackClassArgs",
+    "ExportReportArgs",
+    "GetRuntimeConfigArgs",
     "GroupBy",
     "LocateSourceArgs",
+    "PurgeSimulatedArgs",
     "QueryThreatsArgs",
     "RunSimulationArgs",
     "RunSqlArgs",
@@ -132,6 +136,16 @@ class AggregateThreatsArgs(_ThreatFilters):
             "hour_of_day and day_of_week, which always return every bucket."
         ),
     )
+    compare_previous: bool = Field(
+        default=False,
+        description=(
+            "Also count the immediately preceding window of the same length and "
+            "report the change. Needs 'minutes'. Use this for 'what changed in "
+            "the last hour', 'is it getting worse', 'more than usual?' -- it is "
+            "the only way to answer those, because a single count has nothing "
+            "to be compared against."
+        ),
+    )
 
 
 class ThreatOverviewArgs(_ToolArgs):
@@ -214,6 +228,77 @@ class RunSqlArgs(_ToolArgs):
         default=None,
         description="Why no structured tool could answer this. Shown to the operator.",
     )
+
+
+# --------------------------------------------------------------------------- #
+# Admin tools -- published only when the request proved the admin token          #
+# --------------------------------------------------------------------------- #
+class PurgeSimulatedArgs(_ToolArgs):
+    """Arguments for ``purge_simulated_detections`` -- destructive, confirmed.
+
+    Deliberately narrow: the tool's *scope* (rows flagged ``raw.sim``) is fixed
+    in Python and is not an argument, so no argument can widen it onto real
+    captured frames.
+    """
+
+    minutes: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=525_600,
+        description=(
+            "Only purge simulated rows from the last this-many minutes. Omit to "
+            "purge every simulated row ever written."
+        ),
+    )
+    sim_batch: Optional[str] = Field(
+        default=None,
+        description=(
+            "Only purge one simulation batch, by the raw.sim_batch id that "
+            "POST /simulate and run_simulation return."
+        ),
+    )
+
+
+class DeleteDetectionsArgs(_ToolArgs):
+    """Arguments for ``delete_detections`` -- destructive, confirmed.
+
+    At least one filter is required.  An unfiltered delete is refused by the
+    tool rather than expressed here, so the model is told *why* instead of
+    receiving a schema error it cannot interpret.
+    """
+
+    minutes: Optional[int] = Field(
+        default=None,
+        ge=1,
+        le=525_600,
+        description="Delete only detections from the last this-many minutes.",
+    )
+    label: Optional[str] = Field(
+        default=None,
+        description=(
+            "Delete only this attack class, in the database spelling: Deauth, "
+            "Disas, (Re)Assoc, RogueAP, Krack, Kr00k, Evil_Twin, SSDP."
+        ),
+    )
+    src_mac: Optional[str] = Field(
+        default=None,
+        description="Delete only frames transmitted by this MAC (802.11 addr2).",
+    )
+
+
+class ExportReportArgs(_ToolArgs):
+    """Arguments for ``export_report``: the report summary for one window."""
+
+    days: int = Field(
+        default=30,
+        ge=1,
+        le=3650,
+        description="Reporting window in days, matching POST /reports/export.",
+    )
+
+
+class GetRuntimeConfigArgs(_ToolArgs):
+    """``get_runtime_config`` takes no arguments; every secret is redacted."""
 
 
 def json_schema(model: type[BaseModel]) -> Dict[str, Any]:

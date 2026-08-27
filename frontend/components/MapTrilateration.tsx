@@ -42,6 +42,7 @@ import { DataTable, type DataTableColumn } from "@/components/hs/data-table"
 import { Panel, PanelGrid } from "@/components/hs/panel"
 import { StatusPill } from "@/components/hs/status-pill"
 import { LoadError, Readout, ReadoutRow, Unreported } from "@/components/console/frame"
+import { SourcePicker } from "@/components/map/source-picker"
 import { Quantity } from "@/components/quantity"
 import {
   Select,
@@ -56,6 +57,10 @@ import { useLocale, useT, type TranslationKey } from "@/lib/i18n"
 import type { AP, LatLng, RSSIPoint } from "@/components/LeafletMap"
 
 const MAP_HEIGHT = 460
+
+/** One frozen empty array, so "still loading" does not hand the picker a new
+ *  `sources` reference on every render. */
+const NO_SOURCES: readonly OffenderRow[] = []
 
 const LeafletMap = dynamic(() => import("@/components/LeafletMap"), {
   ssr: false,
@@ -131,6 +136,9 @@ export default function MapTrilateration() {
   const [sources, setSources] = React.useState<OffenderRow[] | null>(null)
   const [sa, setSa] = React.useState<string>("")
   const [minutes, setMinutes] = React.useState(1440)
+
+  const sourceLabelId = React.useId()
+  const sourceFieldId = React.useId()
 
   const [rssi, setRssi] = React.useState<RSSIPoint[] | null>(null)
   const [estimate, setEstimate] = React.useState<Estimate | null>(null)
@@ -316,27 +324,22 @@ export default function MapTrilateration() {
       >
         <div className="flex flex-wrap items-end gap-3">
           <div className="flex min-w-0 flex-1 basis-56 flex-col gap-1.5">
-            <span className="hs-label">{t("map.source")}</span>
+            <span className="hs-label" id={sourceLabelId}>
+              {t("map.source")}
+            </span>
             {sources !== null && sources.length === 0 ? (
               <span className="text-ink-2 text-xs">{t("map.sourceEmpty")}</span>
             ) : (
-              <Select dir={dir} value={sa} onValueChange={setSa}>
-                <SelectTrigger className="w-full" aria-label={t("map.sourcePick")}>
-                  <SelectValue placeholder={t("map.sourcePick")} />
-                </SelectTrigger>
-                <SelectContent>
-                  {(sources ?? []).map((row) => (
-                    <SelectItem key={row.wlan_sa} value={row.wlan_sa}>
-                      {/* A MAC beside a count: the MAC is pinned LTR, the count
-                          is a plain figure in the reader's own direction. */}
-                      <span className="flex items-center gap-2">
-                        <span className="hs-num">{row.wlan_sa.toUpperCase()}</span>
-                        <span className="hs-num text-ink-2 text-xs">{f.number(row.count)}</span>
-                      </span>
-                    </SelectItem>
-                  ))}
-                </SelectContent>
-              </Select>
+              // Not a `Select`: twenty-four addresses that differ only in their
+              // last two octets are read, not chosen. See the note at the top of
+              // `components/map/source-picker.tsx`.
+              <SourcePicker
+                id={sourceFieldId}
+                labelledBy={sourceLabelId}
+                sources={sources ?? NO_SOURCES}
+                value={sa}
+                onChange={setSa}
+              />
             )}
           </div>
 

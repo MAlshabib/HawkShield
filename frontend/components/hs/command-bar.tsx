@@ -70,10 +70,23 @@ export function CommandBar({ className }: { className?: string }) {
       </div>
 
       {/* Field. A two-state toggle: it always writes an explicit choice, so the
-          operator's decision survives a change in the OS setting. */}
+          operator's decision survives a change in the OS setting.
+
+          The second argument is where the field's circular reveal starts (see
+          `components/providers/theme-provider.tsx`). It is taken from the
+          button's own box rather than from `event.clientX/Y`, because a
+          keyboard activation reports (0, 0) and the reveal would start from the
+          screen corner — and the centre of the control is the honest origin for
+          a pointer press too, since that is the thing that caused it. */}
       <button
         type="button"
-        onClick={() => setTheme(isDark ? "light" : "dark")}
+        onClick={(event) => {
+          const box = event.currentTarget.getBoundingClientRect()
+          setTheme(isDark ? "light" : "dark", {
+            x: box.left + box.width / 2,
+            y: box.top + box.height / 2,
+          })
+        }}
         aria-pressed={isDark}
         aria-label={t("command.theme.toggle")}
         title={isDark ? t("command.theme.dark") : t("command.theme.light")}

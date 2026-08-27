@@ -23,6 +23,20 @@ Bad tool names and arguments that fail validation are results, never exceptions:
 the model reads the error and corrects itself, which is the whole point of using
 a tool-calling model rather than a single-shot one.
 
+**Capability is an argument, not a conversation.**  ``run_agent`` takes
+``is_admin`` and ``confirmation`` as plain Python parameters.  The router
+resolves both from request headers *before* this function is entered, and
+nothing inside the loop recomputes them: no model turn, no tool result and no
+string from the database can reach the code that decided them.  The registry is
+built from ``is_admin`` once, so a non-admin run is not a run whose admin calls
+are refused -- it is a run in which the admin tools have no names.
+
+The one value that flows the other way is a confirmation token, and it is
+deliberately blocked: :func:`_redact_for_model` removes ``confirm_token`` from
+every tool result before it becomes a ``role: "tool"`` message, while the
+``tool_result`` event keeps it for the operator's UI.  So the model can report
+that a confirmation is needed and cannot supply one.
+
 **Streaming.**  Only the final ``tool_choice="none"`` composing turn streams, as
 ``token`` events.  The intermediate tool-selection turns are deliberately *not*
 streamed -- see :func:`backend.app.agent.llm.chat_stream` for why reassembling
@@ -44,10 +58,11 @@ from typing import Any, Callable, Dict, List, Optional, Sequence, Tuple, Union
 
 from backend.app.agent import events as ev
 from backend.app.agent import llm, tools as tools_module
+from backend.app.agent.confirm import Confirmation
 from backend.app.agent.events import Emitter
 from backend.app.agent.llm import SaqrUnavailable
 from backend.app.agent.prompts import build_system_prompt
-from backend.app.agent.tools import ToolSpec
+from backend.app.agent.tools import ToolContext, ToolSpec
 from backend.app.config import settings
 
 logger = logging.getLogger(__name__)
@@ -135,16 +150,42 @@ def _run_tool_sync(
     args: Dict[str, Any],
     session_factory: SessionFactory,
     registry: Dict[str, ToolSpec],
+    ctx: ToolContext,
 ) -> Dict[str, Any]:
     """Execute one tool on a worker thread, with its own short-lived session."""
     spec = registry.get(name)
     if spec is not None and spec.needs_db and session_factory is not None:
         session = session_factory()
         try:
-            return tools_module.execute(name, args, session, registry)
+            return tools_module.execute(name, args, session, registry, ctx)
         finally:
             session.close()
-    return tools_module.execute(name, args, None, registry)
+    return tools_module.execute(name, args, None, registry, ctx)
+
+
+def _redact_for_model(result: Dict[str, Any]) -> Dict[str, Any]:
+    """The tool result as the *model* may see it.
+
+    Strips ``confirm_token``.  A destructive tool mints that token for the
+    operator's client, which returns it in a request header; putting it in front
+    of the model would hand the model the one value it would need to authorise
+    its own destructive call in the very next turn.  So the model is told a
+    confirmation exists and is never told what it is, which makes "the model
+    cannot confirm its own delete" a property of the data flow rather than a
+    hope about the model's behaviour.
+
+    The ``tool_result`` event is built from the *unredacted* result, so the UI
+    still receives the token it needs.
+    """
+    if not any(key in result for key in tools_module.CLIENT_ONLY_FIELDS):
+        return result
+    redacted = {k: v for k, v in result.items() if k not in tools_module.CLIENT_ONLY_FIELDS}
+    redacted["confirmation"] = (
+        "A confirmation token was issued to the operator's interface. You have "
+        "not been given it and cannot use it. Report the proposal and ask the "
+        "operator to confirm."
+    )
+    return redacted
 
 
 def _assistant_message(message: Any, calls: Sequence[Any]) -> Dict[str, Any]:
@@ -283,12 +324,22 @@ async def run_agent(
     model: Optional[str] = None,
     run_id: Optional[str] = None,
     stream_tokens: bool = False,
+    is_admin: bool = False,
+    confirmation: Optional[Confirmation] = None,
 ) -> AgentResult:
     """Answer ``question`` by calling tools, and return the finished answer.
 
     ``session_factory`` is a zero-argument callable returning a SQLAlchemy
     ``Session`` -- a ``sessionmaker`` bound to the request's engine, so a
     ``get_db`` dependency override is honoured.
+
+    ``is_admin`` and ``confirmation`` are the request's capability, resolved by
+    the router from ``SAQR_ADMIN_TOKEN`` and ``X-HawkShield-Confirm`` *before*
+    this coroutine is entered.  They are ordinary arguments and are never
+    re-derived from the conversation: the registry is built from ``is_admin``
+    once, at the top, so a non-admin run is one in which the operator tools were
+    never named to the model, and ``confirmation`` is re-validated against the
+    server's own store at the moment it is spent.
 
     ``emitter`` is an :class:`~backend.app.agent.events.Emitter`, a plain
     ``(event, payload)`` callable, or ``None``.  ``stream_tokens`` additionally
@@ -307,7 +358,13 @@ async def run_agent(
     if loc not in ("en", "ar"):
         loc = "en"
     active_model = model or settings.saqr_model
-    specs = registry if registry is not None else tools_module.build_registry()
+    admin = bool(is_admin)
+    ctx = ToolContext(is_admin=admin, confirmation=confirmation)
+    specs = (
+        registry
+        if registry is not None
+        else tools_module.build_registry(is_admin=admin)
+    )
     tool_defs = tools_module.tool_definitions(specs)
 
     max_steps = int(settings.SAQR_MAX_STEPS)
@@ -319,7 +376,7 @@ async def run_agent(
     deadline = started + float(settings.SAQR_RUN_TIMEOUT_S)
 
     messages: List[Dict[str, Any]] = [
-        {"role": "system", "content": build_system_prompt(loc)},
+        {"role": "system", "content": build_system_prompt(loc, is_admin=admin)},
         {"role": "user", "content": question.strip()},
     ]
 
@@ -344,9 +401,16 @@ async def run_agent(
 
     # Emitted (and, on the SSE path, flushed) before the first model call: the
     # pane must not sit blank through 1-3s of first-token latency.
+    # The model identifier is deliberately absent from the event: it is a server
+    # detail the client has no use for. It is logged here instead, where an
+    # operator debugging a run can find it and a visitor cannot.
+    logger.info(
+        "Saqr run %s starting: locale=%s model=%s admin=%s tools=%d",
+        em.run_id, loc, active_model, admin, len(specs),
+    )
     await em.run_start(
-        question=question.strip(), locale=loc, model=active_model,
-        max_steps=max_steps, tools=list(specs),
+        question=question.strip(), locale=loc,
+        max_steps=max_steps, tools=list(specs), is_admin=admin,
     )
 
     try:
@@ -459,7 +523,8 @@ async def run_agent(
                         try:
                             payload = await asyncio.wait_for(
                                 asyncio.to_thread(
-                                    _run_tool_sync, name, args, session_factory, specs
+                                    _run_tool_sync,
+                                    name, args, session_factory, specs, ctx,
                                 ),
                                 timeout=tool_timeout,
                             )
@@ -516,7 +581,10 @@ async def run_agent(
                 )
 
                 body, truncated = _truncate(
-                    json.dumps(payload, ensure_ascii=False, default=str), max_chars
+                    json.dumps(
+                        _redact_for_model(payload), ensure_ascii=False, default=str
+                    ),
+                    max_chars,
                 )
                 if truncated:
                     logger.info("Truncated %s result to %d chars", name, max_chars)

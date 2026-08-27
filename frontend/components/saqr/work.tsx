@@ -7,12 +7,28 @@
  * console frame on a document reads as a screenshot pasted into a report. The
  * mechanism is identical and nothing is hidden — which tool was reached for,
  * with which arguments, the literal SELECT that ran and what came back — but it
- * is set as **numbered, labelled steps**: a heading row naming the tool, the
- * arguments under it, and the result on its own hairline card.
+ * is set as **numbered, labelled steps**.
+ *
+ * Each step is now **one row that opens**. Every step used to render its
+ * arguments, its result panel, its table and its SQL inline, and the effect was
+ * that the answer — the thing a reader actually came for — arrived after two
+ * screens of evidence. So the evidence is one click away instead of in the way:
+ * a summary row carries the step number, the tool, a one-line result and the
+ * duration, and opening it reveals the arguments, the result table and the SQL.
+ *
+ * What a reader must not have to open the row to learn is **on** the row: a
+ * step that **failed**, one that was answered from **cache**, one that
+ * **writes data**, and one that is **waiting for a confirmation** all say so
+ * while collapsed. Those are precisely the steps somebody needs to notice, and
+ * a disclosure that hides them is a disclosure that lies by omission.
+ *
+ * A confirmation card is never inside the collapsed region. Consent that has to
+ * be found is not consent.
  *
  * Everything here comes off the wire. There is no simulated typing, no
  * placeholder tool call and no demo transcript: if the stream did not send it,
- * it is not on screen.
+ * it is not on screen. Which language model answers is **not** on the wire and
+ * is not on screen either.
  *
  * Four wire facts are load-bearing in here:
  *
@@ -29,25 +45,30 @@
  *
  * IBM Plex Mono carries no Arabic at all, so every localised string set inside
  * a mono context here carries `font-sans` explicitly; conversely every Latin
- * technical run (a model id, a tool name, a SQL fragment, the backend's own
- * summary) is wrapped in `<Ltr>` so its neutral punctuation cannot mirror
- * inside an Arabic paragraph.
+ * technical run (a tool name, a SQL fragment, the backend's own summary) is
+ * wrapped in `<Ltr>` so its neutral punctuation cannot mirror inside an Arabic
+ * paragraph.
  */
 import * as React from "react"
 import { ChevronDown } from "lucide-react"
 
 import { Eyebrow } from "@/components/hs/eyebrow"
-import { Panel } from "@/components/hs/panel"
 import { StatusPill } from "@/components/hs/status-pill"
 import { TerminalLine } from "@/components/hs/terminal-line"
+import { CollapsibleRegion } from "@/components/saqr/collapsible"
+import { SaqrConfirmCard } from "@/components/saqr/confirm"
 import { SaqrResultPreview, SaqrValue } from "@/components/saqr/result-preview"
 import { Code, Ltr, useFormatters } from "@/lib/format"
 import { useT, type Translate, type TranslationKey } from "@/lib/i18n"
 import {
+  deletedCount,
   failureKey,
   isOmitted,
+  readConfirmation,
   resultCount,
+  toolErrorKey,
   toolLabelKey,
+  type SaqrConfirmState,
   type SaqrEvent,
   type SaqrFailure,
   type SaqrPhase,
@@ -58,50 +79,25 @@ import {
 import { cn } from "@/lib/utils"
 
 /** Locally narrowed members of the event union, for `find` / `filter` guards. */
-type SaqrRunStartEvent = Extract<SaqrEvent, { type: "run_start" }>
 type SaqrErrorEvent = Extract<SaqrEvent, { type: "error" }>
 
-/* ── Disclosure ──────────────────────────────────────────────────────────── */
-
 /**
- * A native `<details>`, restyled onto paper.
+ * Everything a step needs to offer a confirmation, in one prop.
  *
- * Native rather than React state for two reasons: an open SQL block has to
- * survive the document re-rendering on every animation frame while tokens
- * stream, and `<details>` stays keyboard-operable and find-in-page-searchable
- * for free. The chevron points along the reading direction when closed, which
- * is why the rotation is mirrored rather than fixed.
+ * Optional throughout: with today's backend no result carries a confirmation,
+ * so nothing here is reachable and nothing renders. It is wired now so that the
+ * day the field appears on the wire the card appears with it, rather than the
+ * page quietly performing a destructive action or quietly dropping it.
  */
-function Disclosure({
-  summary,
-  children,
-  className,
-}: {
-  summary: React.ReactNode
-  children: React.ReactNode
-  className?: string
-}) {
-  return (
-    <details className={cn("group min-w-0", className)}>
-      <summary
-        className={cn(
-          "hs-label text-ink-2 hover:text-ink-0 flex w-fit cursor-pointer list-none items-center gap-1.5",
-          "rounded-sm transition-colors",
-          "[&::-webkit-details-marker]:hidden"
-        )}
-      >
-        <ChevronDown
-          aria-hidden="true"
-          className={cn(
-            "size-3 shrink-0 transition-transform",
-            "-rotate-90 group-open:rotate-0 rtl:rotate-90 rtl:group-open:rotate-0"
-          )}
-        />
-        {summary}
-      </summary>
-      <div className="mt-2.5 min-w-0">{children}</div>
-    </details>
-  )
+export type SaqrConfirmBinding = {
+  /** The question the action belongs to; re-sent verbatim with the token. */
+  question: string
+  /** Where each token stands, keyed by the token itself. */
+  states: Record<string, SaqrConfirmState>
+  /** A run is open, so a confirmation would be refused. */
+  busy: boolean
+  onConfirm: (token: string, question: string) => void
+  onCancel: (token: string) => void
 }
 
 /* ── Arguments ───────────────────────────────────────────────────────────── */
@@ -154,103 +150,233 @@ function countLabel(t: Translate, result: SaqrToolResultEvent, formatted: (n: nu
   return t(key, { n: formatted(count) })
 }
 
-function Step({ activity }: { activity: SaqrToolActivity }) {
+function Step({
+  activity,
+  confirm,
+}: {
+  activity: SaqrToolActivity
+  confirm?: SaqrConfirmBinding
+}) {
   const t = useT()
   const f = useFormatters()
-  const result = activity.result
+  // React state rather than a native `<details>`: the open height is animated
+  // from `0fr` to `1fr`, which needs the content measured, and `<details>` does
+  // not render its content while closed. The state survives the document
+  // re-rendering on every animation frame while tokens stream, because the row
+  // is keyed `(step, call_id)` and is never remounted.
+  const [open, setOpen] = React.useState(false)
+  const regionId = React.useId()
 
+  const result = activity.result
   const rows = result ? countLabel(t, result, f.number) : null
   const hasPreview = Boolean(
     result && !isOmitted(result.data) && Object.keys(result.data ?? {}).length > 0
   )
+  const confirmation = readConfirmation(result)
+  const confirmState = confirmation?.token ? confirm?.states[confirmation.token] : undefined
+  const awaitingConfirmation = Boolean(confirmation) && confirmState === undefined
+  // The count of rows a destructive tool actually removed. Present only on
+  // the call a person authorised; a proposal carries an estimate instead.
+  const deleted = deletedCount(result)
+  // A localised sentence for a tool-level refusal, when the code is one this
+  // build knows. Otherwise the server's own text stands.
+  const errorKey = result?.ok === false ? toolErrorKey(result.error?.code) : null
+
+  // The one line a reader gets without opening the row.
+  //
+  // A **proposal takes precedence over every other line**, including the
+  // backend's own summary. `summary` on a proposal is phrased conditionally
+  // — "would delete 128 rows" — and a reader scanning a column of rows reads
+  // the number, not the mood of the verb. Saying it in words is the only way
+  // this row cannot be mistaken for a deletion that happened.
+  const serverLine = result?.summary?.trim() ?? ""
+  const headline = confirmation ? t("saqr.confirm.proposalRow") : serverLine
 
   return (
-    <li className="flex min-w-0 flex-col gap-3">
-      {/* The step head. The number is the wire's own `step`, not a running
-          index: two calls the model issued in one step legitimately share it,
-          and renumbering them would misreport the loop. */}
-      <div className="flex min-w-0 flex-wrap items-baseline gap-x-3 gap-y-1.5">
-        <span className="hs-label text-accent-cta shrink-0">
-          {t("saqr.trace.step", { n: activity.step })}
-        </span>
-        <span className="text-ink-0 min-w-0 text-base font-medium">
-          {t(toolLabelKey(activity.labelKey))}
-        </span>
-        <Code className="text-ink-2 text-xs">{activity.tool}</Code>
-        {activity.mutating && (
-          <StatusPill tone="high">{t("saqr.trace.mutating")}</StatusPill>
-        )}
-      </div>
+    <li className="flex min-w-0 flex-col gap-2">
+      <h3 className="min-w-0">
+        <button
+          type="button"
+          onClick={() => setOpen((prev) => !prev)}
+          aria-expanded={open}
+          aria-controls={regionId}
+          className={cn(
+            "border-rule-soft bg-paper-1 hs-elev group flex w-full min-w-0 items-start gap-3",
+            "rounded-lg border px-3 py-2.5 text-start transition-colors",
+            "hover:bg-paper-2",
+            // The row is a heading and a control at once; the label spells out
+            // which of the two actions the click performs.
+            "cursor-pointer"
+          )}
+        >
+          <ChevronDown
+            aria-hidden="true"
+            className={cn(
+              "text-ink-2 mt-1 size-3.5 shrink-0 transition-transform duration-200",
+              "motion-reduce:transition-none",
+              open ? "rotate-0" : "-rotate-90 rtl:rotate-90"
+            )}
+          />
 
-      <ToolArgs args={activity.args} />
+          <span className="flex min-w-0 flex-1 flex-col gap-1.5">
+            {/* The number is the wire's own `step`, not a running index: two
+                calls the model issued in one step legitimately share it, and
+                renumbering them would misreport the loop. */}
+            <span className="flex min-w-0 flex-wrap items-baseline gap-x-2.5 gap-y-1.5">
+              <span className="hs-label text-accent-cta shrink-0">
+                {t("saqr.trace.step", { n: activity.step })}
+              </span>
+              <span className="text-ink-0 min-w-0 text-sm font-medium">
+                {t(toolLabelKey(activity.labelKey))}
+              </span>
+              <Code className="text-ink-2 hidden text-xs sm:inline">{activity.tool}</Code>
 
-      {!result ? (
-        // The documented loading affordance: a line travelling down the card
-        // that is filling in, rather than a spinner that says "somewhere".
-        <Panel loading className="min-h-16">
-          <span className="text-ink-2 text-sm">{t("saqr.trace.running")}</span>
-        </Panel>
-      ) : (
-        <Panel className="min-w-0">
-          <div className="flex min-w-0 flex-col gap-3">
-            {/* What came back, read left to right: verdict, how long, how much. */}
+              {/* The four states a reader must not have to open the row to see. */}
+              {activity.mutating && (
+                <StatusPill tone="high">{t("saqr.trace.mutating")}</StatusPill>
+              )}
+              {awaitingConfirmation && (
+                <StatusPill tone="high" dot>
+                  {t("saqr.confirm.pending")}
+                </StatusPill>
+              )}
+              {result && !result.ok && (
+                <StatusPill tone="critical">{t("saqr.trace.failed")}</StatusPill>
+              )}
+              {/* A real deletion, and only ever a real one: `deleted` appears
+                  on the authorised call and never on the proposal. */}
+              {deleted !== null && (
+                <StatusPill tone="critical" variant="solid">
+                  {t("saqr.confirm.deleted", { n: f.number(deleted) })}
+                </StatusPill>
+              )}
+              {result?.cached && <StatusPill tone="info">{t("saqr.trace.cached")}</StatusPill>}
+              {!result && (
+                <StatusPill tone="info" live>
+                  {t("saqr.trace.running")}
+                </StatusPill>
+              )}
+            </span>
+
+            {/* One line, always one line. The backend's summary is English in
+                both locales, so it is a mono Latin island; it is clipped rather
+                than wrapped, because a summary row that grows to four lines is
+                not a summary row. */}
+            <span className="text-ink-2 block min-w-0 truncate text-xs">
+              {headline ? (
+                <Ltr className="font-mono">{headline}</Ltr>
+              ) : result ? (
+                (rows ?? t(result.ok ? "saqr.step.done" : "saqr.trace.failed"))
+              ) : (
+                t("saqr.step.pending")
+              )}
+            </span>
+          </span>
+
+          <span className="flex shrink-0 flex-col items-end gap-1.5">
+            {result && (
+              <span className="hs-num text-ink-2 text-xs">
+                {t("saqr.trace.duration", { ms: f.number(result.duration_ms) })}
+              </span>
+            )}
+            {/* The accessible name of the toggle. Visually redundant with the
+                chevron, which is why it is only here. */}
+            <span className="sr-only">{open ? t("saqr.step.close") : t("saqr.step.open")}</span>
+          </span>
+        </button>
+      </h3>
+
+      {/* Consent is never behind a disclosure. This card sits outside the
+          collapsible region on purpose: a destructive action a reader has to go
+          looking for is a destructive action they will confirm without reading. */}
+      {confirmation && confirm && (
+        <SaqrConfirmCard
+          confirmation={confirmation}
+          question={confirm.question}
+          state={confirmState}
+          busy={confirm.busy}
+          onConfirm={confirm.onConfirm}
+          onCancel={confirm.onCancel}
+        />
+      )}
+
+      {/* The disclosure itself — see `collapsible.tsx` for why it is built this
+          way rather than as a native `<details>`. */}
+      <CollapsibleRegion
+        id={regionId}
+        open={open}
+        // The hairline is the only thing tying the detail to the row above it,
+        // and it is drawn on the inline-start edge in both directions because
+        // `border-s` is logical.
+        // `ms-5` puts the rule under the chevron column and `ps-4` brings the
+        // detail's text back out to where the row's own label sits, so the
+        // opened block reads as a continuation of the row rather than as a
+        // second card that happens to be underneath it.
+        innerClassName="border-rule ms-5 flex flex-col gap-3 border-s ps-4 pt-3 pb-2"
+      >
+        <ToolArgs args={activity.args} />
+
+        {!result ? (
+          <p className="text-ink-3 text-xs">{t("saqr.trace.running")}</p>
+        ) : (
+          <>
+            {/* What came back: the verdict, and how much of it there was. The
+                duration is on the collapsed row and is not repeated here. */}
             <div className="flex flex-wrap items-center gap-x-3 gap-y-2">
               {result.ok ? (
                 <Eyebrow>{t("saqr.doc.reported")}</Eyebrow>
               ) : (
                 <StatusPill tone="critical">{t("saqr.trace.failed")}</StatusPill>
               )}
-              <span className="hs-num text-ink-2 text-xs">
-                {t("saqr.trace.duration", { ms: f.number(result.duration_ms) })}
-              </span>
-              {result.ok && rows && (
-                <>
-                  <span className="text-ink-3 text-xs" aria-hidden="true">
-                    ·
-                  </span>
-                  <span className="text-ink-2 text-xs">{rows}</span>
-                </>
-              )}
-              {result.cached && <StatusPill tone="info">{t("saqr.trace.cached")}</StatusPill>}
+              {result.ok && rows && <span className="text-ink-2 text-xs">{rows}</span>}
             </div>
 
-            {/* The backend's own one-line description of the result. It is
-                evidence beside the answer rather than part of it, and is
-                deliberately English in both locales — so it is isolated. */}
-            {result.summary && (
-              <p className="min-w-0">
-                <Ltr className="text-ink-1 font-mono text-xs break-words">{result.summary}</Ltr>
-              </p>
-            )}
+            {/* The refusal in the reader's language, with the server's own
+                English kept underneath as operator text rather than shown as
+                the headline a person reads. */}
+            {errorKey && <p className="text-ink-1 text-sm">{t(errorKey)}</p>}
 
-            {result.error?.hint && (
+            {(result.error?.message || result.error?.hint) && (
               <p className="min-w-0">
                 <Ltr className="text-ink-2 font-mono text-xs break-words">
-                  {result.error.hint}
+                  {[result.error?.message, result.error?.hint].filter(Boolean).join(" — ")}
                 </Ltr>
               </p>
             )}
 
-            {(hasPreview || isOmitted(result.data)) && (
-              <SaqrResultPreview result={result} />
+            {/* The server's own sentence about the result. On a proposal it is
+                the conditional "would delete…" wording, which belongs here
+                beside the card and not on the collapsed row. */}
+            {serverLine && (
+              <p className="min-w-0">
+                <Ltr className="text-ink-1 font-mono text-xs break-words">{serverLine}</Ltr>
+              </p>
             )}
 
+            {(hasPreview || isOmitted(result.data)) && <SaqrResultPreview result={result} />}
+
             {result.sql_preview && (
-              // Kept, because seeing the literal SELECT is the strongest single
-              // piece of evidence that this is a real query and not a narrated
-              // one — and kept quiet, because it is evidence, not the point.
-              <Disclosure summary={t("saqr.trace.sql")}>
+              // The literal SELECT is the strongest single piece of evidence
+              // that this is a real query and not a narrated one, so once the
+              // step is open it is shown rather than hidden behind a second
+              // disclosure inside the first.
+              <div className="flex min-w-0 flex-col gap-1.5">
+                <span className="hs-label">{t("saqr.trace.sql")}</span>
+                {/* `tabIndex` is what makes a scrolling region reachable from
+                    the keyboard; the block scrolls itself so the document
+                    column never widens. */}
                 <pre
                   dir="ltr"
+                  tabIndex={0}
                   className="bg-paper-2 border-rule overflow-x-auto rounded-md border p-3"
                 >
                   <Code className="text-ink-1 text-xs whitespace-pre">{result.sql_preview}</Code>
                 </pre>
-              </Disclosure>
+              </div>
             )}
-          </div>
-        </Panel>
-      )}
+          </>
+        )}
+      </CollapsibleRegion>
     </li>
   )
 }
@@ -377,30 +503,32 @@ export function SaqrWork({
   run,
   phase,
   isRunning,
+  confirm,
   className,
 }: {
   run: SaqrRun
   phase: SaqrPhase | null
   isRunning: boolean
+  confirm?: SaqrConfirmBinding
   className?: string
 }) {
   const t = useT()
   const f = useFormatters()
 
   const activities = React.useMemo(() => foldActivities(run.events), [run.events])
-  // Narrowed with explicit predicates: `find`/`filter` on a discriminated union
-  // return the union, and reading `.model` off it would not compile.
-  const start = React.useMemo(
-    () => run.events.find((event): event is SaqrRunStartEvent => event.type === "run_start"),
+  const started = React.useMemo(
+    () => run.events.some((event) => event.type === "run_start"),
     [run.events]
   )
+  // Narrowed with an explicit predicate: `filter` on a discriminated union
+  // returns the union, and reading `.code` off it would not compile.
   const agentErrors = React.useMemo(
     () => run.events.filter((event): event is SaqrErrorEvent => event.type === "error"),
     [run.events]
   )
 
   return (
-    <section className={cn("flex min-w-0 flex-col gap-4", className)}>
+    <section className={cn("flex min-w-0 flex-col gap-3", className)}>
       <header className="border-rule flex flex-wrap items-baseline gap-x-4 gap-y-1 border-b pb-2">
         <Eyebrow>{t("saqr.doc.work")}</Eyebrow>
         {/* The count describes the list below it, so it counts invocations and
@@ -409,6 +537,11 @@ export function SaqrWork({
             and a header reading "2 steps" over two rows both labelled "Step 1"
             is a contradiction the reader has to resolve. The loop's own step
             figure is still reported, in the footer's event tally. */}
+        {/* Descriptive, not a capability. The server decided this before the
+            run started and reported it; the console repeats it so a reader
+            knows why a step could touch data, and nothing here reads it back
+            as permission for anything. */}
+        {run.isAdmin && <StatusPill tone="high">{t("saqr.doc.operator")}</StatusPill>}
         {activities.length > 0 && (
           <span className="hs-label ms-auto">
             {t("saqr.footer.toolCalls", { n: f.number(activities.length) })}
@@ -416,30 +549,21 @@ export function SaqrWork({
         )}
       </header>
 
-      {start && (
-        <p className="text-ink-2 flex min-w-0 flex-wrap items-baseline gap-x-2.5 gap-y-1 text-xs">
-          <span className="hs-label">{t("saqr.doc.model")}</span>
-          <Ltr className="font-mono break-words">{start.model}</Ltr>
-          <span aria-hidden="true">·</span>
-          <span>{t("saqr.trace.toolsAvailable", { n: f.number(start.tools.length) })}</span>
-        </p>
-      )}
-
       {activities.length > 0 && (
-        <ol className="flex min-w-0 flex-col gap-7">
+        <ol className="flex min-w-0 flex-col gap-2">
           {activities.map((activity) => (
-            <Step key={activity.key} activity={activity} />
+            <Step key={activity.key} activity={activity} confirm={confirm} />
           ))}
         </ol>
       )}
 
       {/* The honest empty case: the loop finished without reaching for a tool,
           which happens for a definitional question and is worth stating. */}
-      {activities.length === 0 && !isRunning && start && !run.failure && (
+      {activities.length === 0 && !isRunning && started && !run.failure && (
         <p className="text-ink-2 text-sm">{t("saqr.doc.noWork")}</p>
       )}
 
-      {isRunning && !start && <p className="text-ink-3 text-sm">{t("saqr.doc.awaiting")}</p>}
+      {isRunning && !started && <p className="text-ink-3 text-sm">{t("saqr.doc.awaiting")}</p>}
 
       {isRunning && phase && <PhaseLine phase={phase} />}
 

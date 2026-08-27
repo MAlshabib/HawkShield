@@ -11,41 +11,54 @@
  * start lying the first time one moved, which is exactly the kind of quiet
  * untruth this product does not get to tell.
  *
- * The starter questions are offered in both languages at once. Saqr answers in
- * the language of the interface, so the second block is how a judge sees it
- * read Arabic without first switching the whole console — and how they see it
- * read English from an Arabic one.
+ * The starter questions are offered **in the reading language only**. Saqr
+ * answers in the language it was asked in, so an English chip on an Arabic page
+ * switches the language of the answer without switching the language of the
+ * interface — the reader ends up with an English report inside an Arabic
+ * console and no way to tell why. Switching locale switches the questions with
+ * it, which is the honest version of the same demonstration.
+ *
+ * The catalogue is filtered to what a **visitor** may be shown: `advertisedTools`
+ * drops anything flagged `mutating`. A tool that writes is not something to
+ * advertise on a console somebody is reading over the operator's shoulder, and
+ * the backend already gates the writing tools behind the admin header — this is
+ * the second lock on the same door, and it is still a filter over the fetched
+ * catalogue rather than a hardcoded exclusion.
+ *
+ * The six are chosen to reach six different tools rather than six phrasings of
+ * one, and three of them need two tools to answer: an opener over the current
+ * picture, a bounded listing, a located source, a knowledge question that also
+ * has to check the data, an aggregation, and the sensor's own health.
  */
 import * as React from "react"
 
 import { Eyebrow } from "@/components/hs/eyebrow"
-import { StatusPill } from "@/components/hs/status-pill"
 import { TechnicalText } from "@/components/saqr/markdown"
 import { Code } from "@/lib/format"
-import { useLocale, useT, type Locale, type TranslationKey } from "@/lib/i18n"
-import { ar } from "@/lib/i18n/ar"
-import { en } from "@/lib/i18n/en"
-import { toolLabelKey, type SaqrToolInfo } from "@/lib/saqr"
+import { useT, type TranslationKey } from "@/lib/i18n"
+import { advertisedTools, toolLabelKey, type SaqrToolInfo } from "@/lib/saqr"
 import { cn } from "@/lib/utils"
 
 /**
- * Chosen to reach five different tools rather than five phrasings of one: a
- * broad opener (`threat_overview`), a conceptual question
- * (`explain_attack_class`), a bounded listing (`query_threats`), an aggregation
- * (`aggregate_threats`) and a second aggregation over a different dimension.
+ * The five that are always offered, in reading order. `q2` is the stand-in for
+ * the located-source question when the sensor has no source to name.
  */
 const SUGGESTIONS: readonly TranslationKey[] = [
   "saqr.suggested.q1",
-  "saqr.suggested.q5",
   "saqr.suggested.q3",
+  "saqr.suggested.q5",
   "saqr.suggested.q4",
-  "saqr.suggested.q2",
+  "saqr.suggested.q7",
 ]
 
-/** Filled with a MAC the sensor has actually seen; omitted when there is none. */
+/** Slot 2, filled with a MAC the sensor has actually seen. */
 const MAC_SUGGESTION: TranslationKey = "saqr.suggested.q6"
 
-const DICTIONARIES: Record<Locale, Record<string, string>> = { en, ar }
+/** What takes that slot when there is no such MAC. Never a fabricated one. */
+const MAC_FALLBACK: TranslationKey = "saqr.suggested.q2"
+
+/** Where the located-source question sits among the others. */
+const MAC_SLOT = 2
 
 /**
  * A paper slip, not a pill: a starter question is a whole sentence and wraps to
@@ -94,23 +107,27 @@ export function SaqrEmptyState({
 }: {
   tools: readonly SaqrToolInfo[]
   catalogueFailed: boolean
-  /** The busiest source MAC the sensor has stored, for the specific-MAC chip. */
+  /** The busiest source MAC the sensor has stored, for the located-source chip. */
   topMac: string | null
   onPick: (question: string) => void
   className?: string
 }) {
   const t = useT()
-  const { locale } = useLocale()
-  const other: Locale = locale === "ar" ? "en" : "ar"
 
+  const shown = React.useMemo(() => advertisedTools(tools), [tools])
+
+  // Built from `t()` and therefore always in the reading language: the whole
+  // list re-renders through the locale context the moment the operator
+  // switches, with no second dictionary looked up by hand.
   const questions = React.useMemo(() => {
-    const build = (dict: Record<string, string>) => {
-      const list = SUGGESTIONS.map((key) => dict[key]).filter(Boolean)
-      if (topMac) list.splice(2, 0, dict[MAC_SUGGESTION].replace("{mac}", topMac))
-      return list
-    }
-    return { here: build(DICTIONARIES[locale]), there: build(DICTIONARIES[other]) }
-  }, [locale, other, topMac])
+    const list = SUGGESTIONS.map((key) => t(key))
+    list.splice(
+      MAC_SLOT,
+      0,
+      topMac ? t(MAC_SUGGESTION, { mac: topMac }) : t(MAC_FALLBACK)
+    )
+    return list
+  }, [t, topMac])
 
   return (
     <div className={cn("flex min-w-0 flex-col gap-10", className)}>
@@ -119,44 +136,32 @@ export function SaqrEmptyState({
         <p className="text-ink-2 text-sm">{t("saqr.empty.how")}</p>
       </div>
 
+      <Block label={t("saqr.suggested.title")}>
+        <p className="text-ink-2 -mt-1 text-sm">{t("saqr.suggested.hint")}</p>
+        <div className="flex flex-wrap gap-2">
+          {questions.map((question) => (
+            <Chip key={question} text={question} onPick={onPick} />
+          ))}
+        </div>
+      </Block>
+
       <Block label={t("saqr.empty.reach")}>
         {catalogueFailed ? (
           <p className="text-ink-2 text-sm">{t("saqr.empty.reachFailed")}</p>
-        ) : tools.length === 0 ? (
+        ) : shown.length === 0 ? (
           <p className="text-ink-3 text-sm">{t("saqr.empty.reachLoading")}</p>
         ) : (
           <ul className="grid min-w-0 gap-x-8 gap-y-3 sm:grid-cols-2">
-            {tools.map((tool) => (
+            {shown.map((tool) => (
               <li key={tool.name} className="flex min-w-0 flex-wrap items-baseline gap-x-2 gap-y-1">
                 <span className="text-ink-0 text-sm">{t(toolLabelKey(tool.label_key))}</span>
                 {/* The wire name beside the localised one: it is what appears in
                     every step below, so the two have to be introduced together. */}
                 <Code className="text-ink-2 text-xs">{tool.name}</Code>
-                {tool.mutating && (
-                  <StatusPill tone="high">{t("saqr.trace.mutating")}</StatusPill>
-                )}
               </li>
             ))}
           </ul>
         )}
-      </Block>
-
-      <Block label={t("saqr.suggested.title")}>
-        <div className="flex flex-wrap gap-2">
-          {questions.here.map((question) => (
-            <Chip key={question} text={question} onPick={onPick} />
-          ))}
-        </div>
-      </Block>
-
-      <Block label={t("saqr.suggested.otherLang")}>
-        {/* `dir` and `lang` on the container, not on each chip: the block is a
-            run of text in the other language and its punctuation belongs to it. */}
-        <div className="flex flex-wrap gap-2" dir={other === "ar" ? "rtl" : "ltr"} lang={other}>
-          {questions.there.map((question) => (
-            <Chip key={question} text={question} onPick={onPick} />
-          ))}
-        </div>
       </Block>
     </div>
   )

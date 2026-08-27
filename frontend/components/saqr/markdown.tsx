@@ -193,6 +193,37 @@ export function TechnicalText({ text, className }: { text: string; className?: s
 const inlineScanner = () =>
   /(`+)([\s\S]*?)\1|\*\*([\s\S]+?)\*\*|__([\s\S]+?)__|\*([^*\n]+?)\*|_([^_\n]+?)_|\[([^\]]*)\]\([^)\s]*\)/g
 
+
+/** A letter, digit or underscore in any script - Arabic included. */
+const WORD_CHAR = /[\p{L}\p{N}_]/u
+
+/**
+ * True when an underscore run sits **inside a word**, where CommonMark says it
+ * is not emphasis at all.
+ *
+ * This is not pedantry about a spec; it is the single most likely way this
+ * renderer can lie on this page. Every identifier the product emits is
+ * snake_case - `proba_attack`, `explain_attack_class`, `channel_freq`, and the
+ * class names themselves - and a bare `_..._` rule turns the middle of one into
+ * italics *and eats the underscores*, so the answer shows an identifier that
+ * does not exist and nothing looks broken. Observed live: the model wrote
+ * `Foo_Bar_Quux` and the page rendered `Foo` + italic `Bar` + `Quux`.
+ *
+ * Asterisks are deliberately exempt: `*` legitimately emphasises inside a word,
+ * and no identifier in this product contains one.
+ *
+ * Both edges are checked. `_private_var` is opened by an underscore at index 0
+ * with nothing before it, and is still one word.
+ */
+function isIntrawordUnderscore(text: string, index: number, length: number): boolean {
+  const before = text[index - 1]
+  const after = text[index + length]
+  return (
+    (before !== undefined && WORD_CHAR.test(before)) ||
+    (after !== undefined && WORD_CHAR.test(after))
+  )
+}
+
 function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
   const out: React.ReactNode[] = []
   let cursor = 0
@@ -203,11 +234,25 @@ function renderInline(text: string, keyPrefix: string): React.ReactNode[] {
   const inline = inlineScanner()
   let match = inline.exec(text)
   while (match !== null) {
+    const [whole, , code, boldStar, boldUnder, italStar, italUnder, linkText] = match
+
+    // An underscore inside a word is not a marker. Rewind to just past the
+    // opening underscore rather than past the whole match, so a genuine
+    // `_emphasis_` further along the same line is still found; the skipped text
+    // is emitted with the next literal slice, because `cursor` has not moved.
+    if (
+      (boldUnder !== undefined || italUnder !== undefined) &&
+      isIntrawordUnderscore(text, match.index, whole.length)
+    ) {
+      inline.lastIndex = match.index + 1
+      match = inline.exec(text)
+      continue
+    }
+
     if (match.index > cursor) {
       out.push(...isolate(text.slice(cursor, match.index), `${keyPrefix}-t${n}`))
     }
     const key = `${keyPrefix}-m${n++}`
-    const [whole, , code, boldStar, boldUnder, italStar, italUnder, linkText] = match
 
     if (code !== undefined) {
       // A code span is very often a MAC in this product. `<Mac>` and `<Code>`

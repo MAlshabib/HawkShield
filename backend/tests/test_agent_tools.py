@@ -423,10 +423,16 @@ def test_system_status_reports_config_health_and_knowledge_coverage(db):
     assert out["database"]["reachable"] is True
     assert out["database"]["packets_stored"] == 7
     assert out["detector"]["attack_classes"] == list(ATTACK_CLASSES)
-    assert out["saqr"]["model"] == settings.saqr_model
     assert "query_threats" in out["saqr"]["tools_available"]
     assert out["knowledge_base"]["undocumented_classes"] == []
     _json_safe(out)
+
+
+def test_system_status_never_reports_the_model_identifier(db):
+    """Which model answers is a server detail; it belongs in the log, not here."""
+    out = tools.system_status(SystemStatusArgs(), db)
+    assert "model" not in out["saqr"]
+    assert settings.saqr_model not in json.dumps(out, default=str)
 
 
 def test_system_status_says_which_tools_are_switched_off(db, monkeypatch):
@@ -436,7 +442,42 @@ def test_system_status_says_which_tools_are_switched_off(db, monkeypatch):
     assert "run_sql" not in out["saqr"]["tools_available"]
     assert "run_simulation" not in out["saqr"]["tools_available"]
     assert out["saqr"]["raw_sql_enabled"] is False
-    assert out["saqr"]["simulation_tool_enabled"] is False
+
+
+def test_system_status_hides_the_gated_surface_from_a_read_only_caller(db, monkeypatch):
+    """A visitor must not learn that a simulation tool exists.
+
+    The owner's reason is operational: the simulator is the fallback for demoing
+    when the router cannot be attacked live. Someone who knows a replay tool
+    exists can infer the attacks on the dashboard may not have been captured.
+    """
+    monkeypatch.setattr(settings, "SAQR_ADMIN_TOKEN", "operator-token-abcdef")
+    monkeypatch.setattr(settings, "SAQR_ALLOW_SIMULATION_TOOL", True)
+    monkeypatch.setattr(settings, "ALLOW_SIMULATION", True)
+
+    out = tools.system_status(SystemStatusArgs(), db, ctx=tools.ToolContext(is_admin=False))
+    blob = json.dumps(out, default=str)
+
+    assert "simulation_tool_enabled" not in out["saqr"]
+    assert out["authorisation"]["this_request_is_admin"] is False
+    assert out["authorisation"]["session"] == "read-only"
+    # Not a name, not a count, not a hint that any of it exists.
+    for hidden in tools.ADMIN_TOOLS:
+        assert hidden not in blob
+    assert "admin_tools_available_now" not in out["authorisation"]
+
+
+def test_system_status_shows_the_operator_surface_to_an_operator(db, monkeypatch):
+    monkeypatch.setattr(settings, "SAQR_ADMIN_TOKEN", "operator-token-abcdef")
+    monkeypatch.setattr(settings, "SAQR_ALLOW_SIMULATION_TOOL", True)
+    monkeypatch.setattr(settings, "ALLOW_SIMULATION", True)
+
+    out = tools.system_status(SystemStatusArgs(), db, ctx=tools.ToolContext(is_admin=True))
+    assert out["authorisation"]["session"] == "operator"
+    assert "run_simulation" in out["authorisation"]["admin_tools_available_now"]
+    assert set(out["authorisation"]["destructive_tools"]) == {
+        "purge_simulated_detections", "delete_detections",
+    }
 
 
 # --------------------------------------------------------------------------- #
@@ -485,12 +526,29 @@ def test_run_sql_turns_a_database_error_into_a_tool_error(db):
 # --------------------------------------------------------------------------- #
 # The registry and the dispatcher                                              #
 # --------------------------------------------------------------------------- #
-def test_registry_is_eight_tools_with_raw_sql_last(monkeypatch):
+def test_the_read_only_registry_is_seven_tools_with_raw_sql_last(monkeypatch):
+    """What an unauthenticated visitor's model is offered. No operator tools."""
     monkeypatch.setattr(settings, "SAQR_ALLOW_RAW_SQL", True)
     monkeypatch.setattr(settings, "SAQR_ALLOW_SIMULATION_TOOL", True)
     monkeypatch.setattr(settings, "ALLOW_SIMULATION", True)
-    registry = tools.build_registry()
-    assert list(registry) == [
+    monkeypatch.setattr(settings, "SAQR_ADMIN_TOKEN", "operator-token-abcdef")
+    assert list(tools.build_registry()) == [
+        "query_threats",
+        "aggregate_threats",
+        "threat_overview",
+        "explain_attack_class",
+        "locate_source",
+        "system_status",
+        "run_sql",
+    ]
+
+
+def test_the_operator_registry_adds_the_admin_tools_with_raw_sql_last(monkeypatch):
+    monkeypatch.setattr(settings, "SAQR_ALLOW_RAW_SQL", True)
+    monkeypatch.setattr(settings, "SAQR_ALLOW_SIMULATION_TOOL", True)
+    monkeypatch.setattr(settings, "ALLOW_SIMULATION", True)
+    monkeypatch.setattr(settings, "SAQR_ADMIN_TOKEN", "operator-token-abcdef")
+    assert list(tools.build_registry(is_admin=True)) == [
         "query_threats",
         "aggregate_threats",
         "threat_overview",
@@ -498,15 +556,42 @@ def test_registry_is_eight_tools_with_raw_sql_last(monkeypatch):
         "locate_source",
         "system_status",
         "run_simulation",
+        "purge_simulated_detections",
+        "delete_detections",
+        "export_report",
+        "get_runtime_config",
         "run_sql",
     ]
 
 
-def test_run_simulation_is_the_only_mutating_tool(monkeypatch):
+def test_admin_tools_stay_hidden_when_no_token_is_configured(monkeypatch):
+    """No token on this host means no admin surface at all, for anyone.
+
+    Not "published but unreachable": a tool the model was never shown is a tool
+    it cannot be argued into calling.
+    """
+    monkeypatch.setattr(settings, "SAQR_ADMIN_TOKEN", "")
+    registry = tools.build_registry(is_admin=True)
+    for name in tools.ADMIN_TOOLS:
+        assert name not in registry
+
+
+def test_every_writing_tool_is_admin_gated(monkeypatch):
     monkeypatch.setattr(settings, "SAQR_ALLOW_RAW_SQL", True)
-    registry = tools.build_registry()
-    mutating = [name for name, spec in registry.items() if spec.mutating]
-    assert mutating == ["run_simulation"]
+    monkeypatch.setattr(settings, "SAQR_ALLOW_SIMULATION_TOOL", True)
+    monkeypatch.setattr(settings, "ALLOW_SIMULATION", True)
+    monkeypatch.setattr(settings, "SAQR_ADMIN_TOKEN", "operator-token-abcdef")
+
+    assert not [n for n, s in tools.build_registry().items() if s.mutating]
+    operator = tools.build_registry(is_admin=True)
+    assert sorted(n for n, s in operator.items() if s.mutating) == [
+        "delete_detections", "purge_simulated_detections", "run_simulation",
+    ]
+    # Destroying data implies writing it; a destructive tool that was not also
+    # mutating would slip past any check that keys on `mutating`.
+    for name, spec in operator.items():
+        if spec.destructive:
+            assert spec.mutating, f"{name} destroys data but is not marked mutating"
 
 
 def test_raw_sql_is_hidden_unless_explicitly_enabled(monkeypatch):
@@ -523,8 +608,9 @@ def test_simulation_tool_hidden_when_simulation_is_off(monkeypatch):
 
 def test_tool_definitions_are_well_formed_json_schema(monkeypatch):
     monkeypatch.setattr(settings, "SAQR_ALLOW_RAW_SQL", True)
-    definitions = tools.tool_definitions()
-    assert len(definitions) == 8
+    monkeypatch.setattr(settings, "SAQR_ADMIN_TOKEN", "operator-token-abcdef")
+    definitions = tools.tool_definitions(tools.build_registry(is_admin=True))
+    assert len(definitions) == 12
     for definition in definitions:
         assert definition["type"] == "function"
         function = definition["function"]
@@ -537,13 +623,38 @@ def test_tool_definitions_are_well_formed_json_schema(monkeypatch):
 
 def test_public_catalogue_publishes_label_keys_and_the_mutating_flag(monkeypatch):
     monkeypatch.setattr(settings, "SAQR_ALLOW_RAW_SQL", True)
-    catalogue = tools.public_catalogue()
-    assert {entry["name"] for entry in catalogue} == set(tools.build_registry())
+    monkeypatch.setattr(settings, "SAQR_ADMIN_TOKEN", "operator-token-abcdef")
+    catalogue = tools.public_catalogue(is_admin=True)
+    assert {entry["name"] for entry in catalogue} == set(
+        tools.build_registry(is_admin=True)
+    )
     for entry in catalogue:
         assert entry["label_key"] == f"saqr.tool.{entry['name']}"
         assert isinstance(entry["mutating"], bool)
+        assert isinstance(entry["admin"], bool)
+        assert isinstance(entry["destructive"], bool)
         assert entry["args_schema"]["type"] == "object"
-    assert [e["name"] for e in catalogue if e["mutating"]] == ["run_simulation"]
+    assert sorted(e["name"] for e in catalogue if e["mutating"]) == [
+        "delete_detections", "purge_simulated_detections", "run_simulation",
+    ]
+
+
+def test_the_public_catalogue_omits_the_admin_tools_entirely(monkeypatch):
+    """Not listed-and-disabled. Absent.
+
+    The frontend builds its controls from this list, so gating it correctly is
+    what makes the visitor-facing UI correct without special-casing.
+    """
+    monkeypatch.setattr(settings, "SAQR_ALLOW_RAW_SQL", True)
+    monkeypatch.setattr(settings, "SAQR_ALLOW_SIMULATION_TOOL", True)
+    monkeypatch.setattr(settings, "ALLOW_SIMULATION", True)
+    monkeypatch.setattr(settings, "SAQR_ADMIN_TOKEN", "operator-token-abcdef")
+
+    catalogue = tools.public_catalogue()
+    blob = json.dumps(catalogue)
+    for name in tools.ADMIN_TOOLS:
+        assert name not in blob, f"{name} leaked into the read-only catalogue"
+    assert not [e for e in catalogue if e["mutating"] or e["admin"]]
 
 
 def test_execute_reports_an_unknown_tool_instead_of_raising(db):

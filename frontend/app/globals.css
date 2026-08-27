@@ -465,6 +465,49 @@
   --radius-xl: 28px;
   --radius-2xl: 28px;
 
+  /* -- the layer scale ---------------------------------------------------- */
+  /* Five layers, in paint order, and nothing may sit between them.
+   *
+   *   base    0   page content in normal flow
+   *   map     0   the Leaflet canvas — SEALED, see below
+   *   sticky  30  the app bar
+   *   overlay 50  every Radix portal: select, popover, dialog, sheet
+   *   toast  100  the last word; it has to survive an open dialog
+   *
+   * The map is the reason this scale exists. Leaflet numbers its own panes and
+   * controls from 200 to 1000 (tile 200, overlay 400, shadow 500, marker 600,
+   * tooltip 650, popup 700, controls 800-1000) — an order that is internally
+   * correct and, in a shared stacking context, beats every number an
+   * application would sensibly choose. A `z-50` dropdown portalled to <body>
+   * genuinely loses to a tile pane at 200, and on `/map` it did: the middle of
+   * a long source list rendered *behind* the map.
+   *
+   * The fix is not a bigger number on the dropdown. It is `isolation: isolate`
+   * on the map container (see `.hs-map` in `components/LeafletMap.tsx`), which
+   * seals 200-1000 inside a stacking context of its own so the whole map
+   * composites as one box at `--z-map`. Leaflet keeps its internal order; the
+   * application keeps its five layers; neither has to know about the other.
+   *
+   * Consumed as `z-(--z-overlay)` etc. `z-index` is not a Tailwind v4 theme
+   * namespace, so these generate no utilities of their own — which is the
+   * point: `z-(--z-sticky)` names a layer, `z-50` names nothing. */
+  --z-base: 0;
+  --z-map: 0;
+  --z-sticky: 30;
+  --z-overlay: 50;
+  --z-toast: 100;
+
+  /* Height of the app bar, reserved by the shell.
+   *
+   * The bar is `position: fixed`, not `sticky`, and that is a consequence of
+   * the same overlay problem. Radix's scroll lock sets `overflow: hidden` on
+   * <body>, which makes <body> a scroll container — and a sticky element
+   * resolves against its nearest scrollport, so the bar re-anchored to a box
+   * that was not scrolled and jumped to its static offset, off-screen. Fixed
+   * positions against the viewport, which the lock does not touch. The shell
+   * pads by exactly this much so nothing moves when an overlay opens. */
+  --app-bar-block-size: calc(4rem + 1px);
+
   /* -- named spacing, for raw CSS that cannot use a utility -------------- */
   --space-2xs: 0.25rem;
   --space-xs: 0.5rem;

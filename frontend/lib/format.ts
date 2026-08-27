@@ -239,15 +239,36 @@ export function Timestamp({
   format?: "dateTime" | "time" | "date" | "relative"
   className?: string
 }) {
+  const { locale } = useLocale()
   const f = useFormatters()
   const text = f[format](value)
+
+  /* Only a clock is a pure Latin run. `14:02:11` must be pinned LTR and set in
+     the figure face, or an Arabic paragraph reorders it.
+
+     Everything else that carries Arabic words must NOT be pinned. Forcing
+     `direction: ltr` on `28 أغسطس 2026، 02:19:30` breaks it: bidi rule W2
+     retypes each European number following an Arabic letter as an Arabic
+     number, so the month, year and clock collapse into one right-to-left run
+     and swap ends — the measured visual order was `28  02:19:30  ،  2026
+     أغسطس`. The DOM is correct and the date on screen is nonsense.
+
+     So those get `dir="auto"` — isolated from the surrounding text, but with
+     the direction inferred from the first strong character — and the body
+     face, because the mono face carries no Arabic at all and the glyphs would
+     fall through to whatever the system offers. */
+  const isLatinRun = locale !== "ar" || format === "time"
+
   return createElement(
     "time",
     {
       dateTime: toISO(value),
-      dir: "ltr",
+      dir: isLatinRun ? "ltr" : "auto",
       suppressHydrationWarning: true,
-      className: cn(ltr, "font-mono tabular-nums", className),
+      className: cn(
+        isLatinRun ? cn(ltr, "font-mono tabular-nums") : "[unicode-bidi:isolate]",
+        className,
+      ),
     },
     text,
   )

@@ -38,6 +38,19 @@ const Logo = React.forwardRef<HTMLSpanElement, LogoProps>(function Logo(
       style={{ inlineSize: size, blockSize: size, ...style }}
       {...props}
     >
+      {/* Two rasters, not one raster plus a filter.
+       *
+       * The head is drawn in #01285A, which sits almost on top of the dark
+       * theme's own paper — on a dark navbar the bird disappears and only the
+       * arcs survive. An outline welded around the shape would be a fifth
+       * colour the mark does not contain, and a CSS `invert()` would swing the
+       * azure arcs to orange. So the dark surface gets a recoloured copy of the
+       * same artwork: the head lifted to the dark theme's ink, the arcs lifted
+       * one step so the two parts keep their relationship. Nothing is redrawn.
+       *
+       * Both are rendered and one is hidden, rather than swapped on a theme
+       * value, so the correct mark is present in the very first paint — a
+       * swap that waits for React would flash the wrong one on every load. */}
       <Image
         src="/hawkshield-mark.png"
         width={size}
@@ -45,7 +58,16 @@ const Logo = React.forwardRef<HTMLSpanElement, LogoProps>(function Logo(
         alt={decorative ? "" : alt}
         aria-hidden={decorative || undefined}
         priority={size >= 64}
-        className="block h-full w-full object-contain"
+        className="block h-full w-full object-contain dark:hidden"
+      />
+      <Image
+        src="/hawkshield-mark-dark.png"
+        width={size}
+        height={size}
+        alt=""
+        aria-hidden
+        priority={size >= 64}
+        className="hidden h-full w-full object-contain dark:block"
       />
     </span>
   )

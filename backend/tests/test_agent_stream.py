@@ -137,7 +137,7 @@ def stub_run(*, emit, answer: str = "done.", raises: Optional[BaseException] = N
         emitter: Emitter = kwargs["emitter"]
         await emitter.run_start(
             question=question, locale=kwargs.get("locale") or "en",
-            model="stub-model", max_steps=6, tools=["query_threats"],
+            max_steps=6, tools=["query_threats"],
         )
         await emit(emitter)
         if raises is not None:
@@ -304,7 +304,7 @@ def test_done_is_emitted_even_if_the_loop_forgets(client, monkeypatch):
     async def forgetful(question, **kwargs):
         emitter: Emitter = kwargs["emitter"]
         await emitter.run_start(
-            question=question, locale="en", model="stub", max_steps=6, tools=[],
+            question=question, locale="en", max_steps=6, tools=[],
         )
         return SimpleNamespace(answer="")
 

@@ -222,6 +222,29 @@ class Settings(BaseSettings):
     #: Agent runs allowed to be in flight at once on this (single) process.
     SAQR_MAX_CONCURRENT_RUNS: int = 2
 
+    # ---- Saqr admin capability (server-side, never conversational) -------
+    #: Shared secret that grants the admin tool surface.  A request presents it
+    #: in ``X-HawkShield-Admin``; the loop resolves a boolean **before** the
+    #: model runs and passes it as a Python argument.  Blank (the default) means
+    #: the admin tools are not published at all -- the model is never shown a
+    #: tool it could not be allowed to call.  The value is never sent to the
+    #: model, never logged and never returned by any endpoint.
+    SAQR_ADMIN_TOKEN: str = ""
+    #: Lifetime of a destructive-action confirmation token, in seconds.  Short
+    #: on purpose: it exists to carry one operator click, not to be stored.
+    SAQR_CONFIRM_TTL_S: float = 180.0
+    #: Confirmation tokens held in memory at once.  The oldest is evicted first;
+    #: a demo needs one or two, and an unbounded dict is a memory leak reachable
+    #: from an unauthenticated text box.
+    SAQR_CONFIRM_MAX_PENDING: int = 32
+    #: Hard cap on the characters one question may contain, enforced in the
+    #: router with a 400.  This is what closes the "write past the context limit
+    #: to push the system prompt out of the window" trick.
+    SAQR_MAX_QUESTION_CHARS: int = 4000
+    #: Hard cap on the whole prompt ``/ask`` assembles from its session
+    #: transcript plus the new question.  Older turns are dropped until it fits.
+    SAQR_MAX_CONTEXT_CHARS: int = 12000
+
     # ---- simulation (POST /simulate) ------------------------------------
     #: Master switch for the demo/testing endpoint.  On by default; set to 0 to
     #: return 403 from /simulate on a box where writing synthetic rows is not
@@ -254,6 +277,7 @@ class Settings(BaseSettings):
     @field_validator(
         "SAQR_MAX_STEPS", "SAQR_MAX_TOOL_CALLS", "SAQR_MAX_ROWS", "SAQR_UI_ROWS",
         "SAQR_SIM_TOOL_MAX_COUNT", "SAQR_RATE_MAX", "SAQR_MAX_CONCURRENT_RUNS",
+        "SAQR_CONFIRM_MAX_PENDING", "SAQR_MAX_QUESTION_CHARS", "SAQR_MAX_CONTEXT_CHARS",
     )
     @classmethod
     def _at_least_one(cls, v: int) -> int:
@@ -339,6 +363,16 @@ class Settings(BaseSettings):
         predates the agent needs no edit to run it.
         """
         return self.SAQR_MODEL.strip() or self.GEN_MODEL.strip()
+
+    @property
+    def saqr_admin_enabled(self) -> bool:
+        """An admin token is configured, so the admin tool surface can exist.
+
+        False means the admin tools are never published, to anyone, on this
+        host -- not "published but unreachable".  A model cannot call a tool it
+        was never shown.
+        """
+        return bool(self.SAQR_ADMIN_TOKEN.strip())
 
     @property
     def saqr_enabled(self) -> bool:

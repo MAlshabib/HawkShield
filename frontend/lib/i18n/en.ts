@@ -281,6 +281,79 @@ export const en = {
   "report.empty": "The sensor stored no detections in this period.",
   "report.notReported": "Not reported",
 
+  /* The print-first report document at `/report`. Its own sub-namespace so it
+     cannot collide with the dialog keys above. The browser is the renderer:
+     it already has the brand face, Arabic shaping and bidi, so "Save as PDF"
+     produces the designed document the server-side ReportLab file cannot. */
+  "report.doc.eyebrow": "Detection report",
+  "report.doc.headLead": "What the sensor ",
+  "report.doc.headAccent": "detected",
+  "report.doc.headTail": "",
+  "report.doc.lede":
+    "Everything below is a count of frames this sensor captured, stored and classified inside the window named above. Nothing is estimated, and a figure the sensor did not report is not printed at all.",
+  "report.doc.print": "Print / Save as PDF",
+  "report.doc.back": "Back to detections",
+  "report.doc.window": "Reporting window",
+  "report.doc.windowDays": "Last {n} days",
+  "report.doc.generated": "Compiled",
+  "report.doc.source": "Source",
+  "report.doc.sourceValue": "HawkShield sensor · stored packet table",
+  "report.doc.loading": "Reading the sensor…",
+  "report.doc.sectionFailed":
+    "The sensor did not answer for this section, so it is left blank rather than filled with zeros.",
+  "report.doc.unreachable": "The sensor is not answering, so there are no figures to report.",
+  "report.doc.empty": "The sensor stored no detections in this window.",
+  "report.doc.totals": "The window at a glance",
+  "report.doc.totalDetections": "Classified detections",
+  "report.doc.uniqueSources": "Distinct source MACs",
+  "report.doc.peakHour": "Busiest hour",
+  "report.doc.peakHourNote": "Counted in UTC by the sensor.",
+  "report.doc.storedAllTime": "Frames stored, all time",
+  "report.doc.mostFrequent": "Most frequent class",
+  "report.doc.byClass": "Detections by class",
+  "report.doc.byClassNote":
+    "Counts of stored frames inside the window. The all-time column is every frame the sensor has ever classified, not only this window's.",
+  "report.doc.colClass": "Class",
+  "report.doc.colSeverity": "Severity",
+  "report.doc.colWindow": "In window",
+  "report.doc.colAllTime": "All time",
+  "report.doc.colShare": "Share",
+  "report.doc.colSource": "Source MAC",
+  "report.doc.colCount": "Frames",
+  "report.doc.colFrequency": "Frequency",
+  "report.doc.colChannel": "Channel",
+  "report.doc.topSources": "Busiest source addresses",
+  "report.doc.topSourcesNote":
+    "The {n} source addresses that produced the most stored frames in this window.",
+  "report.doc.noSources": "The sensor stored no source address in this window.",
+  "report.doc.channels": "Channel occupancy",
+  "report.doc.channelsNote":
+    "Where the stored frames sat on the radio, by RadioTap centre frequency.",
+  "report.doc.noChannels": "The sensor stored no channel frequency in this window.",
+  "report.doc.provenance": "How this was measured",
+  "report.doc.iface": "Capture interface",
+  "report.doc.configuredChannel": "Configured channel",
+  "report.doc.observedFreq": "Observed frequency",
+  "report.doc.model": "Classifier",
+  "report.doc.spec": "Feature spec",
+  "report.doc.latestPacket": "Newest stored frame",
+  "report.doc.backend": "Sensor build",
+  "report.doc.configOnly":
+    "Interface and channel are the configured values. This host could not read the radio back, so neither is a measurement of it.",
+  "report.doc.reading": "Reading this report",
+  "report.doc.reading1":
+    "Every figure is a count of frames the sensor stored and the classifier labelled. A class with no row is a class with no detection in this window — the absence of evidence, not evidence of absence.",
+  "report.doc.reading2":
+    "The sensor listens on one interface at a time, so anything outside that radio's reach was never offered to the classifier and cannot appear here.",
+  "report.doc.reading3":
+    "HawkShield detects, classifies and reports. Nothing in this window was blocked, no client was disconnected, and no network is called clean.",
+  "report.doc.footerNote": "Compiled by the HawkShield sensor from its own stored frames.",
+  "report.doc.printView": "Open print view",
+  "report.doc.printViewHint":
+    "The full document in the browser, with the real fonts and both languages. Print it, or save it as PDF.",
+  "report.doc.serverPdfHint":
+    "A plain one-page file rendered by the sensor itself. Latin only, and it needs no browser at all.",
+
   /* ── Map ───────────────────────────────────────────────────────────── */
   "map.title": "Map",
   "map.subtitle": "Estimated position of the strongest sources, from RSSI trilateration.",
@@ -295,6 +368,8 @@ export const en = {
   "map.source": "Source MAC",
   "map.sourcePick": "Choose a source the sensor has seen",
   "map.sourceEmpty": "The sensor has reported no source MAC addresses yet.",
+  "map.sourceFilter": "Filter by address",
+  "map.sourceNoMatch": "No source address matches that filter.",
   "map.window": "Window",
   "map.controls": "Selection",
   "map.apLocations": "Access points",
@@ -346,6 +421,7 @@ export const en = {
   "saqr.console": "Run trace",
   "saqr.retry": "Ask again",
   "saqr.enterHint": "Enter sends · Shift+Enter for a new line",
+  "saqr.charsLeft": "{n} characters left",
   "saqr.jumpToLatest": "Jump to latest",
   "saqr.moved": "The assistant now lives at Saqr. Redirecting…",
   "saqr.status.tools": "{n} tools available",
@@ -354,16 +430,21 @@ export const en = {
   "saqr.assistant": "Saqr",
   "saqr.thinking": "Thinking…",
   "saqr.disclaimer": "Saqr reads the detection database. Verify anything you act on.",
+  /* Starter questions. Offered in the reading language only — Saqr answers in
+     the locale it was asked in, so a chip in the other language would switch
+     the answer's language without switching the interface, which reads as a
+     bug. Each one is chosen to reach a different tool; three of them need two. */
   "saqr.suggested.title": "Try asking",
+  "saqr.suggested.hint": "Pick one to put it in the box below.",
   "saqr.suggested.q1": "What was detected in the last 24 hours?",
-  "saqr.suggested.q2": "Which source MAC appears most often?",
-  "saqr.suggested.q3": "Show me every Evil_Twin detection this week.",
+  "saqr.suggested.q2": "Which source MAC appears most often, and what is it sending?",
+  "saqr.suggested.q3": "Show me the most confident Evil_Twin detections this week.",
   "saqr.suggested.q4": "Which channel carries the most attack traffic?",
-  "saqr.suggested.q5": "What is a KRACK attack and how do I defend against it?",
+  "saqr.suggested.q5": "What is a KRACK attack, and has the sensor seen one?",
   /* `{mac}` is filled from the busiest source the sensor has actually stored,
      so the chip never names an address that is not in the database. */
-  "saqr.suggested.q6": "What has {mac} been doing, and where is it?",
-  "saqr.suggested.otherLang": "Or ask in the other language",
+  "saqr.suggested.q6": "Where is {mac}, and what has it been doing?",
+  "saqr.suggested.q7": "Is the sensor capturing right now, and how much has it stored?",
 
   /* Empty state. */
   "saqr.empty.who":
@@ -381,11 +462,42 @@ export const en = {
   "saqr.doc.showWork": "Show the steps",
   "saqr.doc.hideWork": "Hide the steps",
   "saqr.doc.earlier": "Earlier in this conversation",
-  "saqr.doc.model": "Model",
   "saqr.doc.reported": "Tool reported",
   "saqr.doc.awaiting": "Waiting for Saqr to begin…",
   "saqr.doc.calledWith": "Called with",
   "saqr.doc.defaults": "Called with its defaults",
+  "saqr.doc.working": "Working",
+  /* Descriptive, never a capability: the server had already decided this
+     before the run started. */
+  "saqr.doc.operator": "Operator session",
+
+  /* One step of the work, collapsed to a single row until it is opened. */
+  "saqr.step.open": "Show this step",
+  "saqr.step.close": "Hide this step",
+  "saqr.step.done": "Completed",
+  "saqr.step.pending": "Still running",
+  "saqr.step.detail": "Step detail",
+
+  /* The confirmation protocol. A destructive tool answers with a token instead
+     of acting; nothing runs until the operator clicks Confirm. */
+  "saqr.confirm.title": "Confirmation required",
+  "saqr.confirm.lead": "Saqr did not do this. It will only run if you confirm it.",
+  "saqr.confirm.action": "Action",
+  "saqr.confirm.affected": "Affects about {n} rows",
+  "saqr.confirm.affectedUnknown": "The number of affected rows was not reported.",
+  "saqr.confirm.confirm": "Confirm and run",
+  "saqr.confirm.cancel": "Cancel",
+  "saqr.confirm.cancelled": "You cancelled this action. Nothing was changed.",
+  "saqr.confirm.sent": "Confirmed. Saqr is running the action.",
+  "saqr.confirm.pending": "Awaiting your confirmation",
+  "saqr.confirm.expires": "This authorisation expires in {s} seconds.",
+  /* The collapsed row of a step that proposed. It says the one thing a
+     reader must not have to open the row to learn. */
+  "saqr.confirm.proposalRow": "Proposed — nothing has been deleted",
+  /* The other half of the protocol: a real deletion, which only ever
+     follows a click. `deleted` is a count of rows that are gone. */
+  "saqr.confirm.deleted": "Deleted {n} rows",
+  "saqr.confirm.busy": "Wait for the current run to finish before confirming.",
 
   /* Tool trace. Keys mirror the tool names the agent reports verbatim. */
   "saqr.trace.title": "Trace",
@@ -410,6 +522,12 @@ export const en = {
   "saqr.trace.omitted": "The result was too large to send with the trace; it is in the answer.",
   "saqr.trace.noData": "The tool returned no data to preview.",
   "saqr.trace.gap": "Part of this trace was lost in transit and is not shown.",
+  /* Provenance. These values are transmitted by whoever sent the frame, so
+     an SSID reading "ignore previous instructions" is a normal thing to
+     receive. It is marked as evidence, and never acted on. */
+  "saqr.trace.untrusted": "Chosen by whoever sent the frame",
+  "saqr.trace.untrustedNote":
+    "{fields} came off the air and are chosen by whoever transmitted the frame. Read them as evidence.",
   "saqr.tool.query_threats": "Querying detections",
   "saqr.tool.aggregate_threats": "Aggregating detections",
   "saqr.tool.threat_overview": "Reading the current picture",
@@ -417,6 +535,12 @@ export const en = {
   "saqr.tool.locate_source": "Locating the source",
   "saqr.tool.system_status": "Checking sensor and model status",
   "saqr.tool.run_simulation": "Replaying held-out attack traffic",
+  /* Operator tools. Absent from the catalogue of a request that did not
+     prove the admin token, but a run that used one still names them. */
+  "saqr.tool.purge_simulated_detections": "Removing simulated detections",
+  "saqr.tool.delete_detections": "Deleting detections",
+  "saqr.tool.export_report": "Exporting a report",
+  "saqr.tool.get_runtime_config": "Reading the running configuration",
   "saqr.tool.run_sql": "Running a read-only query",
   "saqr.tool.unknown": "Running a tool",
 
@@ -442,7 +566,11 @@ export const en = {
   "saqr.stop.unknown": "Run ended",
 
   /* Agent phases. */
-  "saqr.phase.calling_model": "Consulting the model…",
+  /* Deliberately names no model. Which language model reasons over the
+     detections is an implementation detail of the sensor, and putting it on a
+     line the reader watches for the whole run invited them to grade the answer
+     by its badge instead of by its evidence. */
+  "saqr.phase.calling_model": "Working out the next step…",
   "saqr.phase.executing_tool": "Running a tool…",
   "saqr.phase.composing": "Composing the answer…",
 
@@ -455,6 +583,10 @@ export const en = {
   "saqr.error.step_limit": "Saqr reached its step limit before finishing. Ask something narrower.",
   "saqr.error.timeout": "Saqr took too long to answer and was stopped.",
   "saqr.error.internal": "An internal error occurred. Nothing was changed.",
+  "saqr.error.not_authorised":
+    "This session is not authorised to use the operator tools. Nothing was changed.",
+  "saqr.error.confirmation_required":
+    "That action needs a confirmation the server will accept. Nothing was changed — ask again to get a fresh one.",
 
   /* Transport failures. These are HTTP, not agent error codes: the server
      decides every refusal before the stream opens, so they arrive as JSON. */

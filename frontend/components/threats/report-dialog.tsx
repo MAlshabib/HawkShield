@@ -1,17 +1,29 @@
 "use client"
 
 /**
- * The detection report: `GET /reports/summary?days=N` on screen, `POST
- * /reports/export` to disk.
+ * The detection report: `GET /reports/summary?days=N` on screen, then out to a
+ * document.
+ *
+ * There are two ways out, and they are not interchangeable.
+ *
+ * **The print view** (`/report?days=N`) is the primary one. It is a browser-
+ * rendered document, so it has the brand face, correct Arabic shaping and bidi,
+ * both themes on screen and the light palette on paper — none of which the
+ * server-side renderer can do. ReportLab cannot load `thmanyahsans-*.otf` at
+ * all (PostScript/CFF outlines), the Pi carries no Arabic TTF, and ReportLab
+ * performs neither shaping nor bidi. "Save as PDF" is native.
+ *
+ * **The server PDF** (`POST /reports/export`) stays, clearly labelled as the
+ * plain one. It is Latin-only and always will be, but it needs no browser, and
+ * the contract — and `check_frontend.py` — depend on it.
  *
  * The V1 modal also offered "Send by email", which was a `mailto:` link with
  * the period and a total pasted into the body — no attachment, no server, and
  * `/reports/email` had already been removed from the contract. A share button
- * that shares nothing is worse than no share button, so it is gone. The PDF
- * download is real: the backend renders it and this streams the blob.
+ * that shares nothing is worse than no share button, so it is gone.
  */
 import * as React from "react"
-import { Download, FileText, Loader2 } from "lucide-react"
+import { Download, FileText, Loader2, Printer } from "lucide-react"
 
 import { Panel } from "@/components/hs/panel"
 import { StatusPill } from "@/components/hs/status-pill"
@@ -255,17 +267,40 @@ export function ReportDialog() {
           </Panel>
         </div>
 
+        {/* Two ways out, and the difference between them is the whole point, so
+            each carries the sentence that says what it is. A user who picks the
+            plain server file should be choosing it, not discovering it. */}
+        <div className="flex flex-col gap-4">
+          <div className="flex flex-col gap-2">
+            {/* An anchor rather than `window.open`: a new tab is what this is,
+                and a real link survives a popup blocker, middle-click and
+                "copy link address". `target` needs `rel` — an opened document
+                must not get a handle on this one. */}
+            <Button asChild>
+              <a href={`/report/?days=${days}`} target="_blank" rel="noopener noreferrer">
+                <Printer aria-hidden="true" />
+                {t("report.doc.printView")}
+              </a>
+            </Button>
+            <p className="text-ink-2 text-xs">{t("report.doc.printViewHint")}</p>
+          </div>
+
+          <div className="flex flex-col gap-2">
+            <Button variant="outline" onClick={download} disabled={exporting}>
+              {exporting ? (
+                <Loader2 className="animate-spin" aria-hidden="true" />
+              ) : (
+                <Download aria-hidden="true" />
+              )}
+              {exporting ? t("report.downloading") : t("report.download")}
+            </Button>
+            <p className="text-ink-2 text-xs">{t("report.doc.serverPdfHint")}</p>
+          </div>
+        </div>
+
         <DialogFooter>
           <Button variant="ghost" onClick={() => setOpen(false)}>
             {t("common.close")}
-          </Button>
-          <Button onClick={download} disabled={exporting}>
-            {exporting ? (
-              <Loader2 className="animate-spin" aria-hidden="true" />
-            ) : (
-              <Download aria-hidden="true" />
-            )}
-            {exporting ? t("report.downloading") : t("report.download")}
           </Button>
         </DialogFooter>
       </DialogContent>

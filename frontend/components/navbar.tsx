@@ -53,7 +53,15 @@ export function Navbar() {
   const items = NAVIGATION.map((item) => ({ ...item, active: isActive(pathname, item.href) }))
 
   return (
-    <header className="sticky top-0 z-50 border-b border-[color:var(--hairline)] bg-[color:var(--surface)]">
+    /* `fixed`, not `sticky`, and the shell reserves `--app-bar-block-size` for
+       it. A sticky element resolves against its nearest scrollport, and Radix's
+       scroll lock puts `overflow: hidden` on <body> for the whole time an
+       overlay is open — which makes <body> a scroll container that is not
+       scrolled, so the bar dropped to its static offset and left the screen the
+       moment a select was opened. Fixed positions against the viewport, which
+       the lock cannot reach. `start-0 end-0` rather than `inset-x-0` so the
+       reasoning stays logical even though the two resolve alike here. */
+    <header className="bg-[color:var(--surface)] fixed start-0 end-0 top-0 z-(--z-sticky) border-b border-[color:var(--hairline)]">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
         <Link
           href="/"

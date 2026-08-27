@@ -321,10 +321,17 @@ def check_agent_routes(client: Any) -> bool:
             fail(f"POST /agent/ask (JSON) -> {response.status_code}: {response.text[:200]}")
             return False
         body = response.json()
-        for key in ("answer", "locale", "model", "steps", "run_id", "stop_reason", "tool_calls"):
+        for key in ("answer", "locale", "steps", "run_id", "stop_reason", "tool_calls"):
             if key not in body:
                 fail(f"/agent/ask JSON reply is missing {key!r}")
                 healthy = False
+        # The model identifier is deliberately gone from both transports: the
+        # owner does not want it shown, and it is written to the server log
+        # instead. A reappearance here means someone put it back.
+        if "model" in body:
+            fail("/agent/ask JSON reply still exposes the model identifier")
+            info("Which model answers is a server detail; it belongs in the log.")
+            healthy = False
         if not str(body.get("answer") or "").strip():
             fail("/agent/ask returned an empty answer")
             healthy = False
@@ -347,6 +354,10 @@ def check_agent_routes(client: Any) -> bool:
         ]
         if not events or events[0] != "run_start":
             fail(f"the SSE stream does not open with run_start: {events[:3]}")
+            healthy = False
+        elif '"model"' in stream.text:
+            fail("the SSE stream still carries a model identifier")
+            info("run_start dropped its `model` field; the UI reads `is_admin` instead.")
             healthy = False
         elif events[-1] != "done":
             fail(f"the SSE stream does not end with done: {events[-3:]}")
@@ -599,14 +610,38 @@ def _check_source_rssi(body: Any, problems: List[str]) -> None:
         _require("sa" in body and "points" in body, "expected {'sa', 'points'}", problems)
 
 
+#: Taken from the registry, never re-listed here: a hand-copied list is exactly
+#: how a new admin tool would quietly stop being checked.
+try:
+    from backend.app.agent.tools import ADMIN_TOOLS as ADMIN_TOOL_NAMES  # noqa: E402
+except Exception:  # pragma: no cover - the agent stack is optional at import time
+    ADMIN_TOOL_NAMES = ()
+
+
 def _check_tools(body: Any, problems: List[str]) -> None:
     _require(isinstance(body, list) and bool(body), "not a non-empty JSON array", problems)
     if isinstance(body, list) and body:
-        for key in ("name", "label_key", "mutating", "args_schema"):
+        for key in ("name", "label_key", "mutating", "admin", "destructive", "args_schema"):
             _require(key in body[0], f"tool entries missing {key!r}", problems)
         _require(
             all(str(t.get("label_key", "")).startswith("saqr.tool.") for t in body),
             "every label_key must be saqr.tool.<name>; the UI looks them up",
+            problems,
+        )
+        # This request carried no admin token, so the operator surface must be
+        # absent -- not listed-and-disabled. A visitor who can see that a
+        # simulation tool exists can infer the dashboard may be showing replayed
+        # attacks rather than captured ones.
+        names = {str(t.get("name", "")) for t in body}
+        leaked = sorted(names & set(ADMIN_TOOL_NAMES))
+        _require(
+            not leaked,
+            f"the unauthenticated tool catalogue exposes {leaked}",
+            problems,
+        )
+        _require(
+            not [t for t in body if t.get("admin") or t.get("mutating")],
+            "the unauthenticated tool catalogue contains a writing or admin tool",
             problems,
         )
 

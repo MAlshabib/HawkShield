@@ -9,15 +9,24 @@
  * the answer. V2 showed exactly that as a terminal transcript. On paper the
  * register is wrong — a console frame on a document reads as a screenshot
  * pasted into a report — so the same material is set as a short report instead:
- * the question as a heading, the work as numbered labelled steps, the answer as
- * prose, and a footer stating what the run cost. Nothing is hidden to achieve
- * that; the SQL, the arguments and the result tables are all still here.
+ * the question as a heading, the work as steps, the answer as prose, and a
+ * footer stating what the run cost.
+ *
+ * Nothing is hidden to achieve that, but the weighting is now explicit: each
+ * step is **one row that opens**, and the answer is the only thing on the page
+ * set at reading size in full measure. The SQL, the arguments and the result
+ * tables are all still here, one click into the step they belong to — and a
+ * step that failed, was cached, writes data or is waiting on a confirmation
+ * says so on its collapsed row, because those are the ones a reader must not
+ * have to open the row to notice.
  *
  * Everything on screen came off the wire. There is no simulated typing, no
  * placeholder tool call and no canned transcript. If the stream did not send
- * it, it is not here.
+ * it, it is not here. Which language model does the reasoning is not on the
+ * wire and is not on the page: it says nothing about whether the detection it
+ * reports is real, and a badge is not evidence.
  *
- * Four behaviours are deliberate and easy to get wrong:
+ * Five behaviours are deliberate and easy to get wrong:
  *
  * **Autoscroll yields to the reader.** The page follows the stream only while
  * it is already at the bottom. The moment the operator scrolls up to read a
@@ -34,7 +43,14 @@
  * error are not the same event and are not reported as one.
  *
  * **The question carries the UI locale**, which `lib/saqr.ts` puts in the
- * request body, so Saqr answers in the language the operator is reading.
+ * request body, so Saqr answers in the language the operator is reading — which
+ * is also why the starter questions are offered in that language and only that
+ * language.
+ *
+ * **A destructive action is never taken without a click.** An admin-gated tool
+ * answers with a plan and a one-shot token instead of acting; the card that
+ * spends the token is rendered outside the collapsed region, and nothing in
+ * this page or in `lib/saqr.ts` reaches the confirm path on its own.
  */
 import * as React from "react"
 
@@ -45,11 +61,18 @@ import { StatusPill } from "@/components/hs/status-pill"
 import { SaqrComposer } from "@/components/saqr/composer"
 import { SaqrEmptyState } from "@/components/saqr/empty-state"
 import { SaqrRunArchive, SaqrRunDocument } from "@/components/saqr/run"
+import type { SaqrConfirmBinding } from "@/components/saqr/work"
 import { Button } from "@/components/ui/button"
 import { apiFetchSafe } from "@/lib/api"
 import { useFormatters } from "@/lib/format"
 import { useT } from "@/lib/i18n"
-import { STICK_THRESHOLD_PX, useSaqrRun, useSaqrTools } from "@/lib/saqr"
+import {
+  advertisedTools,
+  STICK_THRESHOLD_PX,
+  useSaqrRun,
+  useSaqrTools,
+  type SaqrRun,
+} from "@/lib/saqr"
 
 /** `/top-offenders` — reused rather than adding an endpoint for one chip. */
 type OffenderRow = { wlan_sa?: string | null; count?: number }
@@ -70,9 +93,46 @@ export default function SaqrPage() {
   const t = useT()
   const f = useFormatters()
 
-  const { phase, answer, elapsed, isRunning, run, history, ask, cancel, retry, reset } =
-    useSaqrRun()
+  const {
+    phase,
+    answer,
+    elapsed,
+    isRunning,
+    run,
+    history,
+    confirmations,
+    confirmAction,
+    dismissAction,
+    ask,
+    cancel,
+    retry,
+    reset,
+  } = useSaqrRun()
   const { tools: catalogue, failed: catalogueFailed } = useSaqrTools()
+
+  // The count has to describe the same set the empty state lists, or the
+  // header contradicts the page under it. `advertisedTools` drops the writing
+  // tools: they are gated behind the admin header server-side and are not
+  // something to name on a console a visitor is reading.
+  const advertised = React.useMemo(() => advertisedTools(catalogue), [catalogue])
+
+  /**
+   * What a confirmation card needs, bound to the run it belongs to.
+   *
+   * Per-run rather than per-page: confirming re-sends **that** run's question
+   * with the token, and an archived card that re-sent the newest question
+   * instead would authorise an action the operator never read.
+   */
+  const confirmBinding = React.useCallback(
+    (entry: SaqrRun): SaqrConfirmBinding => ({
+      question: entry.question,
+      states: confirmations,
+      busy: isRunning,
+      onConfirm: confirmAction,
+      onCancel: dismissAction,
+    }),
+    [confirmations, isRunning, confirmAction, dismissAction]
+  )
 
   const [draft, setDraft] = React.useState("")
   const [topMac, setTopMac] = React.useState<string | null>(null)
@@ -156,7 +216,7 @@ export default function SaqrPage() {
             <StatusPill tone={catalogueFailed ? "critical" : "info"} dot>
               {catalogueFailed
                 ? t("saqr.status.offline")
-                : t("saqr.status.tools", { n: f.number(catalogue.length) })}
+                : t("saqr.status.tools", { n: f.number(advertised.length) })}
             </StatusPill>
             {!isEmpty && (
               <Button size="sm" variant="outline" onClick={reset} disabled={isRunning}>
@@ -184,6 +244,7 @@ export default function SaqrPage() {
                   <SaqrRunArchive
                     key={entry.localId}
                     run={entry}
+                    confirm={confirmBinding(entry)}
                     className="border-rule border-b pb-10 last:border-b-0 last:pb-0"
                   />
                 ))}
@@ -197,6 +258,7 @@ export default function SaqrPage() {
                 isRunning={isRunning}
                 answer={answer}
                 elapsed={elapsed}
+                confirm={confirmBinding(run)}
               />
             )}
           </>

@@ -31,6 +31,9 @@ import { Toaster } from "@/components/ui/toaster"
 import { LocaleProvider } from "@/components/providers/locale-provider"
 import { ThemeProvider } from "@/components/providers/theme-provider"
 import "./globals.css"
+// Field and language transitions. Self-contained and armed only while a switch
+// is in flight — see the header of the file.
+import "./transitions.css"
 import "leaflet/dist/leaflet.css"
 
 /**
@@ -81,6 +84,18 @@ export default function RootLayout({
     // the difference as a hydration failure.
     <html lang="en" dir="ltr" suppressHydrationWarning>
       <head>
+        {/* The favicon is the mark on transparency, so it inherits whatever the
+         * browser paints behind a tab. That is right on a light chrome and
+         * wrong on a dark one, where the navy head all but vanishes against the
+         * tab strip — so a second, recoloured icon is offered for dark UIs.
+         * Browsers that ignore `media` here simply keep the first, which is the
+         * correct fallback rather than a broken one.
+         *
+         * Declared by hand instead of through the Metadata API because that API
+         * has no way to express a `prefers-color-scheme` icon. `app/icon.png`
+         * and `app/favicon.ico` are still picked up automatically and stay the
+         * default. */}
+        <link rel="icon" href="/icon-dark.png" type="image/png" media="(prefers-color-scheme: dark)" />
         <script dangerouslySetInnerHTML={{ __html: PRE_HYDRATION }} />
       </head>
       <body className="min-h-screen antialiased">

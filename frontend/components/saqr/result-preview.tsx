@@ -20,13 +20,33 @@
  * Every value goes through `<Mac>` / `<Timestamp>` / `<Code>` / `hs-num`.
  * These are database values landing inside prose that may be Arabic, and an
  * unisolated MAC is reordered on screen while the DOM stays correct.
+ *
+ * Two things are deliberately **not** painted from `data`.
+ *
+ * The **protocol fields** (`confirm_token`, `note`, `requires_confirmation`
+ * and friends) are stripped by `PROTOCOL_FIELDS`. A live single-use
+ * authorisation token has no business being on screen where a photograph or a
+ * shoulder can take it, and `note` is a sentence written *to the model* about
+ * what it may not do — showing it to the reader would be confusing at best.
+ *
+ * The **`untrusted` block** is read for its field names and nothing else. In a
+ * Wi-Fi IDS an SSID and a MAC are adversary-controlled by design: anyone can
+ * name an access point `ignore previous instructions`, stand near the sensor,
+ * and have that string arrive here. Those columns are marked so a reader knows
+ * the value is a claim rather than a fact, and the block's own note — also
+ * addressed to the model — is not rendered.
  */
 import * as React from "react"
 
 import { DataTable, type DataTableColumn } from "@/components/hs/data-table"
 import { Code, Ltr, Mac, Timestamp } from "@/lib/format"
 import { useT } from "@/lib/i18n"
-import { isOmitted, type SaqrToolResultEvent } from "@/lib/saqr"
+import {
+  isOmitted,
+  PROTOCOL_FIELDS,
+  untrustedFields,
+  type SaqrToolResultEvent,
+} from "@/lib/saqr"
 import { cn } from "@/lib/utils"
 
 /** The list fields the backend trims — mirrors `_DATA_LIST_FIELDS` in tools.py. */
@@ -166,7 +186,23 @@ export function SaqrResultPreview({
   className?: string
 }) {
   const t = useT()
-  const data = result.data ?? {}
+  const untrusted = untrustedFields(result.data)
+  // The protocol's own fields are stripped before anything is painted; see the
+  // note at the top of this file for why `confirm_token` in particular must
+  // never reach the screen. Keyed on `result.data` rather than on a defaulted
+  // local, so the memo does not re-run on every render for a result that has no
+  // data at all.
+  const data = React.useMemo(() => {
+    const source = result.data ?? {}
+    // `summary` is an ordinary result field for most tools, and part of the
+    // protocol for a proposal — where it is already quoted on the confirmation
+    // card and would otherwise appear twice under one step.
+    const drop =
+      source["requires_confirmation"] === true
+        ? [...PROTOCOL_FIELDS, "summary"]
+        : PROTOCOL_FIELDS
+    return Object.fromEntries(Object.entries(source).filter(([key]) => !drop.includes(key)))
+  }, [result.data])
 
   if (isOmitted(data)) {
     const reason = typeof data["reason"] === "string" ? (data["reason"] as string) : ""
@@ -212,11 +248,25 @@ export function SaqrResultPreview({
 
   const columns: DataTableColumn<Row>[] = keys.map((key) => ({
     id: key,
-    header: <Ltr>{key}</Ltr>,
+    header: untrusted.includes(key) ? (
+      // A dashed rule under the column name, not a badge: the mark has to
+      // survive in a header cell at 11px on a 320px viewport, and a pill
+      // there would push the table wider for a caveat, not for data.
+      <Ltr
+        className="decoration-sev-high/70 underline decoration-dashed underline-offset-4"
+        title={t("saqr.trace.untrusted")}
+      >
+        {key}
+      </Ltr>
+    ) : (
+      <Ltr>{key}</Ltr>
+    ),
     cell: (row) => <SaqrValue value={row[key]} />,
   }))
 
   const rest = Object.entries(data).filter(([key]) => key !== list.field)
+  // Only the fields this preview actually shows are worth naming in the note.
+  const marked = untrusted.filter((field) => keys.includes(field))
 
   return (
     <div className={cn("flex flex-col gap-2", className)}>
@@ -235,6 +285,15 @@ export function SaqrResultPreview({
         {t("saqr.trace.previewOf", { n: rows.length })}
         {result.truncated ? ` · ${t("saqr.trace.truncated")}` : ""}
       </p>
+
+      {/* Which of these columns came off the air. The field names are Latin
+          identifiers and are isolated as one island so the list cannot
+          reorder inside an Arabic sentence. */}
+      {marked.length > 0 && (
+        <p className="text-ink-2 text-xs">
+          {t("saqr.trace.untrustedNote", { fields: marked.join(", ") })}
+        </p>
+      )}
 
       {rest.length > 0 && (
         <div className="text-xs">
