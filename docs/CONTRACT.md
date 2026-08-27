@@ -677,6 +677,35 @@ in prose quoting it). Exit `0` means `POST /agent/ask` will work; `2` = key/clie
 With no key it prints exactly which checks it could **not** perform and exits non-zero — it never reports a
 pass it did not observe. `--skip-live` stops before the billed call.
 
+`backend/scripts/check_frontend.py` is the **go/no-go gate for the shipped `frontend/out` build**, and the
+check to run before and after `POST /ask` is reimplemented as a shim over the agent. It boots the real
+application over a throwaway seeded SQLite database and verifies, in order: the built bundle is present and
+its pages are served by the API process; every endpoint the bundle actually calls answers with the *shape*
+it consumes (checked field by field, not by status); and `POST /ask` returns the exact envelope the built
+RAG page destructures. Exit `0` means the shipped build still works; `2` = bundle missing or not served,
+`3` = an API endpoint broke, `4` = the `/ask` envelope broke, `5` = the live round-trip broke.
+
+Steps 1-3 need no key, no network and no PostgreSQL - the model is faked at *both* the current
+(`packet_qa._get_client`) and the future (`agent.llm.chat`) boundary, so the gate gives the same verdict
+before and after the flip, while the SQL runs for real against the seeded database. The live round-trip
+runs only when `OPENROUTER_API_KEY` is set; without one the script names what it could not verify and still
+exits `0`, because this has to be runnable on an offline Pi. `--skip-live` forces that path.
+
+The endpoint list and the `/ask` field list were extracted from `frontend/out/_next/static/chunks/` - from
+what the bundle *does*, not from this document. That is the point: the contract can be right while the
+shipped build still breaks. **The assertion that matters most is `mode === "SQL"`**: the built RAG page
+branches on that exact string and only that branch renders the sample-rows table. Any other value falls
+through to `answer || "(no answer)"`, so a wrong mode still shows a fluent, plausible reply while the rows
+table silently disappears - no error, nothing red, and a human watching a demo cannot tell. The gate fails
+loudly and explains that consequence in its output.
+
+`backend/tests/test_ask_shim_contract.py` is the CI half of the same contract, with each assertion keyed to
+the line of the bundle's handler it protects. `/stream` and `/simulate` are proven by the script rather
+than by pytest: `/stream` is an endless generator that no in-process transport can close cleanly (a
+`TestClient` never signals a disconnect, and `httpx.ASGITransport` buffers the whole body before returning),
+so the script drives the ASGI app directly on a daemon thread with a deadline and hands the endpoint a real
+`http.disconnect` once its opening `event: hello` frame arrives.
+
 ---
 
 ## 9. Simulation and live streaming
