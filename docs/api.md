@@ -34,6 +34,8 @@ ones (`wlan_sa`, `avg_rssi`). See [`CONTRACT.md` §4](CONTRACT.md).
 | GET | [`/reports/summary`](#get-reportssummary) | `reports.py` |
 | POST | [`/reports/export`](#post-reportsexport) | `reports.py` |
 | POST | [`/ask`](#post-ask) | `ask.py` |
+| POST | [`/simulate`](#post-simulate) | `simulate.py` |
+| GET | [`/stream`](#get-stream) | `stream.py` |
 | GET | [static dashboard](#static-dashboard) | `StaticFiles` mount |
 
 ---
@@ -603,6 +605,125 @@ An exit of `4` with a database error means the model is fine and your database i
 
 ---
 
+## POST `/simulate`
+
+Replay held-out AWID3 frames through the **real** detector pipeline and persist whatever it actually
+flags. This is the testing / demo control — it does **not** fabricate detections. It loads
+`data/sim/awid3_sim_corpus.parquet` (real, held-out AWID3 feature rows), pushes them through the same
+`build_pipeline` the live detector runs, and writes results through the same `PacketSink`, so the
+`packets` schema is untouched. Operator runbook: [`docs/demo.md`](demo.md). Design and corpus rationale:
+[`CONTRACT.md` §9](CONTRACT.md), [`data/sim/README.md`](../data/sim/README.md).
+
+**Body**
+
+```json
+{ "attacks": "all", "count": 25, "intensity": "burst" }
+```
+
+| Field | Type | Meaning |
+|---|---|---|
+| `attacks` | `"all"` \| `[str]` | `"all"` expands to every attack class in the corpus (**eight**). A list may mix class names and frontend keys (`"deauth"`, `"Kr00k"`, …). Default `"all"`. |
+| `count` | int | Target *persisted detections per class*. Schema-bounded `1..10000`, then hard-capped at `SIM_MAX_COUNT` (default **500**). Default `50`. |
+| `intensity` | `"burst"` \| `"trickle"` | `burst` runs flat out; `trickle` inserts a small pause (~20 ms per replay pass) so a live tail visibly ticks. Cosmetic — it does not change the result. Default `burst`. |
+
+**Response** — nested. `per_class` reports what the model **did**, not what was asked, so an
+under-detecting class shows in the numbers.
+
+```json
+{
+  "sim_batch": "9f3c1a…",
+  "model_version": "v2-gbdt",
+  "intensity": "burst",
+  "classes": ["Deauth", "Disas", "(Re)Assoc", "RogueAP", "Krack", "Kr00k", "Evil_Twin", "SSDP"],
+  "count_per_class": 25,
+  "total_persisted": 200,
+  "per_class": {
+    "Deauth": {
+      "requested": 25, "frames_pushed": 344, "detected": 25,
+      "persisted": 25, "top_label": "Deauth", "labels": {"Deauth": 25}
+    }
+  }
+}
+```
+
+| Field | Meaning |
+|---|---|
+| `sim_batch` | hex uuid stamped on every row of this run as `raw.sim_batch` |
+| `model_version` | the pipeline that scored the frames (`v2-gbdt` \| `v2-tcn` \| `v1`) |
+| `count_per_class` | the effective per-class target after the `SIM_MAX_COUNT` cap |
+| `total_persisted` | sum of `persisted` across classes |
+| `per_class[cls].requested` | the per-class target |
+| `per_class[cls].frames_pushed` | corpus frames replayed to reach it |
+| `per_class[cls].detected` | frames that cleared both thresholds (a real label) |
+| `per_class[cls].persisted` | rows written to `packets` |
+| `per_class[cls].top_label` | most common label assigned |
+| `per_class[cls].labels` | full `{label: count}` breakdown |
+
+**The persisted rows.** Each is written through the detector's own `PacketSink` and carries, in the
+`packets.raw` JSON column, `sim = true`, `sim_batch = <uuid>`, `sim_class`, plus locally-administered
+synthetic MACs (`02:5a:11:…`). They are indistinguishable from real detections in the normal UI shape
+(because they *are* real model output) yet trivially filtered or purged:
+
+```sql
+DELETE FROM packets WHERE json_extract(raw,'$.sim') = 1;   -- SQLite
+DELETE FROM packets WHERE raw->>'sim' = 'true';            -- PostgreSQL
+```
+
+**Status codes**
+
+| Status | When |
+|---|---|
+| **200** | run completed; the body reports what was persisted |
+| **400** | an unknown class name in `attacks` |
+| **403** | `ALLOW_SIMULATION=0` — simulation is disabled |
+| **429** | rate limit — more than 30 calls in 60 s |
+| **503** | no model can load, or the corpus is missing/unreadable (same posture as `/ask`) |
+
+Verified live against the committed corpus: `attacks: "all"`, all eight classes returned
+`persisted == requested`, every `top_label` correct.
+
+---
+
+## GET `/stream`
+
+Server-Sent Events — one event per new `packets` row, live, without polling the REST endpoints. A
+dashboard (or `curl -N`) opens it once and receives each detection as it lands. Used by the dashboard
+to upgrade its live feed; it falls back to polling on error.
+
+**Query**
+
+| Param | Default | Meaning |
+|---|---|---|
+| `since_id` | `-1` | Resume after this packet id. `-1` (or any negative) starts from the current tail, so a fresh listener only sees genuinely new rows. A non-negative value replays every row after that id. |
+
+**Response** — `text/event-stream`. The stream opens with a `hello` event carrying the resume
+boundary, then one `data:` event per row, and an SSE keep-alive comment while idle.
+
+```
+event: hello
+data: {"since_id": 4021}
+
+data: {"id": 4022, "ts": "2026-08-27T09:41:02.117000", "predicted_label": "Deauth", "p1": 0.998, "p2": 0.994, "src_mac": "02:5a:11:…", "bssid": "02:5a:11:…", "sim": true}
+
+: keep-alive
+```
+
+| Field | Meaning |
+|---|---|
+| `id` | `packets.id` |
+| `ts` | classification timestamp, ISO 8601 |
+| `predicted_label` | attack class |
+| `p1` / `p2` | the two model probabilities (`proba_anomaly` / `proba_attack`) |
+| `src_mac` / `bssid` | 802.11 addresses |
+| `sim` | `true` for a row written by `POST /simulate` |
+
+The endpoint polls `MAX(packets.id)` server-side, opens a short session per poll (never holding one
+open across the wait), stops on client disconnect, and sends `X-Accel-Buffering: no` so a reverse
+proxy does not buffer events. It works same-origin through the static mount, so the browser needs no
+CORS preflight.
+
+---
+
 ## Static dashboard
 
 When `FRONTEND_DIST` (default `<repo>/frontend/out`) exists, it is mounted at `/` with
@@ -611,7 +732,7 @@ When `FRONTEND_DIST` (default `<repo>/frontend/out`) exists, it is mounted at `/
 | Path | Serves |
 |---|---|
 | `/` | `index.html` — client-side redirect to `/home` |
-| `/home/` `/dashboard/` `/attacks/` `/rag/` | the four dashboard pages |
+| `/home/` `/dashboard/` `/attacks/` `/control/` `/rag/` | the five dashboard pages (`/control/` hosts the Simulate control and a live backend readout) |
 | `/_next/static/…` | JS/CSS bundles |
 | `/leaflet/marker-icon.png` etc. | committed Leaflet marker images, so the map works offline |
 
@@ -645,10 +766,18 @@ implemented.
 | Status | When |
 |---|---|
 | **200** | success — including `/ask` in `ERROR` mode and `/map/estimate-origin` with nothing to estimate |
+| **400** | `/simulate` only: an unknown attack class name |
+| **403** | `/simulate` only: `ALLOW_SIMULATION=0` |
 | **422** | request validation failed (e.g. `limit=0`, `limit=200000`, a missing `question`) — FastAPI's standard body |
 | **404** | unknown path; served by the static export's `404.html` when a frontend is mounted |
+| **429** | `/simulate` only: more than 30 calls in 60 s |
 | **500** | unhandled server error — read `journalctl -u hawkshield-api -n 50` |
-| **503** | `/ask` only: no `OPENROUTER_API_KEY`, or the RAG module failed to import |
+| **503** | `/ask`: no `OPENROUTER_API_KEY` or the RAG module failed to import. `/simulate`: no model or no corpus can load |
 
-There is no rate limiting and no authentication. `/attacks` with `limit=100000` will happily build a
-100 000-row JSON array on a Raspberry Pi; page it.
+There is no authentication, and no rate limiting except the light guard on `/simulate`. `/attacks`
+with `limit=100000` will happily build a 100 000-row JSON array on a Raspberry Pi; page it.
+
+> **`raw.sim`.** Rows written by `POST /simulate` carry `sim = true` in the `packets.raw` JSON column
+> (with `sim_batch` and `sim_class`). Every read endpoint above returns them exactly like real
+> detections — they are real model output — so they are invisible in the normal UI shape but filterable
+> by that flag. See [`POST /simulate`](#post-simulate).

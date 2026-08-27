@@ -375,6 +375,49 @@ cd ~/HawkShield
 
 See [`../data/README.md`](../data/README.md).
 
+**9 — The model predicts on *this* box.** Independent of capture, confirm the artefacts on disk load
+and score:
+
+```bash
+cd ~/HawkShield
+.venv/bin/python -m backend.detector.cli --self-test
+```
+
+It builds the pipeline and pushes crafted frames through the feature extractor and inference path,
+asserting the model loaded and every frame produced a complete 46-feature vector and a finite `p1`
+(never the class label — crafted frames carry no realistic timing). **Exit 0 means the model is live
+and predicting here;** a non-zero exit names the missing or corrupt artefact.
+
+**10 — Watch detections land, live.** The terminal twin of `GET /stream` — one coloured line per row,
+a `SIM` tag on rows written by `POST /simulate`:
+
+```bash
+.venv/bin/python -m backend.scripts.live_monitor --follow
+```
+
+**11 — The whole chain, over the air (optional).** `tools/inject_attack.py` is the only test that
+exercises antenna → capture → model → database: it transmits real 802.11 frames from a *second*
+monitor-mode adapter against your own AP and grades what the Pi wrote.
+
+> **⚠️ Legal note — read first.** Transmitting deauthentication / disassociation frames against
+> networks you do not own is **illegal in most jurisdictions.** This is for your own testbed only.
+> The tool refuses to transmit unless you pass **both** `--i-own-this-network` and an explicit,
+> well-formed `--target-bssid`, and it caps count/rate in code.
+
+```bash
+sudo .venv/bin/python tools/inject_attack.py \
+    --iface wlan1mon --target-bssid <your-ap-bssid> \
+    --attack all --count 50 --rate 20 --i-own-this-network \
+    --verify postgresql://hawk:password@localhost:5432/hawkshield
+```
+
+`--verify` grades each injected class **PASS / PARTIAL / FAIL**. A **PARTIAL** (the Pi saw attack
+traffic but under a different label) is expected, not a bug: the shipped model is AWID3-trained and
+validated across time within one recording, not across radio hardware
+([`../models/README.md` §2.7.1](../models/README.md)). A **FAIL** (nothing written) is the real red
+flag — check the adapter injects and everything is on the same channel. Full guide:
+[`../tools/README.md`](../tools/README.md). Runbook framing: [`demo.md`](demo.md).
+
 ---
 
 ## 7. Logs

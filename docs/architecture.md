@@ -9,8 +9,8 @@ This document describes what the code does. The normative interface definitions 
 
 > **Two generations.** The detector loads either the **v2** causal TCN (ONNX) or the **v1** two-stage
 > LightGBM pair, chosen by `MODEL_VERSION`. Steps 1, 4 and 5 below are identical for both; steps 2
-> and 3 differ, and both are described. **No trained v2 artefact exists in this repository yet**, so
-> `auto` currently resolves to v1 — see [`models.md`](models.md).
+> and 3 differ, and both are described. The trained v2 artefacts ship in `models/`, so `auto`
+> resolves to **`v2-gbdt`** (the measured winner) — see [`models.md`](models.md).
 
 ---
 
@@ -201,7 +201,7 @@ sniffer.
 list, feature list *and feature order*, feature count and normalisation vector lengths all match the
 running `feature_spec`, and the ONNX graph's own declared channel dimensions match too. All faults
 are reported at once. Under `MODEL_VERSION=v2` a mismatch raises `SpecMismatchError` and exits `2`;
-under `auto` it falls back to v1 and logs the reason at ERROR. The check caught a stale artefact on
+under `auto` it falls back (v2-tcn, then v1) and logs the reason at ERROR. The check caught a stale artefact on
 its first run, which is the entire justification for its existence.
 
 The ring-buffer arithmetic mirrors `ml.windows.inference_chunks` exactly, so a frame scored offline

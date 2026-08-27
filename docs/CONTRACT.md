@@ -91,6 +91,9 @@ credentials, or thresholds anywhere in the codebase. `backend/detector/*` reads 
 | `TARGET_SSID` | *(empty = no filter)* | detector |
 | `BATCH_SIZE` | `20` | detector sink |
 | `BATCH_FLUSH_SECONDS` | `2.0` | detector sink |
+| `ALLOW_SIMULATION` | `1` | app — master switch for `POST /simulate`; `0` ⇒ 403 |
+| `SIM_MAX_COUNT` | `500` | app — hard cap on the per-class `count` a `/simulate` call may request |
+| `SIM_CORPUS` | *(empty = packaged `data/sim/awid3_sim_corpus.parquet`)* | app — held-out AWID3 rows `/simulate` replays |
 | `OPENROUTER_API_KEY` | *(empty = RAG disabled)* | RAG — key from <https://openrouter.ai/keys> |
 | `GEN_MODEL` | `deepseek/deepseek-v4-flash` | RAG — any OpenRouter model id |
 | `OPENROUTER_BASE_URL` | `https://openrouter.ai/api/v1` | RAG — OpenAI-compatible endpoint override |
@@ -144,6 +147,8 @@ All routes are registered on the app **without** a prefix (the frontend calls `$
 | POST | `/reports/export` | body `{"days": int}` → `application/pdf` stream, `Content-Disposition: attachment; filename="hawkshield_report_<days>d.pdf"` |
 | POST | `/ask` | body `{"question": str, "session_id": str?}` → `{"cached": bool, "mode": "SQL"\|"DOCS"\|"OOS"\|"ERROR", "sql": str, "answer": str, "cols": [str], "rows": [obj], "error": str?}`; **503** `{"detail": "..."}` when no `OPENROUTER_API_KEY` |
 | GET | `/health` | `{"status":"ok"\|"degraded", "database": bool, "packets": int, "latest_packet_ts": iso8601\|null, "models": {"stage1": bool, "stage2": bool, "v2": bool, "v2_gbdt": bool}, "model_version": "v2-gbdt"\|"v2-tcn"\|"v1"\|"none", "spec_version": str, "artefact_spec_version": str\|null, "model_problems": [str], "version": str}` |
+| POST | `/simulate` | body `{"attacks": "all"\|[str], "count": int, "intensity": "burst"\|"trickle"}` → `{"sim_batch": hex, "model_version": str, "intensity": str, "classes": [str], "count_per_class": int, "total_persisted": int, "per_class": {cls: {"requested","frames_pushed","detected","persisted","top_label","labels":{lbl:int}}}}`. **403** when `ALLOW_SIMULATION=0`; **400** on an unknown class; **429** over the rate limit; **503** when no model or no corpus loads. See §9 |
+| GET | `/stream?since_id=-1` | `text/event-stream`. One SSE `data:` event per new `packets` row: `{"id","ts","predicted_label","p1","p2","src_mac","bssid","sim"}`. `since_id=-1` (default) starts from the current tail; a non-negative value resumes after that id. Opens with an `event: hello` carrying `{"since_id": int}` |
 
 Label mapping used by `/reports/summary` (DB label → frontend key). **Derived, not hand-maintained** —
 `backend/app/config.py` builds it from `feature_spec.ATTACK_CLASSES` by lower-casing and dropping
@@ -592,3 +597,80 @@ v2 ONNX + meta, or both v1 bundles. Owner of `run.py`, not of the detector.
 catalogue (with its live price) → a `DOCS` answer → a `SQL` generation → that SQL executed. Exit `0` means
 `POST /ask` will work; `2` = key/model id, `3` = `DOCS` call, `4` = `SQL` generation or execution.
 `--skip-db` stops before execution.
+
+---
+
+## 9. Simulation and live streaming
+
+Two features let the system be exercised and watched without a radio: `POST /simulate`
+generates real detections from held-out data, and `GET /stream` pushes new rows to a client live.
+They share the `packets` table and the model with the live detector; neither is a mock.
+
+### 9.1 The simulation corpus — `data/sim/awid3_sim_corpus.parquet`
+
+`POST /simulate` replays **held-out AWID3 feature rows**, not crafted frames and not the
+`data/samples/*.pcapng` captures. That choice is a measurement, not a preference:
+
+- **Crafted scapy frames** (`attack_sim.build_frames`) score `p1 ≈ 0.96` — the model is sure they are
+  *an attack* — but stage-2 confidence sits at ~0.36 and mislabels, because the booster's single most
+  important feature is `roll64.frame.dt_log.mean` (inter-frame timing) and frames built in a loop carry
+  no timing. They are honest for `--self-test` (they prove the model loads and yields a full 46-feature
+  vector and a `p1`) and for `tools/inject_attack.py` (a real radio supplies the timing), **not** for a demo.
+- **`data/samples/*.pcapng`** are out of domain — the original project's testbed, not AWID3. The
+  AWID3-trained model flags them and then labels almost all of them Krack: the cross-deployment gap of
+  `models/README.md` §2.7.1, made concrete. A finding, not a demo source.
+- **Held-out AWID3 rows** are the model's own domain and classify correctly (~99–100% per class). This
+  is the honest source, and it is what the corpus holds.
+
+**How it is built** (`data/sim/build_sim_corpus.py`, and `data/sim/README.md`): one contiguous *segment*
+per attack class, taken from a `block_id` in the training split's `test` set — the same held-out data the
+reported macro-F1 was measured on. The segment keeps the **Normal frames interleaved with the attack**,
+and that is the whole design: the GBDT's 36 rolling aggregates are causal over the frame stream, so
+filtering a block down to only its attack rows produces a stream that never existed and the aggregates
+then describe *that*. Measured on seven held-out Kr00k blocks, label-filtered rows persist correctly
+0.1–4.2% of the time; the contiguous segment, 97–100%. Same model, same frames — the only difference is
+whether the benign frames between attacks were kept. So they are kept, pushed through the pipeline like
+everything else, and legitimately come back `Normal` and unpersisted. For each class the builder picks
+the held-out block the model handles most cleanly and records it; the segment grows from 2 000 frames up
+to a cap when a class is sparse (RogueAP is 1 310 rows in all of AWID3). The `_work/` inputs are
+build-time only and uncommitted; the ~300 KB parquet is committed.
+
+**Kr00k.** In earlier label-filtered experiments Kr00k confused to Disas (the documented Disas↔Kr00k
+adjacency), so it was a candidate for exclusion. With the contiguous-segment corpus it self-classifies at
+100% and is kept in the default `all` menu. If a future spec regresses it, the honest fallback is to drop
+it from the default set with this note — never to relabel it.
+
+### 9.2 `POST /simulate` semantics
+
+- `attacks` is `"all"` or a list of class names / frontend keys (`"deauth"`, `"Kr00k"`, …). `"all"`
+  expands to **every** attack class in the corpus (eight), which is wider than `attack_sim.resolve_classes`
+  ("all" = the six craftable classes).
+- `count` is the **target persisted detections per class**, capped at `SIM_MAX_COUNT`. The corpus segment
+  is replayed (reset each pass) until that many detections persist or a pass yields none.
+- Every persisted row is written through the **same `PacketSink`** the detector uses — the schema does not
+  change — and carries `raw.sim = true`, `raw.sim_batch = <uuid>`, `raw.sim_class`, and locally-administered
+  synthetic MACs (`02:5a:11:…`). Simulated rows are therefore invisible in the normal UI shape yet trivially
+  filterable and purgeable: `DELETE FROM packets WHERE json_extract(raw,'$.sim') = 1` (SQLite) /
+  `WHERE raw->>'sim' = 'true'` (Postgres).
+- The `per_class` summary reports what the model **did**, not what was asked, so an under-detecting class
+  shows in the numbers. Measured per-class correct-persist over the committed corpus is 100% for all eight
+  classes; `RogueAP` occasionally mixes a Disas into its persisted rows, which the summary shows honestly.
+- Gated by `ALLOW_SIMULATION` (403 when off), capped by `SIM_MAX_COUNT`, lightly rate-limited (429), and
+  503 when no model or no corpus can load — the same posture as `/ask`.
+
+### 9.3 `GET /stream`
+
+Server-Sent Events. The endpoint polls `MAX(packets.id)` server-side and emits each new row as it lands;
+it opens a short session per poll (never holding one open across the wait), stops on client disconnect, and
+sends an SSE keep-alive comment while idle. Works same-origin through the static mount.
+
+### 9.4 `--self-test` and `live_monitor`
+
+`python -m backend.detector.cli --self-test` builds the pipeline and pushes crafted frames through
+`packet_to_features_v2` + the inference path, asserting the model loaded and every frame produced a
+complete feature vector and a finite `p1` (never class labels — see §9.1). Exit 0 = the model is live and
+predicting on this machine; non-zero names the missing/corrupt artefact.
+
+`python -m backend.scripts.live_monitor --follow` is the terminal twin of `/stream`: it tails the `packets`
+table (reusing `backend.app.db` + `Packet`), printing one coloured line per row with a `SIM` tag when
+`raw.sim` is set. `--since-id` resumes from an id; `--sim-only` shows only simulated rows.

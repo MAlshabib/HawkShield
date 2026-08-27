@@ -166,6 +166,19 @@ class Settings(BaseSettings):
     OPENROUTER_APP_NAME: str = "HawkShield"
     HUMANIZE_SQL: int = 1
 
+    # ---- simulation (POST /simulate) ------------------------------------
+    #: Master switch for the demo/testing endpoint.  On by default; set to 0 to
+    #: return 403 from /simulate on a box where writing synthetic rows is not
+    #: wanted.  Simulated rows are always tagged ``raw.sim = true`` so they stay
+    #: filterable and purgeable whether or not this is on.
+    ALLOW_SIMULATION: bool = True
+    #: Hard ceiling on the per-class ``count`` a single /simulate call may request,
+    #: so the endpoint can never be turned into a DB-fill weapon.
+    SIM_MAX_COUNT: int = 500
+    #: Parquet of held-out AWID3 rows /simulate replays.  Blank means the default
+    #: committed file (``data/sim/awid3_sim_corpus.parquet``).
+    SIM_CORPUS: str = ""
+
     # ---- web ------------------------------------------------------------
     CORS_ORIGINS: Annotated[List[str], NoDecode] = ["http://localhost:3000"]
     FRONTEND_DIST: Path = REPO_ROOT / "frontend" / "out"
@@ -175,6 +188,13 @@ class Settings(BaseSettings):
     LOG_LEVEL: str = "INFO"
 
     # -- validators -------------------------------------------------------
+    @field_validator("SIM_MAX_COUNT")
+    @classmethod
+    def _sim_cap_at_least_one(cls, v: int) -> int:
+        """A zero or negative cap would make min(count, cap) select an invalid
+        value and break every simulation run. Clamp to a sane floor."""
+        return max(1, int(v))
+
     @field_validator("CORS_ORIGINS", mode="before")
     @classmethod
     def _split_cors(cls, v: object) -> List[str]:

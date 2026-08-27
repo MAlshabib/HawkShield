@@ -1,9 +1,14 @@
 "use client"
 
-import { useEffect, useMemo, useState } from "react"
+import { useCallback, useEffect, useMemo, useState } from "react"
 import dynamic from "next/dynamic"
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
 import { apiFetchSafe } from "@/lib/api"
+import { useHealth } from "@/hooks/use-health"
+import { useEventSource } from "@/hooks/use-event-source"
+import { ConnectionBanner, ConnectionStatus } from "@/components/connection-status"
+import { SimulatePanel } from "@/components/simulate-panel"
+import { classColor, classLabel } from "@/lib/simulate"
 
 // Declared locally to avoid a cross-module type import.
 type TimeRange = "day" | "week" | "month"
@@ -43,6 +48,14 @@ const freqToChannel = (freq: any): number => {
   return 0
 }
 
+const agoLabel = (at: number | null): string => {
+  if (!at) return "never"
+  const secs = Math.max(0, Math.round((Date.now() - at) / 1000))
+  if (secs < 60) return `${secs}s ago`
+  const mins = Math.round(secs / 60)
+  return mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`
+}
+
 type AnalysisMap = Record<string, number>
 type OffenderRow = { wlan_sa: string; count: number }
 type ChannelRow = { channel_freq: number; channel: number; count: number }
@@ -63,73 +76,119 @@ type AttackRaw = {
   proba_attack?: number
 }
 
+type DatedAttack = AttackRaw & { __date: Date }
+
+/** Poll cadence: relaxed while healthy, brisk while we are trying to recover. */
+const REFRESH_OK_MS = 20_000
+const REFRESH_RETRY_MS = 8_000
+
 export default function DashboardPage() {
   const [timeRange, setTimeRange] = useState<TimeRange>("day")
 
-  const [analysis, setAnalysis] = useState<AnalysisMap>({})
-  const [offenders, setOffenders] = useState<OffenderRow[]>([])
-  const [channels, setChannels] = useState<ChannelRow[]>([])
-  const [heatmap, setHeatmap] = useState<HeatRow[]>([])
-  const [attacks, setAttacks] = useState<(AttackRaw & { __date: Date })[]>([])
+  // `null` means "we have never successfully loaded this" — distinct from an
+  // empty result. Failed refreshes leave the previous value untouched so the
+  // page keeps showing the last real data instead of blanking out. We never
+  // substitute made-up numbers for missing ones.
+  const [analysis, setAnalysis] = useState<AnalysisMap | null>(null)
+  const [heatmap, setHeatmap] = useState<HeatRow[] | null>(null)
+  const [rawAttacks, setRawAttacks] = useState<DatedAttack[] | null>(null)
+  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
   const [loading, setLoading] = useState(true)
+  const [reloadTick, setReloadTick] = useState(0)
+
+  const { state: connState, lastOkAt, refresh: refreshHealth } = useHealth()
+  const { state: streamState, events: streamEvents } = useEventSource("/stream", { limit: 25 })
+
+  const refreshData = useCallback(() => setReloadTick((n) => n + 1), [])
 
   useEffect(() => {
     let mounted = true
     ;(async () => {
-      setLoading(true)
-
-      const attacksData = await apiFetchSafe<any>("/attacks?limit=5000&offset=0", [])
-      const analysisData = await apiFetchSafe<AnalysisMap>("/attacks/analysis", {})
-      const heatmapData = await apiFetchSafe<HeatRow[]>("/heatmap-attack", [])
+      const [attacksData, analysisData, heatmapData] = await Promise.all([
+        apiFetchSafe<any>("/attacks?limit=5000&offset=0", null),
+        apiFetchSafe<any>("/attacks/analysis", null),
+        apiFetchSafe<any>("/heatmap-attack", null),
+      ])
 
       if (!mounted) return
 
-      const arr: AttackRaw[] = Array.isArray(attacksData)
-        ? attacksData
-        : (attacksData?.attacks ?? attacksData?.data ?? [])
-      const mapped = arr
-        .filter((row) => !isNormalLike(row))
-        .map((a) => ({ ...a, __date: toDate(a.timestamp) }))
-        .filter((a) => withinRange(a.__date, timeRange))
+      let got = false
 
-      setAttacks(mapped)
-
-      const offenderCounts = new Map<string, number>()
-      for (const a of mapped) {
-        const mac = String(a.wlan_sa ?? "").toUpperCase()
-        if (!mac) continue
-        offenderCounts.set(mac, (offenderCounts.get(mac) ?? 0) + 1)
+      if (attacksData !== null) {
+        const arr: AttackRaw[] = Array.isArray(attacksData)
+          ? attacksData
+          : (attacksData?.attacks ?? attacksData?.data ?? [])
+        setRawAttacks(
+          (Array.isArray(arr) ? arr : [])
+            .filter((row) => !isNormalLike(row))
+            .map((a) => ({ ...a, __date: toDate(a.timestamp) })),
+        )
+        got = true
       }
-      const offendersLocal: OffenderRow[] = Array.from(offenderCounts.entries())
-        .map(([wlan_sa, count]) => ({ wlan_sa, count }))
-        .sort((a, b) => b.count - a.count)
-        .slice(0, 20)
-      setOffenders(offendersLocal)
 
-      const channelCounts = new Map<number, number>()
-      for (const a of mapped) {
-        const f = Number(a.radiotap_channel_freq)
-        if (!Number.isFinite(f)) continue
-        channelCounts.set(f, (channelCounts.get(f) ?? 0) + 1)
+      if (analysisData !== null) {
+        setAnalysis(
+          Object.fromEntries(
+            Object.entries((analysisData ?? {}) as AnalysisMap).filter(
+              ([k]) => !/^(normal|benign|none)$/i.test(String(k)),
+            ),
+          ),
+        )
+        got = true
       }
-      const channelsLocal: ChannelRow[] = Array.from(channelCounts.entries())
-        .map(([freq, count]) => ({ channel_freq: freq, channel: freqToChannel(freq), count }))
-        .sort((a, b) => b.count - a.count)
-      setChannels(channelsLocal)
 
-      const filteredAnalysis = Object.fromEntries(
-        Object.entries(analysisData ?? {}).filter(([k]) => !/^(normal|benign|none)$/i.test(String(k)))
-      )
-      setAnalysis(filteredAnalysis)
+      if (heatmapData !== null) {
+        setHeatmap(Array.isArray(heatmapData) ? heatmapData : [])
+        got = true
+      }
 
-      setHeatmap(Array.isArray(heatmapData) ? heatmapData : [])
-
+      if (got) setLastUpdated(Date.now())
       setLoading(false)
     })()
     return () => {
       mounted = false
     }
-  }, [timeRange])
+  }, [reloadTick])
+
+  // Automatic recovery: keep polling in the background, faster while degraded,
+  // so the page heals itself the moment the backend comes back.
+  useEffect(() => {
+    const every = connState === "online" ? REFRESH_OK_MS : REFRESH_RETRY_MS
+    const t = setInterval(refreshData, every)
+    return () => clearInterval(t)
+  }, [connState, refreshData])
+
+  // Time-range filtering is derived, not refetched, so changing the range still
+  // works while the backend is unreachable.
+  const attacks = useMemo(
+    () => (rawAttacks ?? []).filter((a) => withinRange(a.__date, timeRange)),
+    [rawAttacks, timeRange],
+  )
+
+  const offenders = useMemo<OffenderRow[]>(() => {
+    const counts = new Map<string, number>()
+    for (const a of attacks) {
+      const mac = String(a.wlan_sa ?? "").toUpperCase()
+      if (!mac) continue
+      counts.set(mac, (counts.get(mac) ?? 0) + 1)
+    }
+    return Array.from(counts.entries())
+      .map(([wlan_sa, count]) => ({ wlan_sa, count }))
+      .sort((a, b) => b.count - a.count)
+      .slice(0, 20)
+  }, [attacks])
+
+  const channels = useMemo<ChannelRow[]>(() => {
+    const counts = new Map<number, number>()
+    for (const a of attacks) {
+      const f = Number(a.radiotap_channel_freq)
+      if (!Number.isFinite(f)) continue
+      counts.set(f, (counts.get(f) ?? 0) + 1)
+    }
+    return Array.from(counts.entries())
+      .map(([freq, count]) => ({ channel_freq: freq, channel: freqToChannel(freq), count }))
+      .sort((a, b) => b.count - a.count)
+  }, [attacks])
 
   const timeline = useMemo(() => {
     const byKey = new Map<string, number>()
@@ -152,54 +211,118 @@ export default function DashboardPage() {
     return h
   }, [attacks])
 
+  // Live feed: SSE rows first when /stream is up, polled rows underneath, keyed
+  // by id so the same detection never shows twice.
   const liveFeed = useMemo(() => {
-    return [...attacks]
+    const fromStream = streamEvents.map((e) => ({
+      id: String(e.id ?? ""),
+      mac: e.src_mac || e.bssid || "-",
+      label: e.predicted_label ?? "",
+      date: toDate(e.ts),
+      sim: Boolean(e.sim),
+    }))
+    const fromPoll = [...attacks]
       .sort((A, B) => (B.__date?.getTime?.() ?? -1) - (A.__date?.getTime?.() ?? -1))
       .slice(0, 20)
-  }, [attacks])
+      .map((a) => ({
+        id: String(a.id ?? ""),
+        mac: a.wlan_sa || "-",
+        label: String(a.attack_type ?? a.type ?? ""),
+        date: a.__date,
+        sim: false,
+      }))
+    const seen = new Set<string>()
+    return [...fromStream, ...fromPoll]
+      .filter((r) => {
+        if (!r.id) return true
+        if (seen.has(r.id)) return false
+        seen.add(r.id)
+        return true
+      })
+      .sort((A, B) => (B.date?.getTime?.() ?? -1) - (A.date?.getTime?.() ?? -1))
+      .slice(0, 20)
+  }, [attacks, streamEvents])
+
+  const analysisRows = Object.entries(analysis ?? {}).sort((a, b) => b[1] - a[1])
+  const heatRows = heatmap ?? []
+  const degraded = connState === "degraded" || connState === "offline"
+  const firstLoad = loading && rawAttacks === null && analysis === null
 
   return (
     <div className="p-6 space-y-6 max-w-7xl mx-auto">
       {/* Header */}
-      <div className="flex items-center justify-between">
+      <div className="flex flex-wrap items-center justify-between gap-4">
         <div>
           <h1 className="text-3xl font-bold text-white">Security Dashboard</h1>
           <p className="text-gray-400 mt-1">Real-time WiFi intrusion monitoring and analytics</p>
         </div>
-        <Select value={timeRange} onValueChange={(v: TimeRange) => setTimeRange(v)}>
-          <SelectTrigger className="w-32 glassmorphism border-cyan-500/30">
-            <SelectValue />
-          </SelectTrigger>
-          <SelectContent className="glassmorphism border-cyan-500/30">
-            <SelectItem value="day">Day</SelectItem>
-            <SelectItem value="week">Week</SelectItem>
-            <SelectItem value="month">Month</SelectItem>
-          </SelectContent>
-        </Select>
+        <div className="flex items-center gap-3">
+          <ConnectionStatus
+            state={connState}
+            lastOkAt={lastOkAt}
+            onRetry={() => {
+              refreshHealth()
+              refreshData()
+            }}
+          />
+          <Select value={timeRange} onValueChange={(v: TimeRange) => setTimeRange(v)}>
+            <SelectTrigger className="w-32 glassmorphism border-cyan-500/30">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent className="glassmorphism border-cyan-500/30">
+              <SelectItem value="day">Day</SelectItem>
+              <SelectItem value="week">Week</SelectItem>
+              <SelectItem value="month">Month</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
       </div>
 
-      {loading ? (
+      <ConnectionBanner state={connState} lastOkAt={lastOkAt} />
+
+      {/* Operator control: works off the API alone, so it stays usable even when
+          the capture source or the database is not reporting. */}
+      <SimulatePanel
+        onSimulated={() => {
+          refreshData()
+          refreshHealth()
+        }}
+      />
+
+      {firstLoad ? (
         <div className="text-center text-gray-400">Loading dashboard…</div>
       ) : (
         <>
           {/* Attack Summary */}
           <section>
-            <h2 className="text-xl font-semibold text-white mb-4">Attack Summary</h2>
+            <div className="flex items-center justify-between mb-4">
+              <h2 className="text-xl font-semibold text-white">Attack Summary</h2>
+              <span className="text-xs text-gray-500">Updated {agoLabel(lastUpdated)}</span>
+            </div>
             <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {Object.entries(analysis)
-                .sort((a, b) => b[1] - a[1])
-                .map(([name, count]) => (
-                  <div key={name} className="rounded-2xl bg-[#0F1629] border border-white/5 p-5">
-                    <div className="flex items-center justify-between">
-                      <span className="text-sm text-gray-400">{name}</span>
-                      <span className="text-xs text-gray-500">
-                        {timeRange === "day" ? "24h" : timeRange === "week" ? "7d" : "30d"}
-                      </span>
-                    </div>
-                    <div className="mt-2 text-4xl font-bold text-white">{count}</div>
+              {analysisRows.map(([name, count]) => (
+                <div key={name} className="rounded-2xl bg-[#0F1629] border border-white/5 p-5">
+                  <div className="flex items-center justify-between">
+                    <span className="flex items-center gap-2 text-sm text-gray-400">
+                      <span
+                        className="h-2.5 w-2.5 rounded-full"
+                        style={{ background: classColor(name) }}
+                        aria-hidden
+                      />
+                      {classLabel(name)}
+                    </span>
+                    <span className="text-xs text-gray-500">
+                      {timeRange === "day" ? "24h" : timeRange === "week" ? "7d" : "30d"}
+                    </span>
                   </div>
-                ))}
-              {Object.keys(analysis).length === 0 && <div className="text-gray-400">No analysis data.</div>}
+                  <div className="mt-2 text-4xl font-bold text-white">{count}</div>
+                </div>
+              ))}
+              {analysisRows.length === 0 && (
+                <div className="text-gray-400">
+                  {degraded ? "Waiting for the backend to report again…" : "No analysis data."}
+                </div>
+              )}
             </div>
           </section>
 
@@ -209,7 +332,7 @@ export default function DashboardPage() {
               <h3 className="text-white font-semibold mb-3">Timeline</h3>
               <div className="max-h-80 overflow-auto space-y-2">
                 {timeline.length === 0 ? (
-                  <div className="text-gray-400">No events.</div>
+                  <div className="text-gray-400">{degraded ? "Reconnecting…" : "No events."}</div>
                 ) : (
                   timeline.map(([label, count]) => (
                     <div key={label} className="flex items-center justify-between text-white/90">
@@ -250,10 +373,10 @@ export default function DashboardPage() {
                 </div>
                 {/* rows */}
                 <div className="space-y-1">
-                  {heatmap.length === 0 ? (
-                    <div className="text-gray-400">No heatmap data.</div>
+                  {heatRows.length === 0 ? (
+                    <div className="text-gray-400">{degraded ? "Reconnecting…" : "No heatmap data."}</div>
                   ) : (
-                    heatmap.map((row) => (
+                    heatRows.map((row) => (
                       <div
                         key={row.day}
                         className="grid grid-cols-[80px_repeat(24,minmax(20px,1fr))] gap-1 items-center"
@@ -294,7 +417,7 @@ export default function DashboardPage() {
                   {offenders.length === 0 ? (
                     <tr>
                       <td colSpan={3} className="px-4 py-6 text-gray-400">
-                        No offenders.
+                        {degraded ? "Reconnecting…" : "No offenders."}
                       </td>
                     </tr>
                   ) : (
@@ -329,7 +452,7 @@ export default function DashboardPage() {
                 {channels.length === 0 ? (
                   <tr>
                     <td colSpan={3} className="px-4 py-6 text-gray-400">
-                      No channel data.
+                      {degraded ? "Reconnecting…" : "No channel data."}
                     </td>
                   </tr>
                 ) : (
@@ -347,16 +470,39 @@ export default function DashboardPage() {
 
           {/* Live Feed */}
           <section className="rounded-2xl bg-[#0F1629] border border-white/5 p-4">
-            <h3 className="text-white font-semibold mb-3">Live Feed (latest)</h3>
+            <div className="flex items-center justify-between mb-3">
+              <h3 className="text-white font-semibold">Live Feed (latest)</h3>
+              <span className="text-xs text-gray-500">
+                {streamState === "open" ? (
+                  <span className="text-cyan-400">streaming</span>
+                ) : (
+                  <span>polling</span>
+                )}
+              </span>
+            </div>
             <div className="space-y-2 max-h-80 overflow-auto">
               {liveFeed.length === 0 ? (
-                <div className="text-gray-400">No recent events.</div>
+                <div className="text-gray-400">{degraded ? "Reconnecting…" : "No recent events."}</div>
               ) : (
                 liveFeed.map((a, i) => (
-                  <div key={String(a.id) + i} className="flex items-center justify-between text-white/90 text-sm">
-                    <span className="font-mono">{a.wlan_sa ?? "-"}</span>
-                    <span className="text-gray-400">
-                      {a.__date instanceof Date && !isNaN(a.__date.getTime()) ? a.__date.toLocaleString() : "-"}
+                  <div key={a.id + "-" + i} className="flex items-center justify-between gap-3 text-white/90 text-sm">
+                    <span className="flex items-center gap-2 min-w-0">
+                      {a.label ? (
+                        <span
+                          className="h-2 w-2 rounded-full shrink-0"
+                          style={{ background: classColor(a.label) }}
+                          aria-hidden
+                        />
+                      ) : null}
+                      <span className="font-mono truncate">{a.mac}</span>
+                      {a.sim && (
+                        <span className="rounded border border-cyan-500/30 px-1.5 text-[10px] text-cyan-300 shrink-0">
+                          sim
+                        </span>
+                      )}
+                    </span>
+                    <span className="text-gray-400 shrink-0">
+                      {a.date instanceof Date && !isNaN(a.date.getTime()) ? a.date.toLocaleString() : "-"}
                     </span>
                   </div>
                 ))

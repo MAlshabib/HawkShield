@@ -149,6 +149,7 @@ The systemd path is still the right answer for an unattended Pi — see
 | [`docs/architecture.md`](docs/architecture.md) | Frame-by-frame data flow, both model generations, why one process serves both API and UI |
 | [`docs/deployment-pi.md`](docs/deployment-pi.md) | Full Raspberry Pi walkthrough — OS, adapter, PostgreSQL, systemd, model copy, verification |
 | [`docs/api.md`](docs/api.md) | Every endpoint, with parameters and real example responses |
+| [`docs/demo.md`](docs/demo.md) | **Demo & real-time-testing runbook** — the two-command laptop demo, `/simulate`, the failover, the over-the-air test |
 | [`docs/models.md`](docs/models.md) | v2 pipeline, the 46-feature contract, the 9 classes, thresholds, excluded classes |
 | [`models/README.md`](models/README.md) | Full model card — v2 design and evaluation protocol, **and the v1 post-mortem** |
 | [`ml/README.md`](ml/README.md) | The training pipeline: one command, the split protocol, how to read the reports |
@@ -235,9 +236,10 @@ at `/`, so the catch-all can never shadow an endpoint. Full narrative in
 that shares `derive_frame_features()` with the live path, is in
 [`docs/model-pipeline.md`](docs/model-pipeline.md).
 
-The detector box above is **v2**. Selected by `MODEL_VERSION` (`auto` | `v1` | `v2`), the v1 two-stage
-LightGBM path is still available and is what `auto` falls back to when no valid v2 artefact is on
-disk — which is the case in this checkout today.
+The detector box above is **v2**. Selected by `MODEL_VERSION` (`auto` | `v1` | `v2-tcn` | `v2-gbdt`),
+`auto` resolves to **`v2-gbdt`** — the trained LightGBM winner ships in `models/`. The v1 two-stage
+path and the v2 TCN remain selectable, and `auto` falls back to them only if the GBDT artefact is
+absent or fails its spec check.
 
 ---
 
@@ -383,7 +385,9 @@ All routes are registered **without a prefix**. Full request/response detail in
 | GET | `/reports/summary?days=` | Totals by type + headline figures |
 | POST | `/reports/export` | One-page A4 PDF (`application/pdf`) |
 | POST | `/ask` | Natural-language question → SQL or knowledge-base answer. **503 without `OPENROUTER_API_KEY`** |
-| GET | `/` `/home/` `/dashboard/` `/attacks/` `/rag/` | The static dashboard |
+| POST | `/simulate` | Replay held-out AWID3 rows through the **real** model and persist genuine detections — the testing / demo control, not a mock |
+| GET | `/stream` | Server-Sent Events, one event per new detection row — the dashboard's live feed |
+| GET | `/` `/home/` `/dashboard/` `/attacks/` `/control/` `/rag/` | The static dashboard (`/control/` hosts the Simulate control) |
 
 **Removed on purpose:** `POST /detector/start` and `POST /reports/email`. The detector is a systemd
 service, not an HTTP-controlled subprocess, and the email endpoint was a stub that never sent
@@ -484,7 +488,7 @@ HawkShield/
 │   │   ├── models.py             Packet / Document ORM — the only schema declaration
 │   │   ├── schemas.py            pydantic request/response models
 │   │   ├── main.py               app factory: routers first, static mount last
-│   │   ├── routers/              health.py attacks.py reports.py maps.py ask.py
+│   │   ├── routers/              health.py attacks.py reports.py maps.py ask.py simulate.py stream.py
 │   │   └── rag/                  packet_qa.py + knowledge/attacks.md
 │   ├── detector/               capture + inference — must not import backend.app.routers.*
 │   │   ├── feature_spec.py       THE CONTRACT: 46 features, 9 classes, derive_frame_features()
@@ -495,7 +499,7 @@ HawkShield/
 │   │   └── cli.py                argparse entrypoint
 │   ├── scripts/                init_db.py, verify_models.py, replay_pcap.py, check_rag.py
 │   ├── config/                 ap_locations.json
-│   ├── tests/                  pytest suites (207 tests)
+│   ├── tests/                  pytest suites (301 tests)
 │   └── requirements*.txt
 ├── ml/                         training — runs on a laptop/GPU, never on the Pi
 │   ├── run_training.ps1 / .sh    one command: deps → data → train → evaluate → export
@@ -648,7 +652,7 @@ Full analysis both ways: [`models/README.md`](models/README.md). Design and rati
 `data/samples/` holds six 20 000-frame `.pcapng` captures. `replay_pcap.py` pushes them through the
 *same* extractor and pipeline the live detector uses — including v2's ring buffer, if a v2 artefact is
 present — so what it prints is what the Pi would have done with those frames. `--model-version`
-(`auto` | `v1` | `v2`) chooses the generation; with no v2 artefact on disk, `auto` is v1.
+(`auto` | `v1` | `v2-tcn` | `v2-gbdt`) chooses the generation; `auto` is `v2-gbdt` in this checkout.
 
 The launcher wraps this for you — `python run.py --demo` replays a capture into the database and then
 serves the dashboard, with `--demo-capture` and `--demo-frames` to choose which and how many. Drive
@@ -674,6 +678,55 @@ extraction is doing its job on a new capture. Useful flags: `--limit N`, `--thre
 
 ---
 
+## Real-time testing & demo mode
+
+Two jobs: **prove the model predicts in real time**, and **never let a dead Pi ruin a demo.** The
+whole layer is honest by construction — every simulated detection is a *real* model prediction on
+held-out AWID3 data run through the same pipeline the Pi runs, tagged `raw.sim = true` so it can never
+be confused with a live capture. It is a within-testbed result, not proof of field generalisation
+([`models/README.md` §2.7.1](models/README.md)). Full operator runbook:
+[`docs/demo.md`](docs/demo.md).
+
+**`POST /simulate`** replays `data/sim/awid3_sim_corpus.parquet` (contiguous held-out AWID3 segments,
+~306 KB, committed, all eight classes self-classifying at ~100%) through the real `build_pipeline` and
+writes what the model flags via the same `PacketSink` the detector uses. The response is nested and
+reports what the model *did*, not what was asked. Gated by `ALLOW_SIMULATION` (403 when off), capped by
+`SIM_MAX_COUNT` (default 500), lightly rate-limited (429), 503 when no model or corpus loads. The
+`/control` page (new, in the navbar) drives it next to a live backend readout.
+
+**`GET /stream`** is Server-Sent Events, one event per new detection row (`id`, `ts`,
+`predicted_label`, `p1`, `p2`, `src_mac`, `bssid`, `sim`), with `?since_id=N` to resume. The dashboard
+uses it to upgrade its live feed and falls back to polling on error.
+
+**Watch and self-test from the terminal:**
+
+```bash
+python -m backend.detector.cli --self-test          # exit 0 = model loads and predicts on this box
+python -m backend.scripts.live_monitor --follow      # coloured console tail of detections as they land
+python -m backend.scripts.live_monitor --follow --sim-only   # only /simulate rows
+```
+
+`--self-test` asserts the model loads and every crafted frame yields a complete 46-feature vector and
+a finite `p1`. It deliberately does **not** assert class labels — crafted frames carry no realistic
+inter-frame timing, the booster's most important feature, so a mislabel there is expected.
+
+**Failover (plan B).** When the Pi/API is unreachable or `/health` reports `database: false`, the
+dashboard shows a calm "Reconnecting…" chip, keeps the last good data on screen with an "Updated Ns
+ago" stamp, and keeps the Simulate control usable — so an operator can repopulate believable,
+real-model data on the spot. Composure, never fabricated numbers.
+
+**The real proof — over the air.** `tools/inject_attack.py` transmits real 802.11 frames from a second
+monitor-mode adapter against your **own** testbed and grades what the Pi detected (PASS/PARTIAL/FAIL).
+It is the one test that exercises antenna → capture → model → database end to end.
+
+> **⚠️ Legal note.** Transmitting deauth/disassoc frames against networks you do not own is illegal in
+> most jurisdictions — this is for your own testbed only. The tool refuses without both
+> `--i-own-this-network` and an explicit `--target-bssid`, and caps count/rate in code. A PARTIAL
+> verdict (attack seen, different label) is the expected shape of the AWID3 cross-deployment gap, not a
+> bug. Full guide: [`tools/README.md`](tools/README.md).
+
+---
+
 ## Testing
 
 ```bash
@@ -682,15 +735,18 @@ python -m pytest backend/tests            # from the repo root
 
 | Suite | Tests | Covers |
 |---|---:|---|
+| `backend/tests/test_pipeline_v2.py` | 86 | spec-mismatch refusal, streaming/batching equivalence, the GBDT rolling-aggregate reproduction, the verdict mapping, threading |
 | `backend/tests/test_features_v2.py` | 57 | the v2 feature contract: derivation from real frames, the multi-value cell parser, NaN conventions, no banned field reachable |
 | `backend/tests/test_rag.py` | 51 | routing, `SELECT`-only enforcement, row limiting, humanisation, error paths |
-| `backend/tests/test_pipeline_v2.py` | 39 | spec-mismatch refusal, streaming/batching equivalence, the verdict mapping, threading |
+| `backend/tests/test_inject_attack.py` | 25 | the over-the-air tool: argument parsing, the safety gate, the count/rate caps, frame building — all without a radio or root |
 | `backend/tests/test_features.py` | 22 | v1 feature extraction from real frames |
 | `backend/tests/test_api.py` | 16 | every endpoint against a temporary database, including the `/ask` 503 path |
+| `backend/tests/test_attack_sim.py` | 13 | the frame factory, class resolution, and the simulation corpus loader |
 | `backend/tests/test_runtime_config.py` | 13 | dual-target regressions: blank `.env` values fall back to defaults, SQL dialect follows `DATABASE_URL`, SQLite `SELECT`s run without psycopg |
 | `backend/tests/test_pipeline_pcap.py` | 9 | v1 bundle transform order, replay over the samples |
+| `backend/tests/test_simulate.py` | 9 | `POST /simulate` end to end: real detections persisted, `raw.sim` tagging, the gates and caps |
 
-**All 207 pass** (v1 shipped with 111). The one worth singling out is the causality probe: it perturbs
+**All 301 pass** (v1 shipped with 111). The one worth singling out is the causality probe: it perturbs
 every *future* frame and asserts the past outputs are **bit-identical**, so a model that can see
 forward fails the suite rather than quietly inflating a score.
 

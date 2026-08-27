@@ -63,9 +63,109 @@ def build_parser() -> argparse.ArgumentParser:
                          "(default: V2_BATCH_FRAMES, 32)")
     ap.add_argument("--dry-run", action="store_true",
                     help="classify and log, but never write to the database")
+    ap.add_argument("--self-test", action="store_true",
+                    help="load the model, push crafted frames through the full "
+                         "feature + inference path, and assert every frame yields a "
+                         "complete feature vector and a verdict. Exits 0 if the model "
+                         "is live and predicting on this machine, non-zero otherwise. "
+                         "Never touches a radio or the database.")
+    ap.add_argument("--self-test-count", type=int, default=8,
+                    help="crafted frames per class for --self-test (default: %(default)s)")
     ap.add_argument("--log-level", default=getattr(s, "LOG_LEVEL", "INFO"),
                     choices=["DEBUG", "INFO", "WARNING", "ERROR", "CRITICAL"])
     return ap
+
+
+def self_test(args: argparse.Namespace) -> int:
+    """Prove the model loads and predicts on this machine.
+
+    Builds the selected pipeline, then pushes crafted frames through the SAME
+    feature extractor and inference path the detector uses, and asserts the
+    plumbing: the model loaded, every frame produced a complete feature vector,
+    and every frame produced a verdict carrying a finite ``p1``.
+
+    It deliberately does NOT assert class labels.  Crafted frames carry no
+    inter-frame timing, and the booster's most important feature is exactly that
+    timing, so their *labels* are unreliable by construction (a documented
+    finding) -- but their feature vectors and probabilities are fully formed,
+    which is what "is the model live?" actually asks.
+    """
+    from backend.detector.attack_sim import SIM_CLASSES, build_frames
+    from backend.detector.feature_spec import FEATURE_ORDER
+    from backend.detector.features import (
+        FEATURE_ORDER_V2,
+        ExtractState,
+        FrameState,
+        packet_to_features_v2,
+        packet_to_row,
+    )
+
+    try:
+        pipe = build_pipeline(
+            model_version=args.model_version,
+            model_dir=Path(args.model_dir) if args.model_dir else None,
+            thr1=args.threshold1,
+            thr2=args.threshold2,
+            batch_frames=args.batch_frames,
+        )
+    except Exception as e:
+        logger.error("SELF-TEST FAILED: no model could be loaded "
+                     "(--model-version %s): %s", args.model_version, e)
+        return 2
+
+    is_v2 = getattr(pipe, "feature_space", "v1") == "v2"
+    expected = FEATURE_ORDER_V2 if is_v2 else FEATURE_ORDER
+    logger.info("SELF-TEST: model=%s feature_space=%s spec=%s classes=%d",
+                getattr(pipe, "model_version", "?"),
+                getattr(pipe, "feature_space", "?"),
+                getattr(pipe, "spec_version", None), len(pipe.classes))
+
+    frames = build_frames(list(SIM_CLASSES), max(1, int(args.self_test_count)))
+    state = FrameState() if is_v2 else ExtractState()
+    pipe.reset() if hasattr(pipe, "reset") else None
+
+    rows: List[dict] = []
+    problems: List[str] = []
+    for i, pkt in enumerate(frames):
+        if is_v2:
+            row, _raw = packet_to_features_v2(pkt, "selftest0", state)
+        else:
+            row, _raw = packet_to_row(pkt, "selftest0", state)
+        missing = [k for k in expected if k not in row]
+        if missing:
+            problems.append(f"frame {i}: {len(missing)} feature(s) absent from the "
+                            f"vector, e.g. {missing[:4]}")
+        rows.append(row)
+
+    # Score the whole batch through the real path, then check every verdict.
+    if hasattr(pipe, "predict_stream"):
+        verdicts = pipe.predict_stream(rows)
+    else:  # v1 has no streaming API
+        verdicts = [pipe.predict(r) for r in rows]
+
+    if len(verdicts) != len(frames):
+        problems.append(f"got {len(verdicts)} verdicts for {len(frames)} frames")
+
+    import math
+    n_p1 = 0
+    for i, v in enumerate(verdicts):
+        if v.p1 is None or not math.isfinite(float(v.p1)):
+            problems.append(f"frame {i}: no finite p1 (stage={v.stage})")
+        else:
+            n_p1 += 1
+
+    if problems:
+        logger.error("SELF-TEST FAILED (%d issue(s)):", len(problems))
+        for p in problems[:12]:
+            logger.error("  - %s", p)
+        return 1
+
+    logger.info(
+        "SELF-TEST PASSED: %d crafted frames -> %d complete %d-feature vectors, "
+        "%d verdicts, all with a finite p1. The model is live and predicting.",
+        len(frames), len(rows), len(expected), n_p1,
+    )
+    return 0
 
 
 def main(argv: Optional[List[str]] = None) -> int:
@@ -75,6 +175,9 @@ def main(argv: Optional[List[str]] = None) -> int:
         level=getattr(logging, str(args.log_level).upper(), logging.INFO),
         format="%(asctime)s %(levelname)-7s %(name)s: %(message)s",
     )
+
+    if args.self_test:
+        return self_test(args)
 
     try:
         pipeline = build_pipeline(

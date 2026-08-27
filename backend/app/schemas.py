@@ -2,7 +2,7 @@
 from __future__ import annotations
 
 from datetime import datetime
-from typing import Any, Dict, List, Optional
+from typing import Any, Dict, List, Optional, Union
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -87,6 +87,51 @@ class ReportExportPayload(BaseModel):
 class AskPayload(BaseModel):
     question: str
     session_id: Optional[str] = None
+
+
+# ---------------------------------------------------------------------------
+# Simulate
+# ---------------------------------------------------------------------------
+class SimulatePayload(BaseModel):
+    """Request body for ``POST /simulate``.
+
+    ``attacks`` is ``"all"`` or a list of class names / frontend keys
+    (``"deauth"``, ``"Kr00k"``, ...).  ``count`` is the target number of
+    *persisted detections per requested class*; the endpoint replays the corpus
+    segment until it reaches that many, capped at ``SIM_MAX_COUNT``.
+    """
+
+    attacks: Union[str, List[str]] = "all"
+    # Upper bound is a fixed ceiling, not SIM_MAX_COUNT: a schema constraint
+    # must be a constant, and this stops a 2^31 value reaching the handler.
+    # The configurable SIM_MAX_COUNT (<= this) is applied again at runtime.
+    count: int = Field(default=50, ge=1, le=10000)
+    intensity: str = Field(default="burst", pattern="^(burst|trickle)$")
+
+
+class SimulateClassResult(BaseModel):
+    """Per-class outcome of a simulation run."""
+
+    requested: int
+    frames_pushed: int
+    detected: int
+    persisted: int
+    #: The label the model actually assigned most often (honest: not always the
+    #: requested class -- Kr00k confuses to Disas in isolation).
+    top_label: Optional[str] = None
+    labels: Dict[str, int] = Field(default_factory=dict)
+
+
+class SimulateResponse(BaseModel):
+    """Summary returned by ``POST /simulate``."""
+
+    sim_batch: str
+    model_version: str
+    intensity: str
+    classes: List[str]
+    count_per_class: int
+    total_persisted: int
+    per_class: Dict[str, SimulateClassResult]
 
 
 # ---------------------------------------------------------------------------

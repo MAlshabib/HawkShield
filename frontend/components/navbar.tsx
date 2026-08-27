@@ -13,6 +13,7 @@ const navigation = [
   { name: "Home", href: "/home" },
   { name: "Dashboard", href: "/dashboard" },
   { name: "Attacks", href: "/attacks" },
+  { name: "Control", href: "/control" },
   { name: "RAG System", href: "/rag" },
 ]
 
