@@ -18,6 +18,10 @@ export type HealthPayload = {
   latest_packet_ts?: string | null
   models?: Record<string, boolean>
   model_version?: string
+  /** Feature-contract version this build implements; see backend/app/schemas.py. */
+  spec_version?: string
+  /** Version the on-disk artefact claims — differs from `spec_version` when the export is stale. */
+  artefact_spec_version?: string
   version?: string
 }
 

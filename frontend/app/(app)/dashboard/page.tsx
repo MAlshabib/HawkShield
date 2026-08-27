@@ -1,511 +1,1032 @@
 "use client"
 
-import { useCallback, useEffect, useMemo, useState } from "react"
-import dynamic from "next/dynamic"
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select"
-import { apiFetchSafe } from "@/lib/api"
-import { useHealth } from "@/hooks/use-health"
+/**
+ * The ops console.
+ *
+ * Eight instruments over one polling loop. Two rules shaped every decision in
+ * here:
+ *
+ * **Nothing is recomputed in the browser that the sensor can answer itself.**
+ * The V1 dashboard pulled `/attacks?limit=5000` on every refresh and derived
+ * the offender table and the channel table from it, then labelled both "local"
+ * — a quarter of a megabyte over the wire, on a Pi 4B, to recompute two GROUP
+ * BYs the database had already indexed for. Those two modules now read
+ * `/top-offenders` and `/channel-usage`; the ledger and the class distribution
+ * read `/reports/summary?days=N`, which is the only range-aware endpoint the
+ * backend has. The one thing still folded client-side is the activity series,
+ * because no endpoint returns a time series (see the note above `SERIES_LIMIT`).
+ *
+ * **A figure the sensor did not report is not a zero.** Every resource carries
+ * its own `failed` flag, a failed refresh leaves the last good value on screen,
+ * and a module that has never loaded says so rather than rendering an empty
+ * instrument that looks like a quiet network.
+ */
+import * as React from "react"
+import {
+  Area,
+  AreaChart,
+  Bar,
+  BarChart,
+  CartesianGrid,
+  Cell,
+  LabelList,
+  ResponsiveContainer,
+  Tooltip,
+  XAxis,
+  YAxis,
+} from "recharts"
+import { RefreshCw } from "lucide-react"
+
+import { DataTable, type DataTableColumn } from "@/components/hs/data-table"
+import { Metric } from "@/components/hs/metric"
+import { Module, ModuleGrid } from "@/components/hs/module"
+import { Radar } from "@/components/hs/radar"
+import { StatusPill } from "@/components/hs/status-pill"
+import { Button } from "@/components/ui/button"
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from "@/components/ui/select"
 import { useEventSource } from "@/hooks/use-event-source"
-import { ConnectionBanner, ConnectionStatus } from "@/components/connection-status"
-import { classColor, classLabel } from "@/lib/simulate"
+import { useHealth, type ConnectionState } from "@/hooks/use-health"
+import { apiFetchJson } from "@/lib/api"
+import {
+  attackColorVar,
+  attackLabels,
+  attackTypes,
+  severityOf,
+  type AttackType,
+  type Severity,
+} from "@/lib/colors"
+import { apiTimeMs, freqToChannel, riyadhParts, toAttackType } from "@/lib/detections"
+import { Mac, Timestamp, useFormatters } from "@/lib/format"
+import { useLocale, useT, type TranslationKey, type Translate } from "@/lib/i18n"
+import { cn } from "@/lib/utils"
 
-// Declared locally to avoid a cross-module type import.
-type TimeRange = "day" | "week" | "month"
+/* ── Cadence ─────────────────────────────────────────────────────────────── */
 
-// Import the map dynamically to avoid SSR issues (Leaflet needs `window`).
-const MapTrilateration = dynamic(() => import("@/components/MapTrilateration"), { ssr: false })
+/** Relaxed while healthy, brisk while trying to recover. Unchanged from V1. */
+const POLL_OK_MS = 20_000
+const POLL_RETRY_MS = 8_000
 
-const toDate = (ts: any): Date => {
-  if (ts == null) return new Date(NaN)
-  if (typeof ts === "number") return new Date(ts < 10_000_000_000 ? ts * 1000 : ts)
-  const asNum = Number(ts)
-  if (!Number.isNaN(asNum)) return new Date(asNum < 10_000_000_000 ? asNum * 1000 : asNum)
-  let s = String(ts).trim().replace(/\//g, "-")
-  if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(s)) s = s.replace(" ", "T")
-  const d = new Date(s)
-  return isNaN(d.getTime()) ? new Date(NaN) : d
+/** The activity series is heavy, so it refreshes on its own slower clock. */
+const SERIES_MS = 60_000
+
+/** Enough rows for the live tape without pulling the table. */
+const TAPE_LIMIT = 60
+
+/**
+ * The backend exposes no time-series endpoint — `/reports/summary` returns one
+ * `peakHour` and nothing else with a time axis — so "activity over time" has to
+ * be folded from raw rows. This is the one bounded page we still pull, on a
+ * one-minute clock rather than the dashboard's own, and it is capped at a
+ * fraction of V1's 5000. If a `GET /attacks/series?days=&bucket=` ever lands,
+ * this fetch and `activity` below both delete.
+ */
+const SERIES_LIMIT = 1000
+
+/* ── Range ───────────────────────────────────────────────────────────────── */
+
+type RangeId = "24h" | "7d" | "30d"
+
+const RANGES: readonly { id: RangeId; days: number; key: TranslationKey }[] = [
+  { id: "24h", days: 1, key: "time.range.hours24" },
+  { id: "7d", days: 7, key: "time.range.days7" },
+  { id: "30d", days: 30, key: "time.range.days30" },
+]
+
+const rangeOf = (id: RangeId) => RANGES.find((r) => r.id === id) ?? RANGES[0]
+
+/* ── Wire shapes ─────────────────────────────────────────────────────────── */
+
+type ReportSummary = {
+  period?: string
+  totals?: Record<string, number>
+  summary?: {
+    totalAttacks?: number
+    mostFrequentType?: string
+    peakHour?: number
+    uniqueSources?: number
+  }
 }
 
-const withinRange = (d: Date, range: TimeRange) => {
-  if (!(d instanceof Date) || isNaN(d.getTime())) return true
-  const now = Date.now()
-  const windowMs = range === "day" ? 86_400_000 : range === "week" ? 604_800_000 : 2_592_000_000
-  return d.getTime() >= now - windowMs
+type PacketRow = {
+  id: number | string
+  ts?: string | null
+  iface?: string | null
+  src_mac?: string | null
+  bssid?: string | null
+  channel_freq?: number | null
+  predicted_label?: string | null
+  proba_attack?: number | null
+  raw?: { sim?: boolean } | null
 }
 
-const isNormalLike = (row: any): boolean => {
-  const t = String(row?.attack_type ?? row?.type ?? "").trim().toLowerCase()
-  return t === "normal" || t === "benign" || t === "none" || row?.label === 0
-}
-
-const freqToChannel = (freq: any): number => {
-  const f = Number(freq)
-  if (!Number.isFinite(f)) return 0
-  if (f >= 2412 && f <= 2484) return f === 2484 ? 14 : Math.round((f - 2412) / 5) + 1
-  if (f >= 5000 && f <= 5900) return Math.round((f - 5000) / 5)
-  if (f > 0 && f <= 200) return f
-  return 0
-}
-
-const agoLabel = (at: number | null): string => {
-  if (!at) return "never"
-  const secs = Math.max(0, Math.round((Date.now() - at) / 1000))
-  if (secs < 60) return `${secs}s ago`
-  const mins = Math.round(secs / 60)
-  return mins < 60 ? `${mins}m ago` : `${Math.round(mins / 60)}h ago`
-}
-
-type AnalysisMap = Record<string, number>
 type OffenderRow = { wlan_sa: string; count: number }
-type ChannelRow = { channel_freq: number; channel: number; count: number }
-type HeatHour = { hour: number; intensity: number }
-type HeatRow = { day: string; hours: HeatHour[] }
+type ChannelRow = { channel_freq: number; count: number }
+type HeatRow = { day: string; hours: { hour: number; intensity: number }[] }
 
-type AttackRaw = {
-  id: string | number
-  timestamp: number | string
-  attack_type?: string
-  type?: string
-  wlan_sa?: string
-  wlan_da?: string
-  radiotap_channel_freq?: number | string
-  rssi?: number | string
-  severity?: "Low" | "Medium" | "High"
-  label?: number
-  proba_attack?: number
+/**
+ * `data: null` means "never loaded", which is not the same as an empty result;
+ * `failed` records that the most recent attempt did not land, without throwing
+ * away the last value that did.
+ */
+type Res<T> = { data: T | null; failed: boolean }
+
+const idle = <T,>(): Res<T> => ({ data: null, failed: false })
+
+async function read<T>(path: string, set: (r: Res<T>) => void, alive: () => boolean) {
+  try {
+    const data = await apiFetchJson<T>(path, { cache: "no-store" })
+    if (alive()) set({ data, failed: false })
+  } catch {
+    if (alive()) set({ data: null, failed: true })
+  }
 }
 
-type DatedAttack = AttackRaw & { __date: Date }
+/* ── Sensor vocabulary ───────────────────────────────────────────────────── */
 
-/** Poll cadence: relaxed while healthy, brisk while we are trying to recover. */
-const REFRESH_OK_MS = 20_000
-const REFRESH_RETRY_MS = 8_000
+const STATE_KEY: Record<ConnectionState, TranslationKey> = {
+  unknown: "dashboard.sensor.unknown",
+  online: "dashboard.sensor.online",
+  degraded: "dashboard.sensor.degraded",
+  offline: "dashboard.sensor.offline",
+}
+
+const STATE_TONE = {
+  unknown: "neutral",
+  online: "info",
+  degraded: "high",
+  offline: "critical",
+} as const
+
+/** Sun-first, matching the order `/heatmap-attack` returns. */
+const DAY_KEYS: Record<string, TranslationKey> = {
+  Sun: "day.sun",
+  Mon: "day.mon",
+  Tue: "day.tue",
+  Wed: "day.wed",
+  Thu: "day.thu",
+  Fri: "day.fri",
+  Sat: "day.sat",
+}
+
+/**
+ * A packet arriving within this window is what makes the radar sweep. A sweep
+ * over a sensor that stopped capturing an hour ago is a lie told continuously —
+ * see the note in `components/hs/radar.tsx`.
+ */
+const LIVE_WINDOW_MS = 10 * 60_000
+
+/* ── Local scaffolding ───────────────────────────────────────────────────── */
+
+/** One label/value line of the sensor readout. */
+function Field({ label, children }: { label: React.ReactNode; children: React.ReactNode }) {
+  return (
+    <div className="border-hairline flex items-center justify-between gap-4 border-b py-1.5 last:border-0">
+      <span className="hs-label shrink-0">{label}</span>
+      <span className="text-ink min-w-0 truncate text-end text-sm">{children}</span>
+    </div>
+  )
+}
+
+/** "Not reported" rather than a dash that could be mistaken for a zero. */
+function Unreported() {
+  const t = useT()
+  return <span className="text-ink-faint text-xs">{t("landing.notReported")}</span>
+}
+
+/**
+ * Recharts draws into an SVG whose coordinate system does not mirror, and whose
+ * `<text>` nodes inherit `direction` from CSS — so an axis tick reading
+ * `-64 dBm` or `1,284` can be reordered by the bidi algorithm inside an Arabic
+ * page while the data is perfectly correct. Pinning the chart's own subtree to
+ * LTR fixes that at the root; the axes themselves are then mirrored explicitly
+ * with `reversed` / `orientation`, which is the part a reader actually wants
+ * flipped. The tooltip is a plain div inside this wrapper, so it inherits the
+ * same isolation and is given back its real direction by `dir` on its content.
+ */
+function ChartFrame({ height, children }: { height: number; children: React.ReactElement }) {
+  return (
+    <div dir="ltr" style={{ blockSize: height }} className="w-full">
+      <ResponsiveContainer width="100%" height="100%">
+        {children}
+      </ResponsiveContainer>
+    </div>
+  )
+}
+
+const AXIS = {
+  stroke: "var(--hairline-strong)",
+  fontSize: 11,
+  fontFamily: "var(--font-mono)",
+} as const
+
+const tooltipStyles = (dir: "ltr" | "rtl") => ({
+  contentStyle: {
+    background: "var(--surface-raised)",
+    border: "1px solid var(--hairline-strong)",
+    borderRadius: 2,
+    padding: "6px 10px",
+    fontSize: 12,
+    direction: dir,
+  } as React.CSSProperties,
+  labelStyle: { color: "var(--ink)", fontFamily: "var(--font-mono)" } as React.CSSProperties,
+  itemStyle: { color: "var(--ink-dim)" } as React.CSSProperties,
+  cursor: { fill: "color-mix(in oklab, var(--hs-azure) 8%, transparent)" },
+})
+
+/* ── Page ────────────────────────────────────────────────────────────────── */
 
 export default function DashboardPage() {
-  const [timeRange, setTimeRange] = useState<TimeRange>("day")
+  const t: Translate = useT()
+  const f = useFormatters()
+  const { dir } = useLocale()
+  const isRTL = dir === "rtl"
 
-  // `null` means "we have never successfully loaded this" — distinct from an
-  // empty result. Failed refreshes leave the previous value untouched so the
-  // page keeps showing the last real data instead of blanking out. We never
-  // substitute made-up numbers for missing ones.
-  const [analysis, setAnalysis] = useState<AnalysisMap | null>(null)
-  const [heatmap, setHeatmap] = useState<HeatRow[] | null>(null)
-  const [rawAttacks, setRawAttacks] = useState<DatedAttack[] | null>(null)
-  const [lastUpdated, setLastUpdated] = useState<number | null>(null)
-  const [loading, setLoading] = useState(true)
-  const [reloadTick, setReloadTick] = useState(0)
+  const [rangeId, setRangeId] = React.useState<RangeId>("24h")
+  const range = rangeOf(rangeId)
 
-  const { state: connState, lastOkAt, refresh: refreshHealth } = useHealth()
-  const { state: streamState, events: streamEvents } = useEventSource("/stream", { limit: 25 })
+  const { state: connState, health, refresh: refreshHealth } = useHealth()
+  const { state: streamState, events: streamEvents } = useEventSource("/stream", { limit: 40 })
 
-  const refreshData = useCallback(() => setReloadTick((n) => n + 1), [])
+  const [summary, setSummary] = React.useState<Res<ReportSummary>>(idle)
+  const [tape, setTape] = React.useState<Res<PacketRow[]>>(idle)
+  const [series, setSeries] = React.useState<Res<PacketRow[]>>(idle)
+  const [heat, setHeat] = React.useState<Res<HeatRow[]>>(idle)
+  const [offenders, setOffenders] = React.useState<Res<OffenderRow[]>>(idle)
+  const [channels, setChannels] = React.useState<Res<ChannelRow[]>>(idle)
+  const [updatedAt, setUpdatedAt] = React.useState<number | null>(null)
+  const [tick, setTick] = React.useState(0)
 
-  useEffect(() => {
+  const refresh = React.useCallback(() => setTick((n) => n + 1), [])
+
+  /* ---- the light loop: everything except the raw series ------------------ */
+  React.useEffect(() => {
     let mounted = true
-    ;(async () => {
-      const [attacksData, analysisData, heatmapData] = await Promise.all([
-        apiFetchSafe<any>("/attacks?limit=5000&offset=0", null),
-        apiFetchSafe<any>("/attacks/analysis", null),
-        apiFetchSafe<any>("/heatmap-attack", null),
+    const alive = () => mounted
+
+    void (async () => {
+      await Promise.all([
+        read<ReportSummary>(`/reports/summary?days=${range.days}`, setSummary, alive),
+        read<PacketRow[]>(`/attacks?limit=${TAPE_LIMIT}&offset=0`, setTape, alive),
+        read<HeatRow[]>("/heatmap-attack", setHeat, alive),
+        read<OffenderRow[]>("/top-offenders", setOffenders, alive),
+        read<ChannelRow[]>("/channel-usage", setChannels, alive),
       ])
-
-      if (!mounted) return
-
-      let got = false
-
-      if (attacksData !== null) {
-        const arr: AttackRaw[] = Array.isArray(attacksData)
-          ? attacksData
-          : (attacksData?.attacks ?? attacksData?.data ?? [])
-        setRawAttacks(
-          (Array.isArray(arr) ? arr : [])
-            .filter((row) => !isNormalLike(row))
-            .map((a) => ({ ...a, __date: toDate(a.timestamp) })),
-        )
-        got = true
-      }
-
-      if (analysisData !== null) {
-        setAnalysis(
-          Object.fromEntries(
-            Object.entries((analysisData ?? {}) as AnalysisMap).filter(
-              ([k]) => !/^(normal|benign|none)$/i.test(String(k)),
-            ),
-          ),
-        )
-        got = true
-      }
-
-      if (heatmapData !== null) {
-        setHeatmap(Array.isArray(heatmapData) ? heatmapData : [])
-        got = true
-      }
-
-      if (got) setLastUpdated(Date.now())
-      setLoading(false)
+      if (mounted) setUpdatedAt(Date.now())
     })()
+
     return () => {
       mounted = false
     }
-  }, [reloadTick])
+  }, [tick, range.days])
 
-  // Automatic recovery: keep polling in the background, faster while degraded,
-  // so the page heals itself the moment the backend comes back.
-  useEffect(() => {
-    const every = connState === "online" ? REFRESH_OK_MS : REFRESH_RETRY_MS
-    const t = setInterval(refreshData, every)
-    return () => clearInterval(t)
-  }, [connState, refreshData])
+  React.useEffect(() => {
+    const every = connState === "online" ? POLL_OK_MS : POLL_RETRY_MS
+    const timer = setInterval(refresh, every)
+    return () => clearInterval(timer)
+  }, [connState, refresh])
 
-  // Time-range filtering is derived, not refetched, so changing the range still
-  // works while the backend is unreachable.
-  const attacks = useMemo(
-    () => (rawAttacks ?? []).filter((a) => withinRange(a.__date, timeRange)),
-    [rawAttacks, timeRange],
-  )
+  /* ---- the heavy loop: raw rows for the activity series ------------------ */
+  React.useEffect(() => {
+    let mounted = true
+    const alive = () => mounted
+    const pull = () => void read<PacketRow[]>(`/attacks?limit=${SERIES_LIMIT}&offset=0`, setSeries, alive)
 
-  const offenders = useMemo<OffenderRow[]>(() => {
-    const counts = new Map<string, number>()
-    for (const a of attacks) {
-      const mac = String(a.wlan_sa ?? "").toUpperCase()
-      if (!mac) continue
-      counts.set(mac, (counts.get(mac) ?? 0) + 1)
+    pull()
+    const timer = setInterval(pull, SERIES_MS)
+    return () => {
+      mounted = false
+      clearInterval(timer)
     }
-    return Array.from(counts.entries())
-      .map(([wlan_sa, count]) => ({ wlan_sa, count }))
-      .sort((a, b) => b.count - a.count)
-      .slice(0, 20)
-  }, [attacks])
+  }, [rangeId])
 
-  const channels = useMemo<ChannelRow[]>(() => {
+  /* ---- sensor ------------------------------------------------------------ */
+
+  const newest = tape.data?.[0] ?? null
+  const lastPacketMs = apiTimeMs(health?.latest_packet_ts ?? newest?.ts ?? null)
+  const sensorLive =
+    connState === "online" && lastPacketMs !== null && Date.now() - lastPacketMs < LIVE_WINDOW_MS
+  const newestChannel = freqToChannel(newest?.channel_freq)
+
+  /* ---- ledger + class distribution (server-side, range-aware) ------------ */
+
+  const totals = summary.data?.totals ?? null
+
+  const bySeverity = React.useMemo(() => {
+    const acc: Record<Severity, number> = { critical: 0, high: 0, info: 0 }
+    if (!totals) return acc
+    for (const [key, n] of Object.entries(totals)) {
+      acc[severityOf(toAttackType(key))] += Number(n) || 0
+    }
+    return acc
+  }, [totals])
+
+  const classRows = React.useMemo(() => {
+    if (!totals) return []
+    // Every class the spec defines is listed even at zero: "we looked and found
+    // none" is a finding, and a legend that silently drops a class reads as a
+    // model that cannot detect it. `other` only appears when it is non-empty,
+    // since it is a catch-all bucket rather than a ninth class.
+    const rows = attackTypes
+      .filter((type) => type !== "other" || Number(totals.other) > 0)
+      .map((type) => ({
+        type,
+        label: attackLabels[type],
+        value: Number(totals[type]) || 0,
+        color: attackColorVar(type),
+      }))
+    return rows.sort((a, b) => b.value - a.value || attackTypes.indexOf(a.type) - attackTypes.indexOf(b.type))
+  }, [totals])
+
+  const classTotal = classRows.reduce((n, r) => n + r.value, 0)
+
+  /* ---- activity over time ------------------------------------------------ */
+
+  const activity = React.useMemo(() => {
+    const rows = series.data
+    if (!rows) return null
+
+    const now = Date.now()
+    const hourly = range.days <= 1
+    const stepMs = hourly ? 3_600_000 : 86_400_000
+    const buckets = hourly ? 24 : range.days
+
+    // Bucket boundaries are Riyadh wall-clock, so a bar labelled 14:00 holds
+    // exactly the rows the table above prints as 14:xx.
+    const startOf = (ms: number) => {
+      const p = riyadhParts(ms)
+      return hourly
+        ? Date.UTC(p.y, p.m, p.d, p.hour) - 3 * 3_600_000
+        : Date.UTC(p.y, p.m, p.d) - 3 * 3_600_000
+    }
+
+    const head = startOf(now)
     const counts = new Map<number, number>()
-    for (const a of attacks) {
-      const f = Number(a.radiotap_channel_freq)
-      if (!Number.isFinite(f)) continue
-      counts.set(f, (counts.get(f) ?? 0) + 1)
-    }
-    return Array.from(counts.entries())
-      .map(([freq, count]) => ({ channel_freq: freq, channel: freqToChannel(freq), count }))
-      .sort((a, b) => b.count - a.count)
-  }, [attacks])
+    for (let i = 0; i < buckets; i += 1) counts.set(head - i * stepMs, 0)
 
-  const timeline = useMemo(() => {
-    const byKey = new Map<string, number>()
-    for (const a of attacks) {
-      const d = a.__date
-      if (!(d instanceof Date) || isNaN(d.getTime())) continue
-      const key = timeRange === "day" ? d.toISOString().slice(0, 13) + ":00" : d.toISOString().slice(0, 10)
-      byKey.set(key, (byKey.get(key) ?? 0) + 1)
+    let inWindow = 0
+    for (const row of rows) {
+      const ms = apiTimeMs(row.ts)
+      if (ms === null) continue
+      const key = startOf(ms)
+      if (!counts.has(key)) continue
+      counts.set(key, (counts.get(key) ?? 0) + 1)
+      inWindow += 1
     }
-    return Array.from(byKey.entries()).sort((x, y) => x[0].localeCompare(y[0]))
-  }, [attacks, timeRange])
 
-  const peakHours = useMemo(() => {
-    const h = Array.from({ length: 24 }, (_, hour) => ({ hour, count: 0 }))
-    for (const a of attacks) {
-      const d = a.__date
-      if (!(d instanceof Date) || isNaN(d.getTime())) continue
-      h[d.getHours()].count++
+    return {
+      empty: inWindow === 0,
+      hourly,
+      points: Array.from(counts.entries())
+        .sort((a, b) => a[0] - b[0])
+        .map(([ms, count]) => ({
+          ms,
+          count,
+          label: hourly ? `${String(riyadhParts(ms).hour).padStart(2, "0")}:00` : f.date(ms),
+        })),
     }
-    return h
-  }, [attacks])
+  }, [series.data, range.days, f])
 
-  // Live feed: SSE rows first when /stream is up, polled rows underneath, keyed
-  // by id so the same detection never shows twice.
-  const liveFeed = useMemo(() => {
-    const fromStream = streamEvents.map((e) => ({
+  /* ---- live tape --------------------------------------------------------- */
+
+  // Ids the stream delivered while this page has been open. Only those rows get
+  // the arrival wash; a polled backlog must not flash on every refresh.
+  const arrived = React.useRef<Set<string>>(new Set())
+  for (const e of streamEvents) arrived.current.add(String(e.id))
+
+  const tapeRows = React.useMemo(() => {
+    type Row = {
+      id: string
+      ms: number | null
+      type: AttackType
+      mac: string | null
+      conf: number | null
+      sim: boolean
+    }
+
+    const fromStream: Row[] = streamEvents.map((e) => ({
       id: String(e.id ?? ""),
-      mac: e.src_mac || e.bssid || "-",
-      label: e.predicted_label ?? "",
-      date: toDate(e.ts),
+      ms: apiTimeMs(e.ts),
+      type: toAttackType(e.predicted_label),
+      mac: e.src_mac || e.bssid || null,
+      conf: typeof e.p2 === "number" ? e.p2 : null,
       sim: Boolean(e.sim),
     }))
-    const fromPoll = [...attacks]
-      .sort((A, B) => (B.__date?.getTime?.() ?? -1) - (A.__date?.getTime?.() ?? -1))
-      .slice(0, 20)
-      .map((a) => ({
-        id: String(a.id ?? ""),
-        mac: a.wlan_sa || "-",
-        label: String(a.attack_type ?? a.type ?? ""),
-        date: a.__date,
-        sim: false,
-      }))
+
+    const fromPoll: Row[] = (tape.data ?? []).map((r) => ({
+      id: String(r.id ?? ""),
+      ms: apiTimeMs(r.ts),
+      type: toAttackType(r.predicted_label),
+      mac: r.src_mac || r.bssid || null,
+      conf: typeof r.proba_attack === "number" ? r.proba_attack : null,
+      sim: Boolean(r.raw?.sim),
+    }))
+
     const seen = new Set<string>()
     return [...fromStream, ...fromPoll]
       .filter((r) => {
-        if (!r.id) return true
-        if (seen.has(r.id)) return false
+        if (!r.id || seen.has(r.id)) return false
         seen.add(r.id)
         return true
       })
-      .sort((A, B) => (B.date?.getTime?.() ?? -1) - (A.date?.getTime?.() ?? -1))
-      .slice(0, 20)
-  }, [attacks, streamEvents])
+      .sort((a, b) => (b.ms ?? -1) - (a.ms ?? -1))
+      .slice(0, 25)
+  }, [streamEvents, tape.data])
 
-  const analysisRows = Object.entries(analysis ?? {}).sort((a, b) => b[1] - a[1])
-  const heatRows = heatmap ?? []
-  const degraded = connState === "degraded" || connState === "offline"
-  const firstLoad = loading && rawAttacks === null && analysis === null
+  const tapeColumns: DataTableColumn<(typeof tapeRows)[number]>[] = React.useMemo(
+    () => [
+      {
+        id: "time",
+        header: t("threats.column.time"),
+        width: "9rem",
+        cell: (row) =>
+          row.ms === null ? <Unreported /> : <Timestamp value={row.ms} format="time" className="text-ink-dim" />,
+      },
+      {
+        id: "class",
+        header: t("dashboard.column.class"),
+        cell: (row) => (
+          <span className="inline-flex items-center gap-2">
+            <span
+              aria-hidden="true"
+              className="size-2 shrink-0 rounded-full"
+              style={{ background: attackColorVar(row.type) }}
+            />
+            {/* A class identifier is what the model and the database emit; it is
+                Latin in both locales and must not be reordered. */}
+            <span className="text-ink hs-ltr">{attackLabels[row.type]}</span>
+          </span>
+        ),
+      },
+      {
+        id: "severity",
+        header: t("severity.label"),
+        hideBelow: "sm",
+        cell: (row) => (
+          <StatusPill tone={severityOf(row.type)}>{t(`severity.${severityOf(row.type)}`)}</StatusPill>
+        ),
+      },
+      {
+        id: "source",
+        header: t("dashboard.column.sourceMac"),
+        hideBelow: "md",
+        cell: (row) => (row.mac ? <Mac value={row.mac} className="text-ink-dim text-xs" /> : <Unreported />),
+      },
+      {
+        id: "confidence",
+        header: t("threats.column.confidence"),
+        numeric: true,
+        width: "6rem",
+        hideBelow: "sm",
+        cell: (row) => (row.conf === null ? <Unreported /> : f.percent(row.conf, 0)),
+      },
+      {
+        id: "origin",
+        header: "",
+        width: "5.5rem",
+        cell: (row) =>
+          row.sim ? (
+            <StatusPill tone="neutral">{t("common.simulated")}</StatusPill>
+          ) : null,
+      },
+    ],
+    [t, f]
+  )
+
+  /* ---- heatmap ----------------------------------------------------------- */
+
+  const heatRows = heat.data ?? []
+  const heatMax = React.useMemo(
+    () => heatRows.reduce((m, r) => r.hours.reduce((n, c) => Math.max(n, c.intensity ?? 0), m), 0),
+    [heatRows]
+  )
+
+  /* ---- tables ------------------------------------------------------------ */
+
+  const offenderRows = (offenders.data ?? []).slice(0, 20)
+  const offenderColumns: DataTableColumn<OffenderRow>[] = React.useMemo(
+    () => [
+      {
+        id: "rank",
+        header: t("common.rank"),
+        numeric: true,
+        width: "3.5rem",
+        cell: (_row, i) => f.number(i + 1),
+      },
+      {
+        id: "mac",
+        header: t("dashboard.column.sourceMac"),
+        cell: (row) => <Mac value={row.wlan_sa} className="text-ink text-xs" />,
+      },
+      {
+        id: "count",
+        header: t("dashboard.column.count"),
+        numeric: true,
+        width: "6rem",
+        cell: (row) => f.number(row.count),
+      },
+    ],
+    [t, f]
+  )
+
+  const channelRows = channels.data ?? []
+  const channelTotal = channelRows.reduce((n, r) => n + (Number(r.count) || 0), 0)
+  const channelColumns: DataTableColumn<ChannelRow>[] = React.useMemo(
+    () => [
+      {
+        id: "channel",
+        header: t("units.channel"),
+        numeric: true,
+        width: "5rem",
+        cell: (row) => {
+          const ch = freqToChannel(row.channel_freq)
+          return ch === null ? <Unreported /> : f.number(ch)
+        },
+      },
+      {
+        id: "freq",
+        header: t("units.frequency"),
+        numeric: true,
+        width: "8rem",
+        // `hs-num` isolates the run, so `5180 MHz` cannot render as `MHz 5180`.
+        cell: (row) => (
+          <span className="hs-num">
+            {f.number(row.channel_freq)} {t("units.mhz")}
+          </span>
+        ),
+      },
+      {
+        id: "count",
+        header: t("dashboard.column.count"),
+        numeric: true,
+        width: "6rem",
+        cell: (row) => f.number(row.count),
+      },
+      {
+        id: "share",
+        header: t("dashboard.channels.share"),
+        hideBelow: "sm",
+        cell: (row) => {
+          const share = channelTotal > 0 ? row.count / channelTotal : 0
+          return (
+            <span className="flex items-center gap-2">
+              {/* `inline-size` on a flex track, so the bar grows from the
+                  inline-start edge in both directions with no override. */}
+              <span className="bg-surface-sunken border-hairline h-1.5 w-full min-w-16 overflow-hidden rounded-full border">
+                <span
+                  className="bg-hs-azure block h-full"
+                  style={{ inlineSize: `${Math.max(2, share * 100)}%` }}
+                />
+              </span>
+              <span className="hs-num text-ink-dim w-12 shrink-0 text-end text-xs">
+                {f.percent(share, 0)}
+              </span>
+            </span>
+          )
+        },
+      },
+    ],
+    [t, f, channelTotal]
+  )
+
+  /* ---- render ------------------------------------------------------------ */
+
+  const tone = STATE_TONE[connState]
+  const tip = tooltipStyles(dir)
+  const rangeLabel = t(range.key)
+
+  /**
+   * The count, set just past the bar's own tip.
+   *
+   * Derived from the geometry recharts actually emitted rather than from a
+   * `position` keyword or from `isRTL`: a reversed value axis makes the bar
+   * rect's `width` NEGATIVE and anchors `x` at the baseline, so `x + width` is
+   * the tip in both directions and the sign of `width` gives the side to hang
+   * the text on. `props.x/width` are the plotting area, not the bar — the bar's
+   * box only arrives as `viewBox`.
+   */
+  const BarValue = (props: unknown) => {
+    const { viewBox, value } = props as {
+      viewBox?: { x?: number; y?: number; width?: number; height?: number }
+      value?: number
+    }
+    if (!viewBox) return null
+    const { x, y, width, height } = viewBox
+    if (x == null || y == null || width == null || height == null) return null
+    const side = width < 0 ? -1 : 1
+    return (
+      <text
+        x={x + width + side * 6}
+        y={y + height / 2}
+        dy={4}
+        textAnchor={side < 0 ? "end" : "start"}
+        style={{ fill: "var(--ink-dim)", fontSize: 11, fontFamily: "var(--font-mono)" }}
+      >
+        {f.number(Number(value))}
+      </text>
+    )
+  }
 
   return (
-    <div className="p-6 space-y-6 max-w-7xl mx-auto">
-      {/* Header */}
-      <div className="flex flex-wrap items-center justify-between gap-4">
-        <div>
-          <h1 className="text-3xl font-bold text-white">Security Dashboard</h1>
-          <p className="text-gray-400 mt-1">Real-time WiFi intrusion monitoring and analytics</p>
+    <div className="mx-auto flex max-w-7xl flex-col gap-3 px-4 py-6 sm:gap-4 lg:px-8">
+      {/* ---- page head ---------------------------------------------------- */}
+      <header className="flex flex-wrap items-end justify-between gap-4">
+        <div className="flex flex-col gap-1">
+          <h1 className="text-ink font-display text-2xl leading-none font-medium sm:text-3xl">
+            {t("dashboard.title")}
+          </h1>
+          <p className="text-ink-dim text-sm">{t("dashboard.subtitle")}</p>
         </div>
-        <div className="flex items-center gap-3">
-          <ConnectionStatus
-            state={connState}
-            lastOkAt={lastOkAt}
-            onRetry={() => {
-              refreshHealth()
-              refreshData()
-            }}
-          />
-          <Select value={timeRange} onValueChange={(v: TimeRange) => setTimeRange(v)}>
-            <SelectTrigger className="w-32 glassmorphism border-cyan-500/30">
+
+        <div className="flex flex-wrap items-center gap-2">
+          <StatusPill tone={tone} dot>
+            {t(STATE_KEY[connState])}
+          </StatusPill>
+
+          {updatedAt !== null && (
+            <span className="text-ink-faint hidden text-xs sm:inline">
+              {t("common.updatedAgo", { ago: "" }).trim()}{" "}
+              <Timestamp value={updatedAt} format="relative" className="text-ink-faint" />
+            </span>
+          )}
+
+          <Select dir={dir} value={rangeId} onValueChange={(v) => setRangeId(v as RangeId)}>
+            <SelectTrigger className="w-40" aria-label={t("time.range.label")}>
               <SelectValue />
             </SelectTrigger>
-            <SelectContent className="glassmorphism border-cyan-500/30">
-              <SelectItem value="day">Day</SelectItem>
-              <SelectItem value="week">Week</SelectItem>
-              <SelectItem value="month">Month</SelectItem>
+            <SelectContent>
+              {RANGES.map((r) => (
+                <SelectItem key={r.id} value={r.id}>
+                  {t(r.key)}
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
+
+          <Button
+            size="sm"
+            variant="secondary"
+            onClick={() => {
+              refreshHealth()
+              refresh()
+            }}
+          >
+            <RefreshCw aria-hidden="true" />
+            {t("common.refresh")}
+          </Button>
         </div>
-      </div>
+      </header>
 
-      <ConnectionBanner state={connState} lastOkAt={lastOkAt} />
-
-      {firstLoad ? (
-        <div className="text-center text-gray-400">Loading dashboard…</div>
-      ) : (
-        <>
-          {/* Attack Summary */}
-          <section>
-            <div className="flex items-center justify-between mb-4">
-              <h2 className="text-xl font-semibold text-white">Attack Summary</h2>
-              <span className="text-xs text-gray-500">Updated {agoLabel(lastUpdated)}</span>
-            </div>
-            <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
-              {analysisRows.map(([name, count]) => (
-                <div key={name} className="rounded-2xl bg-[#0F1629] border border-white/5 p-5">
-                  <div className="flex items-center justify-between">
-                    <span className="flex items-center gap-2 text-sm text-gray-400">
-                      <span
-                        className="h-2.5 w-2.5 rounded-full"
-                        style={{ background: classColor(name) }}
-                        aria-hidden
-                      />
-                      {classLabel(name)}
-                    </span>
-                    <span className="text-xs text-gray-500">
-                      {timeRange === "day" ? "24h" : timeRange === "week" ? "7d" : "30d"}
-                    </span>
-                  </div>
-                  <div className="mt-2 text-4xl font-bold text-white">{count}</div>
-                </div>
-              ))}
-              {analysisRows.length === 0 && (
-                <div className="text-gray-400">
-                  {degraded ? "Waiting for the backend to report again…" : "No analysis data."}
-                </div>
-              )}
-            </div>
-          </section>
-
-          {/* Charts */}
-          <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-            <section className="rounded-2xl bg-[#0F1629] border border-white/5 p-4">
-              <h3 className="text-white font-semibold mb-3">Timeline</h3>
-              <div className="max-h-80 overflow-auto space-y-2">
-                {timeline.length === 0 ? (
-                  <div className="text-gray-400">{degraded ? "Reconnecting…" : "No events."}</div>
-                ) : (
-                  timeline.map(([label, count]) => (
-                    <div key={label} className="flex items-center justify-between text-white/90">
-                      <span className="text-sm">{label}</span>
-                      <span className="font-semibold">{count}</span>
-                    </div>
-                  ))
-                )}
-              </div>
-            </section>
-
-            <section className="rounded-2xl bg-[#0F1629] border border-white/5 p-4">
-              <h3 className="text-white font-semibold mb-3">Peak Hours</h3>
-              <div className="grid grid-cols-6 gap-2 text-white/90">
-                {peakHours.map((row) => (
-                  <div key={row.hour} className="rounded-xl border border-white/5 p-3 text-center">
-                    <div className="text-xs text-gray-400">Hour {row.hour}</div>
-                    <div className="text-xl font-bold">{row.count}</div>
-                  </div>
-                ))}
-              </div>
-            </section>
-          </div>
-
-          {/* Heatmap + Local stats */}
-          <div className="grid grid-cols-1 lg:grid-cols-3 gap-6">
-            <section className="lg:col-span-2 rounded-2xl bg-[#0F1629] border border-white/5 p-4 overflow-x-auto">
-              <h3 className="text-white font-semibold mb-3">Attack Heatmap (by day/hour)</h3>
-              <div className="min-w-[720px]">
-                {/* header */}
-                <div className="grid grid-cols-[80px_repeat(24,minmax(20px,1fr))] gap-1 mb-2">
-                  <div className="text-xs text-gray-500 px-1">Day\Hr</div>
-                  {Array.from({ length: 24 }).map((_, h) => (
-                    <div key={"h" + h} className="text-xs text-gray-500 text-center">
-                      {h}
-                    </div>
-                  ))}
-                </div>
-                {/* rows */}
-                <div className="space-y-1">
-                  {heatRows.length === 0 ? (
-                    <div className="text-gray-400">{degraded ? "Reconnecting…" : "No heatmap data."}</div>
-                  ) : (
-                    heatRows.map((row) => (
-                      <div
-                        key={row.day}
-                        className="grid grid-cols-[80px_repeat(24,minmax(20px,1fr))] gap-1 items-center"
-                      >
-                        <div className="text-sm text-gray-300 px-1">{row.day}</div>
-                        {row.hours.map((cell) => (
-                          <div
-                            key={row.day + "-" + cell.hour}
-                            className="h-4 rounded"
-                            title={`${row.day} ${cell.hour}:00 → ${cell.intensity}`}
-                            style={{
-                              background: `rgba(56,189,248,${Math.min(1, (cell.intensity ?? 0) / 10)})`,
-                            }}
-                          />
-                        ))}
-                      </div>
-                    ))
-                  )}
-                </div>
-              </div>
-            </section>
-
-            {/* Top Offenders */}
-            <section className="rounded-2xl bg-[#0F1629] border border-white/5 overflow-hidden">
-              <div className="p-4 flex items-center justify-between">
-                <h3 className="text-white font-semibold">Top Offenders (wlan_sa)</h3>
-                <span className="text-xs text-cyan-400">local</span>
-              </div>
-              <table className="w-full text-left">
-                <thead className="text-gray-400 text-sm border-y border-white/5">
-                  <tr>
-                    <th className="px-4 py-3">#</th>
-                    <th className="px-4 py-3">Source MAC</th>
-                    <th className="px-4 py-3">Count</th>
-                  </tr>
-                </thead>
-                <tbody className="divide-y divide-white/5">
-                  {offenders.length === 0 ? (
-                    <tr>
-                      <td colSpan={3} className="px-4 py-6 text-gray-400">
-                        {degraded ? "Reconnecting…" : "No offenders."}
-                      </td>
-                    </tr>
-                  ) : (
-                    offenders.map((row, i) => (
-                      <tr key={row.wlan_sa + i} className="text-white/90">
-                        <td className="px-4 py-3">{i + 1}</td>
-                        <td className="px-4 py-3 font-mono">{row.wlan_sa || "-"}</td>
-                        <td className="px-4 py-3">{row.count}</td>
-                      </tr>
-                    ))
-                  )}
-                </tbody>
-              </table>
-            </section>
-          </div>
-
-          {/* Channel Usage */}
-          <section className="rounded-2xl bg-[#0F1629] border border-white/5 overflow-hidden">
-            <div className="p-4 flex items-center justify-between">
-              <h3 className="text-white font-semibold">Channel Usage</h3>
-              <span className="text-xs text-cyan-400">local</span>
-            </div>
-            <table className="w-full text-left">
-              <thead className="text-gray-400 text-sm border-y border-white/5">
-                <tr>
-                  <th className="px-4 py-3">Channel</th>
-                  <th className="px-4 py-3">Freq (MHz)</th>
-                  <th className="px-4 py-3">Count</th>
-                </tr>
-              </thead>
-              <tbody className="divide-y divide-white/5">
-                {channels.length === 0 ? (
-                  <tr>
-                    <td colSpan={3} className="px-4 py-6 text-gray-400">
-                      {degraded ? "Reconnecting…" : "No channel data."}
-                    </td>
-                  </tr>
-                ) : (
-                  channels.map((row, i) => (
-                    <tr key={row.channel_freq + "-" + i} className="text-white/90">
-                      <td className="px-4 py-3">{row.channel || "-"}</td>
-                      <td className="px-4 py-3">{row.channel_freq}</td>
-                      <td className="px-4 py-3">{row.count}</td>
-                    </tr>
-                  ))
-                )}
-              </tbody>
-            </table>
-          </section>
-
-          {/* Live Feed */}
-          <section className="rounded-2xl bg-[#0F1629] border border-white/5 p-4">
-            <div className="flex items-center justify-between mb-3">
-              <h3 className="text-white font-semibold">Live Feed (latest)</h3>
-              <span className="text-xs text-gray-500">
-                {streamState === "open" ? (
-                  <span className="text-cyan-400">streaming</span>
-                ) : (
-                  <span>polling</span>
-                )}
-              </span>
-            </div>
-            <div className="space-y-2 max-h-80 overflow-auto">
-              {liveFeed.length === 0 ? (
-                <div className="text-gray-400">{degraded ? "Reconnecting…" : "No recent events."}</div>
+      {/* ---- 1. sensor · 2. live tape ------------------------------------- */}
+      <ModuleGrid className="lg:grid-cols-3">
+        <Module
+          label={t("dashboard.sensor.title")}
+          actions={
+            <Radar
+              size={11}
+              active={sensorLive}
+              label={sensorLive ? t("dashboard.sensor.live") : t("dashboard.sensor.idle")}
+            />
+          }
+        >
+          <div className="flex flex-col">
+            <Field label={t("dashboard.sensor.state")}>
+              <StatusPill tone={tone} dot>
+                {t(STATE_KEY[connState])}
+              </StatusPill>
+            </Field>
+            <Field label={t("dashboard.sensor.interface")}>
+              {newest?.iface ? <span className="hs-ltr font-mono">{newest.iface}</span> : <Unreported />}
+            </Field>
+            <Field label={t("dashboard.sensor.channel")}>
+              {newestChannel === null ? <Unreported /> : <span className="hs-num">{f.number(newestChannel)}</span>}
+            </Field>
+            <Field label={t("dashboard.sensor.model")}>
+              {health?.model_version && health.model_version !== "none" ? (
+                <span className="hs-ltr font-mono">{health.model_version}</span>
               ) : (
-                liveFeed.map((a, i) => (
-                  <div key={a.id + "-" + i} className="flex items-center justify-between gap-3 text-white/90 text-sm">
-                    <span className="flex items-center gap-2 min-w-0">
-                      {a.label ? (
-                        <span
-                          className="h-2 w-2 rounded-full shrink-0"
-                          style={{ background: classColor(a.label) }}
-                          aria-hidden
-                        />
-                      ) : null}
-                      <span className="font-mono truncate">{a.mac}</span>
-                      {a.sim && (
-                        <span className="rounded border border-cyan-500/30 px-1.5 text-[10px] text-cyan-300 shrink-0">
-                          sim
-                        </span>
-                      )}
-                    </span>
-                    <span className="text-gray-400 shrink-0">
-                      {a.date instanceof Date && !isNaN(a.date.getTime()) ? a.date.toLocaleString() : "-"}
-                    </span>
-                  </div>
-                ))
+                <Unreported />
               )}
-            </div>
-          </section>
-        </>
-      )}
+            </Field>
+            <Field label={t("dashboard.sensor.spec")}>
+              {health?.spec_version ? (
+                <span className="hs-num">{health.spec_version}</span>
+              ) : (
+                <Unreported />
+              )}
+            </Field>
+            <Field label={t("dashboard.sensor.packets")}>
+              {typeof health?.packets === "number" ? (
+                <span className="hs-num">{f.number(health.packets)}</span>
+              ) : (
+                <Unreported />
+              )}
+            </Field>
+            <Field label={t("dashboard.sensor.lastSeen")}>
+              {lastPacketMs === null ? <Unreported /> : <Timestamp value={lastPacketMs} format="relative" />}
+            </Field>
+          </div>
+          <p className="text-ink-faint mt-3 text-xs">{t("dashboard.sensor.fromLatest")}</p>
+        </Module>
 
-      {/* Map / Trilateration */}
-      <div className="grid grid-cols-1 gap-6">
-        <MapTrilateration />
-      </div>
+        <Module
+          className="lg:col-span-2"
+          label={t("dashboard.tape.title")}
+          title={t("dashboard.tape.subtitle")}
+          flush
+          actions={
+            <>
+              <Radar size={11} active={streamState === "open"} label={t("conn.streaming")} />
+              <StatusPill tone={streamState === "open" ? "info" : "neutral"}>
+                {streamState === "open" ? t("conn.streaming") : t("conn.polling")}
+              </StatusPill>
+            </>
+          }
+        >
+          <DataTable
+            columns={tapeColumns}
+            rows={tapeRows}
+            rowKey={(row) => row.id}
+            state={tape.data === null && tape.failed ? "error" : tape.data === null ? "loading" : "ready"}
+            emptyLabel={t("dashboard.empty.feed")}
+            loadingLabel={t("state.loadingData")}
+            errorLabel={t("dashboard.error.load")}
+            isArriving={(row) => arrived.current.has(row.id)}
+            tintOf={(row) => attackColorVar(row.type)}
+          />
+        </Module>
+      </ModuleGrid>
+
+      {/* ---- 3. severity ledger ------------------------------------------- */}
+      <Module label={t("dashboard.ledger.title")} title={rangeLabel} loading={summary.data === null && !summary.failed}>
+        {summary.data === null && summary.failed ? (
+          <p className="text-sev-critical hs-label py-4">{t("dashboard.error.load")}</p>
+        ) : (
+          <div className="grid grid-cols-2 gap-6 py-1 lg:grid-cols-4">
+            <Metric
+              label={t("dashboard.ledger.total")}
+              value={Number(summary.data?.summary?.totalAttacks ?? 0)}
+              format={f.number}
+            />
+            <Metric label={t("severity.critical")} value={bySeverity.critical} format={f.number} tone="critical" />
+            <Metric label={t("severity.high")} value={bySeverity.high} format={f.number} tone="high" />
+            <Metric
+              label={t("dashboard.ledger.uniqueSources")}
+              value={Number(summary.data?.summary?.uniqueSources ?? 0)}
+              format={f.number}
+            />
+          </div>
+        )}
+      </Module>
+
+      {/* ---- 4. class distribution · 5. activity --------------------------- */}
+      <ModuleGrid className="lg:grid-cols-2">
+        <Module
+          label={t("dashboard.classes.title")}
+          title={rangeLabel}
+          loading={summary.data === null && !summary.failed}
+        >
+          {summary.data === null && summary.failed ? (
+            <p className="text-sev-critical hs-label py-4">{t("dashboard.error.load")}</p>
+          ) : classRows.length === 0 ? (
+            <p className="hs-label py-8 text-center">{t("dashboard.empty.summary")}</p>
+          ) : (
+            <>
+              <ChartFrame height={Math.max(240, classRows.length * 30 + 24)}>
+                <BarChart
+                  data={classRows}
+                  layout="vertical"
+                  // The value labels sit past the bar's tip, so the gutter they
+                  // need is on the inline-END side — which is the left margin
+                  // once the value axis has been reversed for Arabic.
+                  margin={{ top: 4, right: isRTL ? 8 : 44, bottom: 4, left: isRTL ? 44 : 8 }}
+                  barCategoryGap="22%"
+                >
+                  <CartesianGrid horizontal={false} stroke="var(--hairline)" />
+                  {/* Under RTL the value axis runs right-to-left and the
+                      category axis moves to the right edge, so the bars grow
+                      away from the labels in the reader's own direction. */}
+                  <XAxis
+                    type="number"
+                    reversed={isRTL}
+                    orientation="bottom"
+                    tickLine={false}
+                    axisLine={false}
+                    tick={{ fill: "var(--ink-faint)", ...AXIS }}
+                    allowDecimals={false}
+                    domain={[0, (max: number) => Math.max(1, Math.ceil(max * 1.18))]}
+                  />
+                  <YAxis
+                    type="category"
+                    dataKey="label"
+                    orientation={isRTL ? "right" : "left"}
+                    // Wide enough for `Disassociation`, the longest class name,
+                    // in the mono face at 11px. At 78 it clipped under RTL.
+                    width={98}
+                    tickLine={false}
+                    axisLine={false}
+                    tick={{ fill: "var(--ink-dim)", ...AXIS }}
+                  />
+                  <Tooltip
+                    {...tip}
+                    formatter={(value) => [f.number(Number(value)), t("dashboard.classes.axis")]}
+                  />
+                  <Bar dataKey="value" radius={1} isAnimationActive={false}>
+                    {classRows.map((row) => (
+                      <Cell key={row.type} fill={row.color} />
+                    ))}
+                    {/* Recharts' `position` keywords are resolved against a
+                        viewBox that a reversed axis turns inside out, which put
+                        every figure on top of the category labels in Arabic.
+                        Placing the text from the bar's own geometry is exact in
+                        both directions and needs no keyword at all. */}
+                    <LabelList dataKey="value" content={BarValue} />
+                  </Bar>
+                </BarChart>
+              </ChartFrame>
+              {classTotal === 0 && (
+                <p className="text-ink-faint mt-2 text-xs">{t("dashboard.classes.lookedNotSeen")}</p>
+              )}
+            </>
+          )}
+        </Module>
+
+        <Module
+          label={t("dashboard.activity.title")}
+          // Bucket size is a property of the selected range, not of whether
+          // any rows arrived — an empty 24h view is still an hourly view.
+          title={range.days <= 1 ? t("dashboard.activity.hourly") : t("dashboard.activity.daily")}
+          loading={series.data === null && !series.failed}
+        >
+          {series.data === null && series.failed ? (
+            <p className="text-sev-critical hs-label py-4">{t("dashboard.error.load")}</p>
+          ) : !activity || activity.empty ? (
+            <p className="hs-label py-8 text-center">{t("dashboard.activity.empty")}</p>
+          ) : (
+            <ChartFrame height={Math.max(240, classRows.length * 30 + 24)}>
+              <AreaChart data={activity.points} margin={{ top: 8, right: 8, bottom: 4, left: 0 }}>
+                <defs>
+                  <linearGradient id="hs-activity" x1="0" y1="0" x2="0" y2="1">
+                    <stop offset="0%" stopColor="var(--hs-azure)" stopOpacity={0.3} />
+                    <stop offset="100%" stopColor="var(--hs-azure)" stopOpacity={0.02} />
+                  </linearGradient>
+                </defs>
+                <CartesianGrid vertical={false} stroke="var(--hairline)" />
+                <XAxis
+                  dataKey="label"
+                  reversed={isRTL}
+                  tickLine={false}
+                  axisLine={{ stroke: "var(--hairline-strong)" }}
+                  tick={{ fill: "var(--ink-faint)", ...AXIS }}
+                  minTickGap={18}
+                />
+                <YAxis
+                  orientation={isRTL ? "right" : "left"}
+                  width={44}
+                  tickLine={false}
+                  axisLine={false}
+                  allowDecimals={false}
+                  tick={{ fill: "var(--ink-faint)", ...AXIS }}
+                />
+                <Tooltip
+                  {...tip}
+                  formatter={(value) => [f.number(Number(value)), t("dashboard.classes.axis")]}
+                />
+                <Area
+                  type="monotone"
+                  dataKey="count"
+                  stroke="var(--hs-azure)"
+                  strokeWidth={1.5}
+                  fill="url(#hs-activity)"
+                  isAnimationActive={false}
+                  dot={false}
+                />
+              </AreaChart>
+            </ChartFrame>
+          )}
+        </Module>
+      </ModuleGrid>
+
+      {/* ---- 6. day × hour heatmap ---------------------------------------- */}
+      <Module
+        label={t("dashboard.heatmap")}
+        title={t("dashboard.allTime")}
+        loading={heat.data === null && !heat.failed}
+        actions={
+          // Discrete swatches rather than a `linear-gradient`, whose direction
+          // keyword is physical: a flex row mirrors itself under RTL for free.
+          <div className="hidden items-center gap-1.5 sm:flex">
+            <span className="hs-label">{t("dashboard.heatmap.legendLow")}</span>
+            {[0, 0.25, 0.5, 0.75, 1].map((step) => (
+              <span
+                key={step}
+                aria-hidden="true"
+                className="border-hairline size-2.5 rounded-[1px] border"
+                style={{ background: `color-mix(in oklab, var(--hs-azure) ${step * 88}%, transparent)` }}
+              />
+            ))}
+            <span className="hs-label">{t("dashboard.heatmap.legendHigh")}</span>
+          </div>
+        }
+      >
+        {heat.data === null && heat.failed ? (
+          <p className="text-sev-critical hs-label py-4">{t("dashboard.error.load")}</p>
+        ) : heatRows.length === 0 ? (
+          <p className="hs-label py-8 text-center">{t("dashboard.empty.heatmap")}</p>
+        ) : (
+          <div className="overflow-x-auto">
+            <div className="grid min-w-[46rem] grid-cols-[4.5rem_repeat(24,minmax(0,1fr))] gap-[2px]">
+              <span className="hs-label self-center">{t("dashboard.heatmapAxis")}</span>
+              {Array.from({ length: 24 }, (_, hour) => (
+                <span key={`h-${hour}`} className="hs-num text-ink-faint text-center text-[0.625rem]">
+                  {String(hour).padStart(2, "0")}
+                </span>
+              ))}
+
+              {heatRows.map((row) => (
+                <React.Fragment key={row.day}>
+                  <span className="text-ink-dim self-center truncate text-xs">
+                    {DAY_KEYS[row.day] ? t(DAY_KEYS[row.day]) : row.day}
+                  </span>
+                  {row.hours.map((cell) => {
+                    const n = cell.intensity ?? 0
+                    const ratio = heatMax > 0 ? n / heatMax : 0
+                    return (
+                      <span
+                        key={`${row.day}-${cell.hour}`}
+                        className={cn(
+                          "border-hairline h-4 rounded-[1px] border",
+                          n > 0 && "border-transparent"
+                        )}
+                        title={t("dashboard.heatmap.cell", {
+                          day: DAY_KEYS[row.day] ? t(DAY_KEYS[row.day]) : row.day,
+                          hour: String(cell.hour).padStart(2, "0"),
+                          n: f.number(n),
+                        })}
+                        style={{
+                          background:
+                            n > 0
+                              ? `color-mix(in oklab, var(--hs-azure) ${Math.round(12 + ratio * 76)}%, transparent)`
+                              : "var(--surface-sunken)",
+                        }}
+                      />
+                    )
+                  })}
+                </React.Fragment>
+              ))}
+            </div>
+            <p className="text-ink-faint mt-3 text-xs">{t("dashboard.heatmap.utc")}</p>
+          </div>
+        )}
+      </Module>
+
+      {/* ---- 7. top offenders · 8. channel occupancy ---------------------- */}
+      <ModuleGrid className="lg:grid-cols-2">
+        <Module label={t("dashboard.topSources")} title={t("dashboard.allTime")} flush>
+          <DataTable
+            columns={offenderColumns}
+            rows={offenderRows}
+            rowKey={(row) => row.wlan_sa}
+            state={
+              offenders.data === null && offenders.failed
+                ? "error"
+                : offenders.data === null
+                  ? "loading"
+                  : "ready"
+            }
+            emptyLabel={t("dashboard.empty.sources")}
+            loadingLabel={t("state.loadingData")}
+            errorLabel={t("dashboard.error.load")}
+          />
+        </Module>
+
+        <Module label={t("dashboard.channelUsage")} title={t("dashboard.allTime")} flush>
+          <DataTable
+            columns={channelColumns}
+            rows={channelRows}
+            rowKey={(row) => row.channel_freq}
+            state={
+              channels.data === null && channels.failed
+                ? "error"
+                : channels.data === null
+                  ? "loading"
+                  : "ready"
+            }
+            emptyLabel={t("dashboard.empty.channels")}
+            loadingLabel={t("state.loadingData")}
+            errorLabel={t("dashboard.error.load")}
+          />
+        </Module>
+      </ModuleGrid>
+
+      <p className="text-ink-faint text-xs">
+        {t("time.timezone")} {t("dashboard.allTimeNote")}
+      </p>
     </div>
   )
 }

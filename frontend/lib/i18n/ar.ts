@@ -186,6 +186,7 @@ export const ar: Dictionary = {
   "dashboard.topSources": "أكثر عناوين MAC ظهورًا كمصدر",
   "dashboard.channelUsage": "استخدام القنوات",
   "dashboard.liveFeed": "التدفّق المباشر",
+  "dashboard.column.class": "التصنيف",
   "dashboard.column.sourceMac": "MAC المصدر",
   "dashboard.column.count": "العدد",
   "dashboard.empty.summary": "لا توجد اكتشافات في هذه الفترة.",
@@ -340,4 +341,74 @@ export const ar: Dictionary = {
   "admin.simulate.column.class": "التصنيف",
   "admin.simulate.column.detected": "المكتشَفة",
   "admin.simulate.column.stored": "المخزَّنة",
+
+  /* ── أسماء الأيام المختصرة (رؤوس صفوف الخريطة الحرارية) ───────────── */
+  "day.sun": "الأحد",
+  "day.mon": "الاثنين",
+  "day.tue": "الثلاثاء",
+  "day.wed": "الأربعاء",
+  "day.thu": "الخميس",
+  "day.fri": "الجمعة",
+  "day.sat": "السبت",
+
+  /* ── الصفحة الرئيسية (المسار `/`) ──────────────────────────────────── */
+  "landing.eyebrow": "كشف الاختراقات في الشبكات اللاسلكية",
+  "landing.figures": "أرقام مباشرة",
+  "landing.stat.packets": "الحزم المرصودة",
+  "landing.stat.classes": "التصنيفات المرصودة",
+  "landing.stat.classesOf": "من {total}",
+  "landing.stat.model": "النموذج قيد التشغيل",
+  "landing.stat.sensor": "المستشعر",
+  "landing.sensor.online": "متصل",
+  "landing.sensor.degraded": "التخزين لا يستجيب",
+  "landing.sensor.offline": "غير متاح",
+  "landing.sensor.unknown": "جارٍ الفحص…",
+  "landing.reading": "جارٍ قراءة المستشعر…",
+  "landing.unreachable": "المستشعر لا يستجيب، فلا توجد أرقام يمكن عرضها.",
+  "landing.notReported": "غير مُبلَّغ عنه",
+
+  /* ── وحدات لوحة التحكم ─────────────────────────────────────────────── */
+  "dashboard.allTime": "كل الفترات",
+  "dashboard.allTimeNote": "يعرض كل ما هو مخزَّن، ولا يحدّه منتقي الفترة.",
+  "dashboard.error.load": "تعذّرت قراءة هذه البيانات من المستشعر.",
+
+  "dashboard.sensor.title": "حالة المستشعر",
+  "dashboard.sensor.state": "الحالة",
+  "dashboard.sensor.interface": "الواجهة",
+  "dashboard.sensor.channel": "القناة",
+  "dashboard.sensor.model": "النموذج قيد التشغيل",
+  "dashboard.sensor.spec": "إصدار مواصفة الخصائص",
+  "dashboard.sensor.packets": "الحزم المخزَّنة",
+  "dashboard.sensor.lastSeen": "آخر حزمة",
+  "dashboard.sensor.live": "المستشعر يرصد",
+  "dashboard.sensor.idle": "المستشعر متوقف",
+  "dashboard.sensor.fromLatest": "تُقرأ الواجهة والقناة من أحدث حزمة مخزَّنة.",
+  "dashboard.sensor.online": "متصل",
+  "dashboard.sensor.degraded": "التخزين لا يستجيب",
+  "dashboard.sensor.offline": "غير متاح",
+  "dashboard.sensor.unknown": "جارٍ الفحص…",
+
+  "dashboard.tape.title": "الشريط المباشر",
+  "dashboard.tape.subtitle": "أحدث الاكتشافات أولًا",
+
+  "dashboard.ledger.title": "سجل الخطورة",
+  "dashboard.ledger.total": "الاكتشافات",
+  "dashboard.ledger.uniqueSources": "المصادر الفريدة",
+
+  "dashboard.classes.title": "توزيع التصنيفات",
+  "dashboard.classes.axis": "الاكتشافات",
+  "dashboard.classes.none": "لم يصنّف النموذج شيئًا في هذه الفترة.",
+  "dashboard.classes.lookedNotSeen": "بُحث عنه ولم يُرصد",
+
+  "dashboard.activity.title": "النشاط عبر الزمن",
+  "dashboard.activity.hourly": "لكل ساعة",
+  "dashboard.activity.daily": "لكل يوم",
+  "dashboard.activity.empty": "لا توجد اكتشافات مؤرَّخة في هذه الفترة.",
+
+  "dashboard.heatmap.cell": "{day} {hour}:00 — {n} اكتشافًا",
+  "dashboard.heatmap.utc": "يجمّع المستشعر هذه الشبكة بتوقيت UTC، لا بتوقيت Asia/Riyadh.",
+  "dashboard.heatmap.legendLow": "لا شيء",
+  "dashboard.heatmap.legendHigh": "الأكثر ازدحامًا",
+
+  "dashboard.channels.share": "النسبة",
 }

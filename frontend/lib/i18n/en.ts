@@ -187,6 +187,7 @@ export const en = {
   "dashboard.topSources": "Top source MACs",
   "dashboard.channelUsage": "Channel usage",
   "dashboard.liveFeed": "Live feed",
+  "dashboard.column.class": "Class",
   "dashboard.column.sourceMac": "Source MAC",
   "dashboard.column.count": "Count",
   "dashboard.empty.summary": "No detections in this window.",
@@ -344,4 +345,77 @@ export const en = {
   "admin.simulate.column.class": "Class",
   "admin.simulate.column.detected": "Detected",
   "admin.simulate.column.stored": "Stored",
+
+  /* ── Weekday short names (heatmap row headers) ─────────────────────── */
+  "day.sun": "Sun",
+  "day.mon": "Mon",
+  "day.tue": "Tue",
+  "day.wed": "Wed",
+  "day.thu": "Thu",
+  "day.fri": "Fri",
+  "day.sat": "Sat",
+
+  /* ── Landing page (route `/`) ──────────────────────────────────────────
+     The stat strip is fed by /health, /packets/count and /attacks/analysis.
+     Nothing here may render a figure the sensor did not report: a zero and an
+     unknown are different facts, and `landing.unreachable` is the second one. */
+  "landing.eyebrow": "Wireless intrusion detection",
+  "landing.figures": "Live figures",
+  "landing.stat.packets": "Packets observed",
+  "landing.stat.classes": "Classes seen",
+  "landing.stat.classesOf": "of {total}",
+  "landing.stat.model": "Model in service",
+  "landing.stat.sensor": "Sensor",
+  "landing.sensor.online": "Online",
+  "landing.sensor.degraded": "Storage not answering",
+  "landing.sensor.offline": "Unreachable",
+  "landing.sensor.unknown": "Checking…",
+  "landing.reading": "Reading the sensor…",
+  "landing.unreachable": "The sensor is not answering, so there are no figures to report.",
+  "landing.notReported": "Not reported",
+
+  /* ── Dashboard modules ─────────────────────────────────────────────── */
+  "dashboard.allTime": "All time",
+  "dashboard.allTimeNote": "Everything stored. The range selector does not narrow this module.",
+  "dashboard.error.load": "Could not read this from the sensor.",
+
+  "dashboard.sensor.title": "Sensor status",
+  "dashboard.sensor.state": "State",
+  "dashboard.sensor.interface": "Interface",
+  "dashboard.sensor.channel": "Channel",
+  "dashboard.sensor.model": "Model in service",
+  "dashboard.sensor.spec": "Feature spec",
+  "dashboard.sensor.packets": "Stored packets",
+  "dashboard.sensor.lastSeen": "Last packet",
+  "dashboard.sensor.live": "Sensor live",
+  "dashboard.sensor.idle": "Sensor idle",
+  "dashboard.sensor.fromLatest": "Interface and channel are read from the newest stored packet.",
+  "dashboard.sensor.online": "Online",
+  "dashboard.sensor.degraded": "Storage not answering",
+  "dashboard.sensor.offline": "Unreachable",
+  "dashboard.sensor.unknown": "Checking…",
+
+  "dashboard.tape.title": "Live tape",
+  "dashboard.tape.subtitle": "Newest detections first",
+
+  "dashboard.ledger.title": "Severity ledger",
+  "dashboard.ledger.total": "Detections",
+  "dashboard.ledger.uniqueSources": "Unique sources",
+
+  "dashboard.classes.title": "Class distribution",
+  "dashboard.classes.axis": "Detections",
+  "dashboard.classes.none": "The model classified nothing in this window.",
+  "dashboard.classes.lookedNotSeen": "Looked for, not seen",
+
+  "dashboard.activity.title": "Activity over time",
+  "dashboard.activity.hourly": "Per hour",
+  "dashboard.activity.daily": "Per day",
+  "dashboard.activity.empty": "No timestamped detections in this window.",
+
+  "dashboard.heatmap.cell": "{day} {hour}:00 — {n} detections",
+  "dashboard.heatmap.utc": "The sensor buckets this grid in UTC, not Asia/Riyadh.",
+  "dashboard.heatmap.legendLow": "None",
+  "dashboard.heatmap.legendHigh": "Busiest",
+
+  "dashboard.channels.share": "Share",
 }

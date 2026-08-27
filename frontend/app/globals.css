@@ -407,6 +407,21 @@
     color: var(--ink-dim);
   }
 
+  /* Arabic is cursive: letters join, and the shape of a letter depends on its
+     neighbours. Tracking prises those joins apart, so the wide-tracked mono
+     micro-label — correct and deliberate for Latin — renders Arabic as a row of
+     disconnected glyphs. IBM Plex Mono also carries no Arabic coverage, so the
+     text was silently falling back to whatever the system offered, losing the
+     one face the rest of the page is set in. Both are corrected here rather
+     than at each call site, because every label in the product uses this class
+     and a page author cannot be expected to remember. `text-transform` is left
+     alone: it is simply inert on a script with no letter case. */
+  :where([lang="ar"]) .hs-label,
+  .hs-label:lang(ar) {
+    font-family: var(--font-arabic);
+    letter-spacing: normal;
+  }
+
   /* Any figure an operator might compare against another figure.
 
      `direction` and `unicode-bidi` are load-bearing, not decoration. Under an

@@ -56,7 +56,7 @@ export function Navbar() {
     <header className="sticky top-0 z-50 border-b border-[color:var(--hairline)] bg-[color:var(--surface)]">
       <div className="mx-auto flex h-16 max-w-7xl items-center justify-between gap-4 px-4 sm:px-6 lg:px-8">
         <Link
-          href="/home"
+          href="/"
           className={cn(
             "flex items-center gap-2.5",
             "focus-visible:outline-2 focus-visible:outline-offset-2 focus-visible:outline-[color:var(--hs-azure)]",

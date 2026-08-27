@@ -60,6 +60,14 @@ export function toDate(value: DateLike): Date {
 
   let s = String(value).trim().replace(/\//g, "-")
   if (/^\d{4}-\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}(\.\d+)?$/.test(s)) s = s.replace(" ", "T")
+
+  /* `packets.ts` is a naive UTC column, and the API serialises it without a
+     zone designator. `new Date("2026-08-27T21:20:11")` reads a bare ISO string
+     as *browser-local*, so every timestamp in the UI was silently shifted by
+     the viewer's offset — three hours in Riyadh. Nothing looked broken; the
+     clock was just wrong. Anything already carrying a zone is left alone. */
+  if (!/(z|[+-]\d{2}:?\d{2})$/i.test(s)) s = `${s}Z`
+
   return new Date(s)
 }
 
