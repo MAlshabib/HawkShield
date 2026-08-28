@@ -831,13 +831,58 @@ None of the following exists in this codebase. They are future work, not feature
 
 ## Credits
 
-Built as a capstone project by
-[**Mohammed Alshabib**](https://github.com/MAlshabib),
-[**Yasser Albogami**](https://github.com/YasserAlbogami),
-**Haya Alkhthran**,
-[**Ghala Alotaibi**](https://github.com/ghalaotb1) and
-[**Lena Aldokhayel**](https://github.com/Lena-dk).
-See [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
+<div align="center">
+
+## الفريق · The Team
+
+Built as a capstone project. See [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
+
+<table>
+<tr>
+<td align="center" width="200">
+<a href="https://github.com/MAlshabib">
+<img src="https://github.com/MAlshabib.png?size=200" width="100" alt="Mohammed Alshabib"><br>
+<b>Mohammed Alshabib</b>
+</a><br>
+<sub>محمد الشبيب</sub><br>
+<a href="https://github.com/MAlshabib"><code>@MAlshabib</code></a>
+</td>
+<td align="center" width="200">
+<a href="https://github.com/YasserAlbogami">
+<img src="https://github.com/YasserAlbogami.png?size=200" width="100" alt="Yasser Albogami"><br>
+<b>Yasser Albogami</b>
+</a><br>
+<sub>ياسر البقمي</sub><br>
+<a href="https://github.com/YasserAlbogami"><code>@YasserAlbogami</code></a>
+</td>
+<td align="center" width="200">
+<img src="https://avatars.githubusercontent.com/u/0?v=4" width="100" alt="Haya Alkhthran" style="opacity:0.5"><br>
+<b>Haya Alkhthran</b><br>
+<sub>هيا الخثران</sub><br>
+<sub>—</sub>
+</td>
+</tr>
+<tr>
+<td align="center" width="200">
+<a href="https://github.com/ghalaotb1">
+<img src="https://github.com/ghalaotb1.png?size=200" width="100" alt="Ghala Alotaibi"><br>
+<b>Ghala Alotaibi</b>
+</a><br>
+<sub>غلا العتيبي</sub><br>
+<a href="https://github.com/ghalaotb1"><code>@ghalaotb1</code></a>
+</td>
+<td align="center" width="200">
+<a href="https://github.com/Lena-dk">
+<img src="https://github.com/Lena-dk.png?size=200" width="100" alt="Lena Aldokhayel"><br>
+<b>Lena Aldokhayel</b>
+</a><br>
+<sub>لينا الدخيّل</sub><br>
+<a href="https://github.com/Lena-dk"><code>@Lena-dk</code></a>
+</td>
+</tr>
+</table>
+
+</div>
 
 Built on FastAPI, SQLAlchemy, PyTorch, ONNX Runtime, LightGBM, scikit-learn, scapy, ReportLab,
 Next.js, React, Tailwind CSS, Recharts and Leaflet. The model is trained on **AWID3**
