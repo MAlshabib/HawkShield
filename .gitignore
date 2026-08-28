@@ -130,3 +130,6 @@ SECRETS.txt
 # Thmanyah Sans — licensed font, obtained from the foundry, never redistributed here.
 # Run `npm run fonts` in frontend/ to put it in place. See frontend/scripts/fonts.mjs.
 frontend/public/fonts/thmanyah/
+
+# Hallmark design-skill scratch log (regenerated on demand; never load-bearing)
+.hallmark/
