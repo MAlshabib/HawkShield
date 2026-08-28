@@ -287,13 +287,6 @@ export default function ThreatsPage() {
         hideBelow: "sm",
         cell: (d) => (d.confidence === null ? <Unreported /> : f.percent(d.confidence, 0)),
       },
-      {
-        id: "origin",
-        header: "",
-        width: "6rem",
-        hideBelow: "sm",
-        cell: (d) => (d.sim ? <StatusPill tone="neutral">{t("common.simulated")}</StatusPill> : null),
-      },
     ],
     [t, f]
   )

@@ -101,13 +101,6 @@ export function DetectionDrawer({
                   <ReadoutRow label={t("threats.detail.anomaly")}>
                     {d.anomaly === null ? <Unreported /> : <span className="hs-num">{f.percent(d.anomaly, 1)}</span>}
                   </ReadoutRow>
-                  <ReadoutRow label={t("threats.detail.origin")}>
-                    {d.sim ? (
-                      <StatusPill tone="neutral">{t("common.simulated")}</StatusPill>
-                    ) : (
-                      <span className="text-ink-1 text-sm">{t("threats.detail.live")}</span>
-                    )}
-                  </ReadoutRow>
                 </Readout>
               </section>
 
