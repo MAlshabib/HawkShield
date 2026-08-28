@@ -66,7 +66,7 @@ output  "logits"  (batch,  9, T) float32    one prediction per frame
 * Normalisation is `ChannelNorm` (LayerNorm across channels at a single timestep). `BatchNorm1d` and
   `GroupNorm` both average over the time axis, which would make frame *t*'s statistics depend on
   frames *t+1…T* — future leakage hidden inside a normalisation layer.
-* **80,471 parameters**; 348 KB as fp32 ONNX.
+* **80,527 parameters**; 348 KB as fp32 ONNX.
 * Normalisation constants and mask-channel indices are baked into the graph as initialisers **and**
   copied into `hawkshield_v2_meta.json` so the runtime can assert the two agree.
 * Source: `ml/model.py`. Export: `ml/export_onnx.py`.
@@ -200,7 +200,7 @@ Reproduced by `ml/run_training.ps1 -Fresh`; raw output in
 | model | macro-F1 | file | ships |
 |---|---:|---|:--:|
 | **LightGBM** (49 rounds × 9 classes = 441 trees) | **0.9907** | `hawkshield_v2_gbdt.txt`, 3.0 MB | **yes** |
-| Causal TCN (80,471 params) | 0.9856 | `hawkshield_v2.onnx`, 348 KB | selectable |
+| Causal TCN (80,527 params) | 0.9856 | `hawkshield_v2.onnx`, 348 KB | selectable |
 
 The tree ensemble wins. That was a genuine measurement, not a foregone conclusion — the plan was
 always that whichever model won on the same grouped split would ship, and the neural network lost.

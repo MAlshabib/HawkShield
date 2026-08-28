@@ -115,7 +115,7 @@ flowchart LR
   A unit test perturbs frame *t+1* and asserts the output at *t* is unchanged.
 - **Per-frame output**: every frame gets its own label, which is what the `packets`
   table stores and what the dashboard shows — no window-level smearing.
-- **80,471 parameters**, 348 KB as fp32 ONNX. Small enough that the Pi's four
+- **80,527 parameters**, 348 KB as fp32 ONNX. Small enough that the Pi's four
   Cortex-A72 cores are not the bottleneck; a 128-frame window is one inference call.
 - **NaN is information**, not something to average away: absent fields are flagged to
   the network through a mask channel rather than silently mean-imputed.

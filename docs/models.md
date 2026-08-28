@@ -248,7 +248,7 @@ output  "logits"  (batch,  9, T) float32    one prediction per frame
 ```
 
 * **6 residual blocks**, kernel 3, dilations 1·2·4·8·16·32 → a **127-frame past-only receptive
-  field**. ~**80,471 parameters**, 348 KB as fp32 ONNX.
+  field**. ~**80,527 parameters**, 348 KB as fp32 ONNX.
 * **Causal, provably.** Every convolution is left-padded only, and normalisation is `ChannelNorm`
   (LayerNorm across channels at one timestep) rather than `BatchNorm1d`/`GroupNorm`, both of which
   average over the time axis and would leak the future into frame *t*'s statistics.
