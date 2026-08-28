@@ -1,9 +1,10 @@
 # HawkShield — demo & real-time testing runbook
 
-The doc to read ten minutes before you present. It covers the laptop demo, the `/control` page, how to
+The doc to read ten minutes before you present. It covers the laptop demo, the `/admin` page, how to
 read the result table, what the failover looks like when the Pi drops, and the over-the-air test that
 is the real proof.
 
+> [!IMPORTANT]
 > **The one thing to know, and to say out loud.** Every detection the **Simulate** button produces is
 > a *real* model prediction on held-out AWID3 data — the same `build_pipeline` the live Pi runs, the
 > same `PacketSink`, the same `packets` table. Nothing is fabricated. It is not a mock feed and it is
@@ -26,9 +27,11 @@ python run.py --demo
 still says `CHANGE_ME`, creates the schema, and — because of `--demo` — replays a sample capture into
 the database so the charts are not empty on first load. Then it prints the dashboard URL.
 
-Open the URL it prints and go to the **Control** page (`http://localhost:8000/control`, also in the
-navbar). Click **Run simulation**. That is the demo.
+Open the URL it prints and go to the **Control** page at `http://localhost:8000/admin`. It is
+deliberately *not* in the navbar — it holds operator controls, including a destructive one — so
+navigate to it directly. Click **Simulate**. That is the demo.
 
+> [!TIP]
 > **`--demo` vs Simulate — worth knowing before someone asks.** `--demo` replays one of the bundled
 > `data/samples/*.pcapng` captures. Those are *out-of-domain* — the original project's testbed, not
 > AWID3 — so the AWID3-trained model flags them and labels almost all of them `Krack` (the
@@ -42,21 +45,25 @@ on Windows — and run it **from the repo root**.
 
 ---
 
-## The `/control` page
+## The `/admin` page
 
-A page (new, in the navbar) that hosts the full **Simulate** control next to a live backend readout.
-The same control also sits at the top of the dashboard. It talks only to the API — no capture source,
+The operator console: the full **Simulate** control next to a live backend readout, and below it a
+fenced danger zone that empties the detection store. It talks only to the API — no capture source,
 no detector — so it stays usable even when the Pi is unreachable (see [Failover](#failover--plan-b)).
+
+> [!CAUTION]
+> The purge control at the bottom of this page deletes **every** stored detection, not just the
+> simulated ones. It is guarded by an explicit confirmation. Do not reach for it mid-demo.
 
 ### The Simulate control
 
 | Control | What it does |
 |---|---|
-| **Attack checkboxes** | Pick which classes to generate: `deauth`, `disas`, `reassoc`, `rogueap`, `krack`, `kr00k`, `evil_twin`, `ssdp`. Default selection is `deauth` + `disas`. |
-| **All** | Generate every class in the corpus (all eight). Wider than the crafted-frame path, which only covers six. |
-| **Count** | Target *persisted detections per class*. Presets plus a free field, capped at `SIM_MAX_COUNT` (default **500**). |
-| **Intensity** | `burst` runs flat out; `trickle` adds a small pause (~20 ms per replay pass) so the live tail visibly ticks over — cosmetic, it does not change the result. |
-| **Run simulation** | `POST /simulate`. Returns when the run is done and the result table fills in. |
+| **Classes** | Pick which to generate: `deauth`, `disas`, `reassoc`, `rogueap`, `krack`, `kr00k`, `evil_twin`, `ssdp`. |
+| **All classes** | Lets the sensor decide which classes it can actually produce — the result summary is the source of truth, not the request. |
+| **Frames per class** | Target *persisted detections per class*. Presets plus a free field, capped at `SIM_MAX_COUNT` (default **500**); the UI shows `max {n}`. |
+| **Intensity** | **Burst** injects everything at once — the fastest way to repopulate the view. **Trickle** spreads it over time so it looks like live traffic arriving. Cosmetic; it does not change the result. |
+| **Simulate** | `POST /simulate`. Returns when the run is done and the **Model output** table fills in — class, detected, stored, and what the model actually called it. |
 
 Under the hood each requested class replays its held-out AWID3 segment through the real pipeline
 (reset each pass) until `count` detections persist or a full pass yields nothing new. Every persisted
@@ -125,7 +132,7 @@ When the API is unreachable, or `/health` reports `database: false`, the dashboa
 - keeps the **Simulate** control enabled, because it needs only the API. If the API is reachable you
   can repopulate believable, real-model data on the spot.
 
-So the recovery move during a demo is: if the Pi's capture stops, go to `/control` and **Run
+So the recovery move during a demo is: if the Pi's capture stops, go to `/admin` and **Run
 simulation** — the dashboard refills with genuine model output and the presentation continues. The
 system never shows a number it cannot stand behind.
 
@@ -133,6 +140,7 @@ system never shows a number it cannot stand behind.
 
 ## The real proof — over-the-air (`tools/inject_attack.py`)
 
+> [!CAUTION]
 > **⚠️ Legal note — read first.** Transmitting deauthentication / disassociation frames against
 > networks you do not own is **illegal in most jurisdictions.** This is for your own testbed only.
 > `inject_attack.py` refuses to transmit unless you pass **both** `--i-own-this-network` and an
@@ -184,7 +192,7 @@ python -m backend.detector.cli --self-test
 # 2. Launch (laptop, SQLite, no config)
 python run.py --demo            # or plain `python run.py` for a clean eight-class start
 
-# 3. Open the printed URL → Control page → Run simulation
+# 3. Open the printed URL → /admin → Simulate
 # 4. Optional: a terminal tail to show rows landing live
 python -m backend.scripts.live_monitor --follow --sim-only
 ```

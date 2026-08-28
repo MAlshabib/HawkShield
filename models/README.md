@@ -4,14 +4,19 @@ Two generations live under this heading.
 
 | | **v2 — current design** | **v1 — superseded** |
 |---|---|---|
-| Model | one causal dilated TCN, ONNX fp32 | two LightGBM `Booster`s in joblib bundles |
+| Model | LightGBM over 82 columns **(ships)**, or a causal dilated TCN in ONNX fp32 | two LightGBM `Booster`s in joblib bundles |
 | Features | 46, from `feature_spec.FEATURE_ORDER` | 31 (29 numeric + 2 categorical) |
 | Classes | 9 (`Normal` + 8 attacks) | 6 attacks, no `Normal` class |
 | Split | grouped by 50k-frame block, whole blocks held out | random row shuffle |
-| Status | **weights not yet trained — see §2.7** | on disk, selectable, and the automatic fallback |
+| Status | **trained, evaluated and shipping — §2.7** | on disk, selectable, last-resort fallback |
 
-> **What is actually in this directory right now:**
+> [!NOTE]
+> **What is actually in this directory:**
 > ```
+> models/hawkshield_v2_gbdt.txt           v2 booster — 441 trees, what auto serves
+> models/hawkshield_v2.onnx               v2 causal TCN, fp32
+> models/hawkshield_v2.int8.onnx          int8 variant — exported, do NOT ship (§2.7.2)
+> models/hawkshield_v2_meta.json          the contract both v2 artefacts are checked against
 > models/stage1_binary_bundle.joblib      v1 stage 1
 > models/stage2_multiclass_bundle.joblib  v1 stage 2
 > models/README.md                        this file
@@ -34,8 +39,9 @@ Normative interface: [`../docs/CONTRACT.md` §5](../docs/CONTRACT.md). Orientati
 
 | value | behaviour |
 |---|---|
-| `auto` *(default)* | v2 when `models/hawkshield_v2.onnx` + `models/hawkshield_v2_meta.json` exist **and** the meta matches the running `feature_spec`; otherwise v1, with the reason logged at ERROR |
-| `v2` | v2 or nothing — a mismatch raises `SpecMismatchError` and the process exits `2` |
+| `auto` *(default)* | **`v2-gbdt`** when `hawkshield_v2_gbdt.txt` + `hawkshield_v2_meta.json` exist and the meta matches the running `feature_spec`; then `v2-tcn` on the same test against the ONNX graph; otherwise v1, with the reason logged at ERROR |
+| `v2-gbdt` | the booster or nothing — a mismatch raises `SpecMismatchError` and the process exits `2` |
+| `v2-tcn` | the ONNX TCN or nothing, same failure mode. `v2` is still accepted and means this |
 | `v1` | the two-stage LightGBM bundles in §3 |
 
 Whichever loads logs `ACTIVE MODEL: …` once at startup. That line is authoritative;
@@ -43,7 +49,7 @@ Whichever loads logs `ACTIVE MODEL: …` once at startup. That line is authorita
 
 ---
 
-## 2. v2 — causal TCN over the 46-feature contract
+## 2. v2 — two models over one 46-feature contract
 
 ### 2.1 Intended use
 
@@ -334,16 +340,16 @@ stage = 1 when p1 < thr1, else 2; 0 when inference failed
   unchanged to v2's nine-way softmax and should be re-checked against `ml/reports/eval_report.md`.
 * **`backend/scripts/verify_models.py` has no v2 mode** — it inspects the joblib bundles only. The v2
   check is `V2Pipeline`'s own load-time validation, surfaced by `GET /health`.
-* **`run.py`'s preflight still hard-requires both v1 `.joblib` bundles**, so a checkout carrying a
-  valid v2 artefact and no v1 bundles would be refused even though the detector would run fine.
-  Recorded as a known gap in [`../docs/CONTRACT.md` §8.4](../docs/CONTRACT.md).
+* **Only one dataset.** AWID3 recorded each attack once, so no split of it can measure
+  generalisation across deployments. Closing this needs a second, independently captured corpus —
+  the highest-value open item on the model side.
 
 ---
 
 ## 3. v1 — superseded, and why
 
 The two LightGBM bundles are still on disk, still selectable with `MODEL_VERSION=v1`, and still the
-automatic fallback while no v2 artefact exists. **They do not generalise**, for two reasons that are
+last-resort fallback behind both v2 artefacts. **They do not generalise**, for two reasons that are
 now understood and fixed. The analysis is kept in full because it is the most instructive artefact in
 this repository.
 
@@ -552,5 +558,11 @@ reports the *last*. Verified against tshark, the two disagreed on **97.6 %** of 
 | six classes, no `Normal` | nine classes including `Normal` |
 | no mechanism to notice any of the above | the leakage ablation is a standing part of `ml/evaluate.py` |
 
-None of which is a claim that v2 works. **That claim requires numbers, and the numbers do not exist
-yet** (§2.7).
+That list is a design argument, not evidence. The evidence is in §2.7 — **0.9907 held-out macro-F1
+over 5,943,908 frames**, with the ablation showing the model degrades by 0.0007 when its top feature
+is removed and retrained, where v1's equivalent swung detection between 0 % and 100 %.
+
+> [!WARNING]
+> Read that evidence against its own limit (§2.7.1). AWID3 recorded each attack once, so the
+> held-out blocks share the session, testbed and radios of the training blocks. The number bounds
+> field performance from above; it does not establish it.

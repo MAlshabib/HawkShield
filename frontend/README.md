@@ -14,13 +14,24 @@ See `docs/CONTRACT.md` §1 (topology) and §4 (the frozen HTTP contract).
 
 ## Pages
 
+Two route groups. `(app)` wraps its pages in the sticky navbar; `(site)` inherits the root layout
+and nothing else, because the landing page carries its own floating pill nav and a pill under a
+sticky bar reads as a rendering bug.
+
 | Route | File | Talks to |
 |---|---|---|
-| `/` | `app/page.tsx` | — (client redirect to `/home`) |
-| `/home` | `app/(app)/home/page.tsx` | — |
-| `/dashboard` | `app/(app)/dashboard/page.tsx` | `/attacks`, `/attacks/analysis`, `/heatmap-attack`, `/map/*` |
-| `/attacks` | `app/(app)/attacks/page.tsx` | `/attacks`, `/reports/summary`, `/reports/export` |
-| `/rag` | `app/(app)/rag/page.tsx` | `/ask` |
+| `/` | `app/(site)/page.tsx` | `/health`, `/packets/count`, `/attacks/analysis`, `/attacks/series`, `/reports/summary` |
+| `/report` | `app/(site)/report/page.tsx` | `/health`, `/packets/count`, `/attacks/analysis`, `/channel-usage`, `/top-offenders`, `/reports/summary`, `/reports/export` |
+| `/dashboard` | `app/(app)/dashboard/page.tsx` | `/health`, `/attacks`, `/attacks/series`, `/heatmap-attack`, `/channel-usage`, `/top-offenders`, `/reports/summary`, `/stream` |
+| `/threats` | `app/(app)/threats/page.tsx` | `/attacks`, `/packets/count`, `/stream` |
+| `/map` | `app/(app)/map/page.tsx` | `/map/ap-locations`, `/map/source-rssi`, `/map/estimate-origin` |
+| `/saqr` | `app/(app)/saqr/page.tsx` | `/agent/ask` (SSE), `/agent/tools`, `/top-offenders` |
+| `/admin` | `app/(app)/admin/page.tsx` | `/simulate`, `/admin/purge` |
+| `/attacks` | `app/(app)/attacks/page.tsx` | `/attacks` — the earlier table, still built |
+| `/rag` | `app/(app)/rag/page.tsx` | the earlier assistant page, superseded by `/saqr` |
+| `/design` | `app/design/page.tsx` | — the Falcon Paper component gallery, for development |
+
+The four routes in the navbar are `/dashboard`, `/threats`, `/map` and `/saqr`.
 
 ---
 

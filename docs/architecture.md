@@ -7,10 +7,12 @@ This document describes what the code does. The normative interface definitions 
 [`../models/README.md`](../models/README.md); the same flow drawn as diagrams is in
 [`model-pipeline.md`](model-pipeline.md).
 
-> **Two generations.** The detector loads either the **v2** causal TCN (ONNX) or the **v1** two-stage
-> LightGBM pair, chosen by `MODEL_VERSION`. Steps 1, 4 and 5 below are identical for both; steps 2
-> and 3 differ, and both are described. The trained v2 artefacts ship in `models/`, so `auto`
-> resolves to **`v2-gbdt`** (the measured winner) — see [`models.md`](models.md).
+> [!NOTE]
+> **Three loadable models, one contract.** `MODEL_VERSION` picks between the **v2 booster**
+> (`v2-gbdt`), the **v2 causal TCN** (`v2-tcn`) and the **v1** two-stage LightGBM pair. All three
+> ship in `models/`, and `auto` resolves to `v2-gbdt` — the measured winner. Steps 1, 4 and 5 below
+> are identical for all of them; steps 2 and 3 differ, and each is described. See
+> [`models.md`](models.md).
 
 ---
 
@@ -39,53 +41,42 @@ debugging without dragging the rest of the system along.
 
 ## 2. The frame path, step by step
 
-```
-802.11 frame + RadioTap header
-        │
-        ▼
- ┌─────────────────────────────────────────────────────────────────────┐
- │ 1. capture.py — Detector.on_packet(pkt)                             │
- │      scapy sniff(iface=wlan1, prn=on_packet, store=False)           │
- └─────────────────────────────────────────────────────────────────────┘
-        │
-        ▼
- ┌─────────────────────────────────────────────────────────────────────┐
- │ 2. features.py — packet_to_features_v2(pkt, iface, state)     [v2]  │
- │      scapy_to_raw()  →  dict keyed by tshark column names           │
- │      feature_spec.derive_frame_features()  →  46 floats             │
- │      -> (row: 46 features, raw_min: 10-key dict for the DB)         │
- │    [v1]  packet_to_row()  →  31 named features                      │
- └─────────────────────────────────────────────────────────────────────┘
-        │
-        ▼  optional SSID soft filter (TARGET_SSID)
- ┌─────────────────────────────────────────────────────────────────────┐
- │ 3. pipeline.py — V2Pipeline.predict(row) -> Verdict           [v2]  │
- │      ring buffer: the last 126 frames of causal context             │
- │      onnxruntime, 32 frames per call → 9 logits per frame           │
- │      p1 = 1 − P(Normal)                                             │
- │        p1 <  STAGE1_THRESHOLD  →  Verdict(is_attack=False, stage=1) │
- │      label = argmax over the 8 attack classes;  p2 = P(label)       │
- │        p2 <  STAGE2_THRESHOLD  →  Verdict(is_attack=False, stage=2) │
- │        otherwise               →  Verdict(is_attack=True, ...)      │
- │    [v1]  TwoStagePipeline: impute → scale → reindex → 2 × Booster   │
- └─────────────────────────────────────────────────────────────────────┘
-        │ is_attack only
-        ▼
- ┌─────────────────────────────────────────────────────────────────────┐
- │ 4. sink.py — PacketSink.write(raw, row, verdict, iface)             │
- │      buffer; flush at BATCH_SIZE rows or BATCH_FLUSH_SECONDS        │
- └─────────────────────────────────────────────────────────────────────┘
-        │ INSERT
-        ▼
-   PostgreSQL — table `packets`
-        │ SELECT
-        ▼
- ┌─────────────────────────────────────────────────────────────────────┐
- │ 5. backend/app/routers/* — aggregate into the frozen JSON shapes    │
- └─────────────────────────────────────────────────────────────────────┘
-        │ fetch (same origin)
-        ▼
-   frontend/out — Next.js static export, served by the same FastAPI process
+```mermaid
+flowchart TD
+    F["802.11 frame + RadioTap header"]
+
+    F --> C["<b>1. capture.py</b> — Detector.on_packet(pkt)<br/>scapy sniff(iface=wlan1, prn=on_packet, store=False)"]
+
+    C --> X["<b>2. features.py</b> — packet_to_features_v2(pkt, iface, state)<br/>scapy_to_raw() → dict keyed by tshark column names<br/>feature_spec.derive_frame_features() → <b>46 floats</b><br/>returns (row, raw_min: the 10 keys the DB stores)"]
+
+    X -. "v1 path" .-> X1["packet_to_row() → 31 named features"]
+
+    X --> S{"TARGET_SSID set?<br/><i>optional soft filter</i>"}
+    S --> P["<b>3. pipeline.py</b> — predict(row) → Verdict"]
+
+    subgraph V2["v2 &nbsp;·&nbsp; whichever MODEL_VERSION resolved to &nbsp;"]
+        direction TB
+        G["<b>v2-gbdt</b> (auto)<br/>RollupState adds 36 causal<br/>aggregates → 82 columns<br/>→ LightGBM → 9 scores"]
+        T["<b>v2-tcn</b><br/>ring buffer, 126 frames<br/>of past-only context<br/>→ ONNX → 9 logits/frame"]
+    end
+
+    P --> V2
+    V2 --> G1{"p1 = 1 − P(Normal)<br/>≥ STAGE1_THRESHOLD?"}
+    G1 -- "no" --> D1["Verdict(is_attack=False, stage=1)<br/>dropped"]
+    G1 -- "yes" --> G2{"label = argmax over the 8 attack classes<br/>p2 = P(label) ≥ STAGE2_THRESHOLD?"}
+    G2 -- "no" --> D2["Verdict(is_attack=False, stage=2)<br/>dropped"]
+    G2 -- "yes" --> W["<b>4. sink.py</b> — PacketSink.write(raw, row, verdict, iface)<br/>buffer; flush at BATCH_SIZE rows or BATCH_FLUSH_SECONDS"]
+
+    P -. "v1 path" .-> P1["TwoStagePipeline:<br/>impute → scale → reindex → 2 × Booster"]
+    P1 -.-> G1
+
+    W --> DB[("PostgreSQL — table <b>packets</b>")]
+    DB --> R["<b>5. backend/app/routers/*</b><br/>aggregate into the frozen JSON shapes"]
+    R --> UI["frontend/out — Next.js static export,<br/>served by the same FastAPI process, same origin"]
+
+    style G fill:#238636,stroke:#3fb950,color:#fff
+    style D1 fill:#6e7681,stroke:#8b949e,color:#fff
+    style D2 fill:#6e7681,stroke:#8b949e,color:#fff
 ```
 
 ### Step 1 — capture
@@ -157,7 +148,15 @@ resets on every detector restart and is the leaked feature described in §7.
 
 ### Step 3 — classification
 
-#### v2 — one causal TCN
+#### v2-gbdt — the booster `auto` selects
+
+`GBDTPipeline` loads `models/hawkshield_v2_gbdt.txt` and keeps a `RollupState`: a streaming causal
+window that turns each frame's 46 features into **82 columns** — the 46, plus mean/std/rate
+aggregates over the last 16 and 64 frames. One row goes to `Booster.predict`, nine scores come back.
+There is no ring buffer of raw frames and no sequence dimension; the temporal context lives entirely
+in those 36 aggregate columns, which is why the same code reproduces exactly what training computed.
+
+#### v2-tcn — the alternative, selectable
 
 `V2Pipeline` loads `models/hawkshield_v2.onnx` through onnxruntime and keeps a **ring buffer of the
 last 126 frames**. The network is causal — every convolution is left-padded only — so the prediction

@@ -168,18 +168,19 @@ office". Honest reporting of that limit is part of the deliverable.
 sequenceDiagram
     participant A as adapter (monitor)
     participant D as detector service
-    participant M as ONNX fp32
+    participant M as model (v2-gbdt)
     participant P as PostgreSQL
     participant U as dashboard
 
-    A->>D: frame
-    D->>D: scapy_to_raw + derive_frame_features
-    D->>D: append to 128-frame ring buffer
-    D->>M: window (46 × 128)
-    M-->>D: 9 class scores per frame
-    D->>D: threshold; drop Normal
-    D->>P: batched insert (attacks only)
-    U->>P: /attacks, /attacks/analysis, ...
+    A->>D: 802.11 frame + radiotap
+    D->>D: scapy_to_raw + derive_frame_features → 46 floats
+    D->>D: RollupState → 36 causal aggregates
+    D->>M: one row, 82 columns
+    M-->>D: 9 class scores
+    D->>D: gate on p1 ≥ 0.40 then p2 ≥ 0.80
+    D->>D: drop everything that fails either gate
+    D->>P: batched insert, attacks only
+    U->>P: /attacks, /attacks/analysis, /stream
 ```
 
 Only attacks are persisted — normal traffic is classified and dropped, which is what

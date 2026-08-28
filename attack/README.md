@@ -8,6 +8,7 @@ no radio, always works, good as a fallback. This is the real thing: frames go
 out the antenna, the sensor hears them off the air, and the detection you see
 was genuinely captured, not injected into the database.
 
+> [!CAUTION]
 > **Legal.** Transmitting deauthentication / disassociation frames at a network
 > you do not own is illegal in most jurisdictions. This script attacks the
 > access point your Pi's `wlan0` is associated with, on the assumption that it

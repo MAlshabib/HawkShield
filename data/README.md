@@ -46,9 +46,10 @@ cannot exercise those groups. Measure it yourself with the coverage table
 detector uses, so what it prints is what the Pi would have done with those frames. **This is the
 offline demo path — no radio, no monitor mode, no Raspberry Pi.**
 
-It honours `--model-version` (`auto` | `v1` | `v2`), so the replay follows whichever generation the
-detector would: v2 goes through `packet_to_features_v2` and the same ring buffer the capture loop
-uses, v1 through `packet_to_row` and `TwoStagePipeline`. With no v2 artefact on disk, `auto` is v1.
+It honours `--model-version` (`auto` | `v1` | `v2-tcn` | `v2-gbdt`), so the replay follows whichever
+generation the detector would: v2 goes through `packet_to_features_v2` and, for the TCN, the same
+ring buffer the capture loop uses; v1 through `packet_to_row` and `TwoStagePipeline`. In this
+checkout `auto` resolves to **`v2-gbdt`** — the trained booster ships in `models/`.
 
 You do not need to call it directly. `run.py --demo` replays a capture into the database
 and then serves the dashboard on top of the result — on a laptop with no configuration at all, since
@@ -181,6 +182,7 @@ derived by one shared function; see [`../docs/models.md` §3](../docs/models.md)
 > and two categoricals scapy cannot produce at all. Re-running them unchanged reproduces the same
 > failure exactly.
 >
+> [!WARNING]
 > **Retrain with `ml/run_training.ps1` on AWID3 (§2) instead.** That pipeline holds out whole blocks,
 > derives training and inference features with the same function, and bans the session- and
 > band-encoding fields by name in `feature_spec.EXCLUDED_COLUMNS`.

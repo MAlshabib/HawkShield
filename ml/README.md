@@ -149,6 +149,7 @@ Shared by training, evaluation and (by construction) the live detector.
 `(batch, 46, T) → (batch, 9, T)`, one prediction per frame.
 
 > Spec **2.1.0** dropped `frame.fcs_bad`, taking the contract from 47 features to
+> [!NOTE]
 > **46**. The channel count is read from the checkpoint's normalisation vectors at
 > construction time, so the network follows the spec automatically — but several
 > docstrings in `ml/model.py` still say 47, and `assert_causal()`'s *default*

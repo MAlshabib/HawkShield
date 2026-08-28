@@ -676,7 +676,9 @@ python -m backend.scripts.live_monitor --follow --sim-only    # only /simulate r
 shows a "Reconnecting…" chip, keeps the last good data on screen with an "Updated Ns ago" stamp,
 and keeps the Simulate control usable. Composure, never fabricated numbers.
 
-**The real proof — over the air.** `tools/inject_attack.py` transmits real 802.11 frames from a
+**The real proof — over the air.** On the Pi, `attack/attack.sh` is the one-command operator
+version: it targets the access point `wlan0` is already associated with, on the assumption that it
+is yours. Underneath it, `tools/inject_attack.py` transmits real 802.11 frames from a
 second monitor-mode adapter against your **own** testbed and grades what the Pi detected
 (PASS/PARTIAL/FAIL). It is the one test that exercises antenna → capture → model → database end to
 end.
@@ -791,7 +793,8 @@ HawkShield/
 ├── models/                     gbdt.txt · onnx (+int8) · meta.json · v1 bundles · README.md
 ├── data/                       samples/*.pcapng (6) · sim/awid3_sim_corpus.parquet
 ├── deploy/                     install_pi.sh · monitor_mode.sh · postgres_setup.sql · 2 × .service
-├── tools/                      inject_attack.py — the over-the-air test
+├── attack/                     attack.sh — the one-command over-the-air demo
+├── tools/                      inject_attack.py — the injector it drives
 ├── docs/                       CONTRACT.md · model-pipeline.md · architecture.md · deployment-pi.md
 │                               api.md · models.md · demo.md
 ├── run.py                      the launcher
@@ -824,8 +827,7 @@ None of the following exists in this codebase. They are future work, not feature
 
 ## Credits
 
-Built by **Yasser**, **Mohammed**, **Haya**, **Ghala** and **Lena** as a capstone project.
-Original repository: [`YasserAlbogami/Comprehensive_Capstone`](https://github.com/YasserAlbogami/Comprehensive_Capstone).
+Built by **Mohammed**, **Yasser**, **Haya**, **Ghala** and **Lena** as a capstone project.
 
 Built on FastAPI, SQLAlchemy, PyTorch, ONNX Runtime, LightGBM, scikit-learn, scapy, ReportLab,
 Next.js, React, Tailwind CSS, Recharts and Leaflet. The model is trained on **AWID3**
@@ -833,7 +835,7 @@ Next.js, React, Tailwind CSS, Recharts and Leaflet. The model is trained on **AW
 
 ## Licence
 
-Proprietary. Copyright (c) 2025 Yasser, Mohammed, Haya, Ghala, Lena. All rights reserved.
+Proprietary. Copyright (c) 2026 Mohammed, Yasser, Haya, Ghala, Lena. All rights reserved.
 See [`LICENSE`](LICENSE).
 
 > [!CAUTION]

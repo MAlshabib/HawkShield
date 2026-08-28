@@ -7,6 +7,7 @@ full troubleshooting matrix, the uninstall procedure — is [`../deploy/README.m
 which is maintained by the deployment owner. This page does not restate it; it links to it. When the
 two disagree, `deploy/README.md` wins on operational detail.
 
+> [!IMPORTANT]
 > **The Pi does not train anything.** Model training runs on a laptop or workstation with a GPU and
 > produces an ONNX artefact you copy across — see [§4.5](#45-the-detection-model). The Pi only ever
 > loads a model. It has no PyTorch, no CUDA, no AWID3 archive, and nothing on this page will put them
@@ -130,6 +131,7 @@ V2_BATCH_FRAMES=32        # frames per onnxruntime call
 V2_ORT_THREADS=2          # onnxruntime intra-op threads -- see below
 ```
 
+> [!TIP]
 > **`V2_ORT_THREADS` matters more on a Pi than anywhere else.** `0` means "the onnxruntime default",
 > which is one thread per core *and which spin-waits between calls*. On a four-core Pi running the
 > sniffer, the sink and uvicorn on the same silicon, that busy-wait competes directly with capture. On
@@ -142,6 +144,7 @@ V2_ORT_THREADS=2          # onnxruntime intra-op threads -- see below
 >
 > Both are ignored while v1 is the active model.
 
+> [!IMPORTANT]
 > **`DATABASE_URL` is not optional on the Pi.** A laptop can run the whole stack with the shipped
 > `CHANGE_ME` placeholder — `run.py` quietly falls back to a local SQLite file so a demo works with
 > zero setup. **The Pi deliberately does not do this.** `run.py` exits 2 and tells you to configure
@@ -242,16 +245,19 @@ order disagrees with the code in the checkout, and says exactly which. If you co
 without also pulling the matching code, that is the message you will get — and under
 `MODEL_VERSION=auto` it will quietly fall back to v1 rather than run something it cannot verify.
 
-> **Right now this section is aspirational.** No trained v2 artefact exists in this repository yet, so
-> a fresh Pi install runs **v1** and `/health` reports `"model_version": "v1"`. That is expected, not a
-> fault. Training details are in [`../ml/README.md`](../ml/README.md); the model card is
+> [!TIP]
+> **What a healthy fresh install reports.** All four v2 artefacts ship in `models/`, so a new Pi runs
+> the booster: `/health` returns `"model_version": "v2-gbdt"` with `spec_version` and
+> `artefact_spec_version` both `"2.1.0"`. Anything else — a fallback to `v1`, or a non-empty
+> `model_problems` — means the artefacts and the code in this checkout disagree. Training details
+> are in [`../ml/README.md`](../ml/README.md); the model card is
 > [`../models/README.md`](../models/README.md).
 
-> **`run.py`'s preflight still hard-requires both v1 `.joblib` bundles.** A checkout carrying a valid
-> v2 ONNX artefact and *no* v1 bundles would be refused by the launcher even though the detector would
-> run fine on v2. Harmless today because both bundles ship — but do not "clean up" `models/` by
-> deleting them. Recorded as a known gap in [`CONTRACT.md` §8.4](CONTRACT.md). The systemd units call
-> `backend.detector.cli` directly and are not affected.
+> [!NOTE]
+> **`run.py`'s preflight accepts any one generation.** It passes on `hawkshield_v2_gbdt.txt` + meta,
+> or `hawkshield_v2.onnx` + meta, or the two v1 `.joblib` bundles — a v2-only checkout is no longer
+> refused. The systemd units call `backend.detector.cli` directly and were never affected either
+> way.
 
 ---
 
@@ -399,6 +405,7 @@ a `SIM` tag on rows written by `POST /simulate`:
 exercises antenna → capture → model → database: it transmits real 802.11 frames from a *second*
 monitor-mode adapter against your own AP and grades what the Pi wrote.
 
+> [!CAUTION]
 > **⚠️ Legal note — read first.** Transmitting deauthentication / disassociation frames against
 > networks you do not own is **illegal in most jurisdictions.** This is for your own testbed only.
 > The tool refuses to transmit unless you pass **both** `--i-own-this-network` and an explicit,

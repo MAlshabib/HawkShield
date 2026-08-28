@@ -4,12 +4,14 @@ HawkShield ships **two generations** of detector. v2 is a causal temporal CNN ov
 contract shared by training and inference. v1 is the two-stage LightGBM pair it replaces, kept as a
 fallback and as a post-mortem.
 
+> [!NOTE]
 > **Diagrams live in [`model-pipeline.md`](model-pipeline.md)** — the whole system, feature
 > derivation, the network, the split protocol and the live path, as rendered flowcharts. This page is
 > the prose; that page is the picture. The **normative** definitions are in
 > [`CONTRACT.md` §5](CONTRACT.md), and the model card with provenance and per-generation detail is
 > [`../models/README.md`](../models/README.md).
 
+> [!IMPORTANT]
 > **Status — v2 is trained and shipping.** `models/` holds `hawkshield_v2_gbdt.txt` (LightGBM,
 > **0.9907** held-out macro-F1, the model `auto` selects), `hawkshield_v2.onnx` (causal TCN, 0.9856,
 > selectable with `--model-version v2-tcn`) and the v1 bundles for fallback. Full per-class tables,
@@ -329,7 +331,7 @@ anywhere in these docs. When `run_training` completes it writes:
 ## 8. v1 — what it was, and exactly how it failed
 
 The two LightGBM bundles in `models/` are still on disk, still selectable with `MODEL_VERSION=v1`,
-and still the automatic fallback while no v2 artefact exists. They are also the most instructive
+and still the last-resort fallback behind both v2 artefacts. They are also the most instructive
 thing in this repository, so the post-mortem is kept in full rather than deleted.
 
 **Shape.** `models/stage1_binary_bundle.joblib` gates (`p1 = P(attack)`), then
@@ -425,6 +427,7 @@ It exits non-zero if a **v1** bundle is missing, unreadable or internally incons
 feature counts, a missing imputer or scaler, an empty class map — and warns if the md5 differs from
 the contract.
 
+> [!WARNING]
 > **Gap:** `verify_models` inspects only the v1 joblib bundles. It has no v2 mode. To check a v2
 > artefact, load it — `V2Pipeline`'s startup validation is the check, and
 > `GET /health` reports the result as `model_version`, `artefact_spec_version` and `model_problems`

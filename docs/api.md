@@ -60,16 +60,30 @@ curl -s http://localhost:8000/health
 {
   "status": "ok",
   "database": true,
-  "packets": 1,
-  "latest_packet_ts": "2026-08-24T14:05:00",
-  "models": { "stage1": true, "stage2": true, "v2": false },
-  "model_version": "v1",
+  "packets": 5413,
+  "latest_packet_ts": "2026-08-28T17:13:18.515781",
+  "models": { "stage1": true, "stage2": true, "v2": true, "v2_gbdt": true },
+  "model_version": "v2-gbdt",
   "spec_version": "2.1.0",
-  "artefact_spec_version": null,
+  "artefact_spec_version": "2.1.0",
   "model_problems": [],
+  "capture": {
+    "iface": "wlan1",
+    "channel": 9,
+    "target_ssid": null,
+    "present": true,
+    "monitor_mode": true,
+    "link_type": "monitor-radiotap",
+    "operstate": "up",
+    "observed_iface": "wlan1",
+    "observed_channel_freq": 2452,
+    "source": "config+sysfs"
+  },
   "version": "1.0.0"
 }
 ```
+
+*(a live sensor, captured from a running Pi — not a hand-written example)*
 
 | Field | Meaning |
 |---|---|
@@ -79,19 +93,23 @@ curl -s http://localhost:8000/health
 | `latest_packet_ts` | ISO-8601, or `null` when the table is empty |
 | `models.stage1` / `.stage2` | `MODEL_DIR/STAGE1_MODEL` and `MODEL_DIR/STAGE2_MODEL` exist on disk |
 | `models.v2` | the v2 ONNX **and** its meta exist **and** the meta matches the running `feature_spec` |
-| `model_version` | `"v2"` \| `"v1"` \| `"none"` — what the detector *would* load, honouring `MODEL_VERSION` |
+| `models.v2_gbdt` | the same test against `hawkshield_v2_gbdt.txt` — the artefact `auto` prefers |
+| `model_version` | `"v2-gbdt"` \| `"v2-tcn"` \| `"v1"` \| `"none"` — what the detector *would* load, honouring `MODEL_VERSION` |
 | `spec_version` | the feature contract **this build of the code** implements, e.g. `"2.1.0"` |
 | `artefact_spec_version` | the spec version the on-disk v2 artefact claims, or `null` when there is none |
-| `model_problems` | why `models.v2` is `false` when a v2 artefact is present but unusable; `[]` otherwise |
+| `model_problems` | why a v2 flag is `false` when the artefact is present but unusable; `[]` otherwise |
+| `capture` | the configured interface and channel, plus what was actually measured on the capture host — `observed_*` disagreeing with `iface`/`channel` is the signal that the radio drifted |
 | `version` | `APP_VERSION` from `backend/app/config.py` |
 
 `status` is always HTTP **200**, including when degraded — read the body, not the status line.
 
+> [!NOTE]
 > **`model_version` is advisory.** This endpoint runs in the API process, which does no inference, so
-> it reports what the *files* imply. The detector's own startup line — `ACTIVE MODEL: v2 (causal TCN,
-> ONNX) spec=…` or `ACTIVE MODEL: v1 (two-stage LightGBM) …` — is authoritative. The two disagree only
-> if the artefacts changed after the detector started, which is itself worth noticing.
+> it reports what the *files* imply. The detector's own startup line — `ACTIVE MODEL: …` — is
+> authoritative. The two disagree only if the artefacts changed after the detector started, which is
+> itself worth noticing.
 
+> [!TIP]
 > **Expected today:** `model_version` is `"v2-gbdt"` — the LightGBM model won the held-out
 > head-to-head (0.9907 vs the TCN's 0.9856), so `auto` selects it. `spec_version` and
 > `artefact_spec_version` both report `"2.1.0"`. When they differ, the artefact is refused,
@@ -216,6 +234,7 @@ curl -s http://localhost:8000/attacks/analysis
 }
 ```
 
+> [!WARNING]
 > **A v1 rendering bug worth knowing about if you have historical screenshots.** The dashboard used
 > to render every `(Re)Assoc` row as `SSDP` — an alias table round-tripped a key through its display
 > string and never closed the loop, falling back to the first allowed type. **Any SSDP figure read
@@ -557,7 +576,7 @@ table. The ones that matter here:
 | `SAQR_MODEL` | *(empty ⇒ `GEN_MODEL`)* | must be a tool-calling model |
 | `SAQR_MAX_ROWS` | `500` | `LIMIT` appended to unbounded `SELECT`s (`RAG_MAX_ROWS` is a deprecated alias) |
 | `SAQR_SQL_TIMEOUT_MS` | `15000` | PostgreSQL `statement_timeout` (`RAG_SQL_TIMEOUT_MS` is a deprecated alias) |
-| `SAQR_ALLOW_RAW_SQL` | `1` | publish the guarded `run_sql` tool, so eight tools rather than seven |
+| `SAQR_ALLOW_RAW_SQL` | `1` | publish the guarded `run_sql` tool, so **seven** non-admin tools rather than six |
 | `ATTACKS_FILE` | *(empty = packaged)* | knowledge-base override |
 
 `/ask` has no rate limit and no concurrency gate, matching its historical behaviour; `/agent/ask` has both.
@@ -700,14 +719,17 @@ When `FRONTEND_DIST` (default `<repo>/frontend/out`) exists, it is mounted at `/
 
 | Path | Serves |
 |---|---|
-| `/` | `index.html` — client-side redirect to `/home` |
-| `/home/` `/dashboard/` `/attacks/` `/control/` `/rag/` | the five dashboard pages (`/control/` hosts the Simulate control and a live backend readout) |
+| `/` | the landing page — its own route group, with the floating pill nav |
+| `/dashboard/` `/threats/` `/map/` `/saqr/` | the four console pages in the navbar |
+| `/report/` | the print-first detection report |
+| `/attacks/` `/rag/` | earlier pages, still built and still served |
+| `/admin/` | the guarded operator controls |
 | `/_next/static/…` | JS/CSS bundles |
 | `/leaflet/marker-icon.png` etc. | committed Leaflet marker images, so the map works offline |
 
 The export uses `trailingSlash: true`, which is what the `html=True` mount expects. Verified:
-`/`, `/home/`, `/dashboard/`, `/attacks/`, `/rag/` return **200 `text/html`** and
-`/leaflet/marker-icon.png` returns **200 `image/png`**.
+`/`, `/dashboard/`, `/threats/`, `/map/`, `/saqr/`, `/report/`, `/attacks/`, `/rag/` return
+**200 `text/html`** and `/leaflet/marker-icon.png` returns **200 `image/png`**.
 
 If the directory is absent the mount is skipped entirely: the API starts and works, and the dashboard
 paths 404. Note the ordering consequence — with no frontend mounted, an unknown path is a normal
@@ -746,6 +768,7 @@ implemented.
 There is no authentication, and no rate limiting except the light guard on `/simulate`. `/attacks`
 with `limit=100000` will happily build a 100 000-row JSON array on a Raspberry Pi; page it.
 
+> [!NOTE]
 > **`raw.sim`.** Rows written by `POST /simulate` carry `sim = true` in the `packets.raw` JSON column
 > (with `sim_batch` and `sim_class`). Every read endpoint above returns them exactly like real
 > detections — they are real model output — so they are invisible in the normal UI shape but filterable
