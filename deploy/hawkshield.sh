@@ -10,7 +10,8 @@
 #   hawkshield              status, and the URL to open
 #   hawkshield channel auto follow whatever channel wlan0 is on
 #   hawkshield channel 6    or name one explicitly
-#   hawkshield wifi SSID    join a network (prompts for the password)
+#   hawkshield wifi SSID    join a network on wlan0 (prompts for the password)
+#   hawkshield hotspot      serve a network from wlan0 when the venue has none
 #   hawkshield reset        re-bind the adapter when the radio goes silent
 #   hawkshield restart      restart both services
 #   hawkshield logs         follow the detector
@@ -83,6 +84,28 @@ status(){
     else bad 'could not read /health'; fi
   else bad "API not answering on :$PORT"; fi
 
+  head_ 'Network'
+  # Three radios/ports, three jobs. Worth printing because the failure people hit
+  # is not "no network" -- it is the wrong interface doing the wrong job.
+  local uplink
+  uplink=$(ip route show default 2>/dev/null | sort -k9 -n | awk 'NR==1{print $5}')
+  local e_ip w_ip
+  e_ip=$(ip -4 -br addr show eth0 2>/dev/null | awk '{print $3}')
+  w_ip=$(ip -4 -br addr show wlan0 2>/dev/null | awk '{print $3}')
+  [ -n "$e_ip" ] && ok "eth0  ${e_ip}$([ "$uplink" = eth0 ] && echo '  <- internet')" \
+                 || warn 'eth0 has no address (cable out?)'
+  local w0mode w0ssid
+  w0mode=$($IW dev wlan0 info 2>/dev/null | awk '/type/{print $2}')
+  w0ssid=$($IW dev wlan0 link 2>/dev/null | awk '/SSID/{ $1=""; sub(/^ /,""); print }')
+  if [ "$w0mode" = AP ]; then
+    ok "wlan0 serving a hotspot${w_ip:+ (}${w_ip}${w_ip:+)}"
+    printf '      %sit cannot follow the target channel while it is an AP%s\n' "$dim" "$off"
+  elif [ -n "$w0ssid" ]; then
+    ok "wlan0 on '${w0ssid}' ch $($IW dev wlan0 info 2>/dev/null | awk '/channel/{print $2}') -- 'channel auto' follows this"
+  else
+    warn "wlan0 idle -- join the target network so 'channel auto' has something to copy"
+  fi
+
   head_ 'Saqr'
   if [ -z "$(env_get OPENROUTER_API_KEY)" ]; then bad 'no OPENROUTER_API_KEY -- Saqr will return 503'
   elif curl -s -o /dev/null -m 8 https://openrouter.ai/api/v1/models; then ok 'model provider reachable'
@@ -148,9 +171,23 @@ reset_radio(){
   status
 }
 
+# When the venue gives you no usable network, wlan0 can serve one. Only sensible
+# because eth0 carries the internet -- a hotspot on the only uplink would cut Saqr
+# off. Note this costs you `channel auto`: an AP sits on its own channel, not the
+# target's, so set the capture channel by hand afterwards.
+start_hotspot(){
+  local ssid="${1:-HawkShield}"
+  echo "wlan0 -> hotspot '$ssid' (password will be shown once)"
+  sudo nmcli device wifi hotspot ifname wlan0 ssid "$ssid" || return 1
+  sudo nmcli device wifi show-password ifname wlan0 2>/dev/null || true
+  printf '\nJoin that network, then open http://%s.local:%s\n' "$(hostname)" "$PORT"
+  printf '%sSet the capture channel by hand now -- channel auto follows wlan0, which is the hotspot.%s\n' "$dim" "$off"
+}
+
 case "${1:-status}" in
   status|'')  status ;;
   reset)      reset_radio ;;
+  hotspot)    start_hotspot "${2:-}" ;;
   channel)    set_channel "${2:?usage: hawkshield channel <number>}" ;;
   wifi)       join_wifi "${2:?usage: hawkshield wifi <ssid>}" ;;
   restart)    sudo systemctl restart hawkshield-api hawkshield-detector; sleep 12; status ;;
