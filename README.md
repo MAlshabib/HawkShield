@@ -538,6 +538,10 @@ anything.
 
 ## Running it for real
 
+> On the deployed Pi the services start at boot — there is nothing to launch by
+> hand. [`RUNBOOK.md`](RUNBOOK.md) is the plain-language on-site guide: the one
+> `hawkshield` command, pointing it at the right network, and showing an attack.
+
 <details>
 <summary><b>Raspberry Pi — the hardware, and the systemd install</b></summary>
 
