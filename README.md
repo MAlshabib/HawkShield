@@ -827,7 +827,12 @@ None of the following exists in this codebase. They are future work, not feature
 
 ## Credits
 
-Built by **Mohammed**, **Yasser**, **Haya**, **Ghala** and **Lena** as a capstone project.
+Built as a capstone project by
+[**Mohammed Alshabib**](https://github.com/MAlshabib),
+[**Yasser Albogami**](https://github.com/YasserAlbogami),
+**Haya Alkhthran**,
+[**Ghala Alotaibi**](https://github.com/ghalaotb1) and
+[**Lena Aldokhayel**](https://github.com/Lena-dk).
 
 Built on FastAPI, SQLAlchemy, PyTorch, ONNX Runtime, LightGBM, scikit-learn, scapy, ReportLab,
 Next.js, React, Tailwind CSS, Recharts and Leaflet. The model is trained on **AWID3**
