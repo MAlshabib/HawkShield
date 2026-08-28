@@ -38,6 +38,7 @@ import {
   ReadoutRow,
   Unreported,
 } from "@/components/console/frame"
+import { DangerZonePanel } from "@/components/danger-zone-panel"
 import { SimulatePanel } from "@/components/simulate-panel"
 import { Button } from "@/components/ui/button"
 import { useHealth, type ConnectionState } from "@/hooks/use-health"
@@ -225,6 +226,12 @@ export default function AdminPage() {
           setRuns((n) => n + 1)
           refresh()
         }}
+      />
+
+      {/* ---- the danger zone: empty the store, every count to zero --------- */}
+      <DangerZonePanel
+        storedCount={typeof health?.packets === "number" ? health.packets : null}
+        onPurged={refresh}
       />
 
       <div className="border-rule flex flex-wrap items-center justify-between gap-3 border-t pt-4">

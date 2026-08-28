@@ -258,6 +258,14 @@ class Settings(BaseSettings):
     #: committed file (``data/sim/awid3_sim_corpus.parquet``).
     SIM_CORPUS: str = ""
 
+    # ---- purge (POST /admin/purge) --------------------------------------
+    #: Master switch for the operator "delete all detections" control.  On by
+    #: default for the demo; set to 0 on a hardened deployment and /admin/purge
+    #: answers 403 and empties nothing.  This is a kill switch for a destructive,
+    #: deliberately unauthenticated endpoint on a device that sits on a
+    #: conference network, not a substitute for the sentinel the body must carry.
+    ALLOW_PURGE: bool = True
+
     # ---- web ------------------------------------------------------------
     CORS_ORIGINS: Annotated[List[str], NoDecode] = ["http://localhost:3000"]
     FRONTEND_DIST: Path = REPO_ROOT / "frontend" / "out"

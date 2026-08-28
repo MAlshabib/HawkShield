@@ -225,6 +225,33 @@ class SimulateResponse(BaseModel):
 
 
 # ---------------------------------------------------------------------------
+# Admin purge (POST /admin/purge)
+# ---------------------------------------------------------------------------
+class PurgePayload(BaseModel):
+    """Request body for ``POST /admin/purge``.
+
+    ``confirm`` must be the exact sentinel ``"DELETE"``; anything else (an empty
+    body included) is a 400 that deletes nothing.  It is the guard against a
+    stray or replayed call on a destructive endpoint that a hardened deployment
+    would rather gate off entirely (``ALLOW_PURGE=0``).
+
+    ``scope`` defaults to ``"all"`` -- every stored detection -- and
+    ``"simulated"`` restricts the delete to rows tagged ``raw.sim`` (decided in
+    Python, never in dialect-specific JSON SQL).
+    """
+
+    confirm: str = ""
+    scope: Literal["all", "simulated"] = "all"
+
+
+class PurgeResponse(BaseModel):
+    """Result of a purge: rows removed, and rows still in the table."""
+
+    deleted: int
+    remaining: int
+
+
+# ---------------------------------------------------------------------------
 # Health
 # ---------------------------------------------------------------------------
 class ModelsPresent(BaseModel):

@@ -634,6 +634,39 @@ export const ar: Dictionary = {
   "admin.latestPacket": "آخر حزمة",
   "admin.connection": "الاتصال",
 
+  /* ── منطقة الخطر: حذف كل الاكتشافات المخزَّنة (POST /admin/purge) ─────── */
+  "admin.purge.title": "منطقة الخطر",
+  "admin.purge.subtitle": "مسح الاكتشافات المخزَّنة",
+  "admin.purge.aria": "حذف الاكتشافات المخزَّنة",
+  "admin.purge.explainer":
+    "احذف الاكتشافات التي سجّلها هذا المستشعر. هذا يُفرغ المخزن الذي تقرأ منه كل الرسوم البيانية، فتعود لوحة التحكم وعرض التهديدات وجميع الأعداد إلى الصفر. يزيل سجلّاتنا عن الهجمات لا أي شيء على الشبكة، ولا يمكن التراجع عنه.",
+  "admin.purge.deleteAll": "حذف كل الاكتشافات",
+  "admin.purge.deleteSimulated": "حذف المُحاكاة فقط",
+  "admin.purge.storedNow": "المخزَّن الآن",
+  "admin.purge.storedUnknown": "العدد غير متاح",
+  "admin.purge.lastRun": "أزال آخر مسح {n} اكتشافًا.",
+  "admin.purge.done": "حُذفت الاكتشافات",
+  "admin.purge.doneDetail": "أُزيل {n} اكتشافًا. صارت جميع الأعداد صفرًا الآن.",
+  "admin.purge.dialog.titleAll": "حذف كل اكتشاف مخزَّن؟",
+  "admin.purge.dialog.titleSimulated": "حذف الاكتشافات المُحاكاة؟",
+  "admin.purge.dialog.bodyAll":
+    "يحذف هذا نهائيًا كل اكتشاف مخزَّن. تعود جميع الرسوم البيانية والأعداد إلى الصفر. لا يمكن التراجع عن ذلك.",
+  "admin.purge.dialog.bodySimulated":
+    "يحذف هذا نهائيًا الاكتشافات الناتجة عن المحاكاة فقط. تُحفَظ الاكتشافات الملتقَطة. لا يمكن التراجع عن ذلك.",
+  "admin.purge.typeToConfirm": "للتأكيد، اكتب الكلمة اللاتينية",
+  "admin.purge.deleting": "جارٍ الحذف…",
+  "admin.purge.confirmAll": "حذف كل شيء",
+  "admin.purge.confirmSimulated": "حذف المُحاكاة",
+  "admin.purge.error.disabled.title": "المسح معطّل",
+  "admin.purge.error.disabled.body": "شُغِّل هذا المستشعر وأداة المسح معطّلة فيه.",
+  "admin.purge.error.rejected.title": "رُفض التأكيد",
+  "admin.purge.error.rejected.body": "لم يقبل المستشعر التأكيد. لم يُحذَف شيء.",
+  "admin.purge.error.http.title": "فشل المسح (HTTP {status})",
+  "admin.purge.error.http.body": "أعاد المستشعر استجابة غير متوقّعة. لم يُحذَف شيء.",
+  "admin.purge.error.unreachable.title": "تعذّر الوصول إلى المستشعر",
+  "admin.purge.error.unreachable.body":
+    "تعذّر الوصول إلى الواجهة البرمجية، فلم يُحذَف شيء. أعد المحاولة حالما تعود الخدمة.",
+
   /* ── أسماء الأيام المختصرة (رؤوس صفوف الخريطة الحرارية) ───────────── */
   "day.sun": "الأحد",
   "day.mon": "الاثنين",

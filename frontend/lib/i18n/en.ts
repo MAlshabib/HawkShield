@@ -664,6 +664,39 @@ export const en = {
   "admin.latestPacket": "Last packet",
   "admin.connection": "Connection",
 
+  /* ── Danger zone: delete all stored detections (POST /admin/purge) ───── */
+  "admin.purge.title": "Danger zone",
+  "admin.purge.subtitle": "Clear the stored detections",
+  "admin.purge.aria": "Delete stored detections",
+  "admin.purge.explainer":
+    "Delete the detections this sensor has recorded. This empties the store every chart reads from, so the dashboard, the threats view and the counts all return to zero. It removes our records of the attacks, not anything on the network, and it cannot be undone.",
+  "admin.purge.deleteAll": "Delete all detections",
+  "admin.purge.deleteSimulated": "Delete only simulated",
+  "admin.purge.storedNow": "Stored now",
+  "admin.purge.storedUnknown": "Count unavailable",
+  "admin.purge.lastRun": "Last purge removed {n} detections.",
+  "admin.purge.done": "Detections deleted",
+  "admin.purge.doneDetail": "Removed {n} detections. Every count is now zero.",
+  "admin.purge.dialog.titleAll": "Delete every stored detection?",
+  "admin.purge.dialog.titleSimulated": "Delete the simulated detections?",
+  "admin.purge.dialog.bodyAll":
+    "This permanently deletes every stored detection. Every chart and count returns to zero. This cannot be undone.",
+  "admin.purge.dialog.bodySimulated":
+    "This permanently deletes only the detections produced by simulation. Captured detections are kept. This cannot be undone.",
+  "admin.purge.typeToConfirm": "To confirm, type",
+  "admin.purge.deleting": "Deleting…",
+  "admin.purge.confirmAll": "Delete everything",
+  "admin.purge.confirmSimulated": "Delete simulated",
+  "admin.purge.error.disabled.title": "Purge is switched off",
+  "admin.purge.error.disabled.body": "This sensor was started with the purge control disabled.",
+  "admin.purge.error.rejected.title": "Confirmation rejected",
+  "admin.purge.error.rejected.body": "The sensor did not accept the confirmation. Nothing was deleted.",
+  "admin.purge.error.http.title": "Purge failed (HTTP {status})",
+  "admin.purge.error.http.body": "The sensor returned an unexpected response. Nothing was deleted.",
+  "admin.purge.error.unreachable.title": "Sensor unreachable",
+  "admin.purge.error.unreachable.body":
+    "Could not reach the API, so nothing was deleted. Try again once the service is back.",
+
   /* ── Weekday short names (heatmap row headers) ─────────────────────── */
   "day.sun": "Sun",
   "day.mon": "Mon",
