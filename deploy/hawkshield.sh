@@ -56,20 +56,28 @@ status(){
   fi
   # Frames actually arriving is the only proof the radio is working. `seen` is
   # cumulative since the process started, so a total tells you nothing about now
-  # -- a stalled radio keeps reporting the same large number. Sample twice.
-  local a b delta
-  a=$(journalctl -u hawkshield-detector -n 1 --no-pager 2>/dev/null | grep -oE 'seen=[0-9]+' | cut -d= -f2)
-  sleep 8
-  b=$(journalctl -u hawkshield-detector -n 1 --no-pager 2>/dev/null | grep -oE 'seen=[0-9]+' | cut -d= -f2)
-  if [ -n "$a" ] && [ -n "$b" ]; then
-    delta=$((b - a))
+  # -- a stalled radio keeps reporting the same large number. Sample twice and
+  # report the change. The heartbeat lands every ~2s, so read the last few lines
+  # rather than only the newest, and retry the first read: catching it between
+  # heartbeats once returned nothing and read as a false "silent", which is the
+  # last thing you want to see on stage over a healthy sensor.
+  latest_seen(){ journalctl -u hawkshield-detector -n 6 --no-pager 2>/dev/null \
+                 | grep -oE 'seen=[0-9]+' | tail -1 | cut -d= -f2; }
+  local a b delta tries=0
+  a=$(latest_seen)
+  while [ -z "$a" ] && [ "$tries" -lt 3 ]; do sleep 2; a=$(latest_seen); tries=$((tries+1)); done
+  if [ -z "$a" ]; then warn 'detector is not logging yet -- give it a few seconds'
+  else
+    sleep 8
+    b=$(latest_seen)
+    delta=$(( ${b:-$a} - a ))
     if [ "$delta" -gt 0 ]; then ok "hearing traffic ($delta frames in 8s)"
     else
       bad "radio is silent (0 frames in 8s)"
       printf '      %sthe channel may be wrong:%s hawkshield channel auto\n' "$dim" "$off"
       printf '      %sor the adapter has stalled:%s hawkshield reset\n' "$dim" "$off"
     fi
-  else warn 'detector is not logging yet'; fi
+  fi
 
   head_ 'Detections'
   # Pulled with grep rather than a JSON parser: this runs over ssh, and every
