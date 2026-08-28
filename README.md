@@ -833,6 +833,7 @@ Built as a capstone project by
 **Haya Alkhthran**,
 [**Ghala Alotaibi**](https://github.com/ghalaotb1) and
 [**Lena Aldokhayel**](https://github.com/Lena-dk).
+See [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
 
 Built on FastAPI, SQLAlchemy, PyTorch, ONNX Runtime, LightGBM, scikit-learn, scapy, ReportLab,
 Next.js, React, Tailwind CSS, Recharts and Leaflet. The model is trained on **AWID3**
