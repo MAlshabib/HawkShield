@@ -856,10 +856,12 @@ Built as a capstone project. See [`CONTRIBUTORS.md`](CONTRIBUTORS.md).
 <a href="https://github.com/YasserAlbogami"><code>@YasserAlbogami</code></a>
 </td>
 <td align="center" width="200">
-<img src="https://avatars.githubusercontent.com/u/0?v=4" width="100" alt="Haya Alkhthran" style="opacity:0.5"><br>
-<b>Haya Alkhthran</b><br>
+<a href="https://github.com/HayaAlkhathran">
+<img src="https://github.com/HayaAlkhathran.png?size=200" width="100" alt="Haya Alkhthran"><br>
+<b>Haya Alkhthran</b>
+</a><br>
 <sub>هيا الخثران</sub><br>
-<sub>—</sub>
+<a href="https://github.com/HayaAlkhathran"><code>@HayaAlkhathran</code></a>
 </td>
 </tr>
 <tr>

@@ -8,7 +8,7 @@ there; the credit is shared equally.
 |---|---|
 | **Mohammed Alshabib** — team leader | [@MAlshabib](https://github.com/MAlshabib) |
 | **Yasser Albogami** | [@YasserAlbogami](https://github.com/YasserAlbogami) |
-| **Haya Alkhthran** | — |
+| **Haya Alkhthran** | [@HayaAlkhathran](https://github.com/HayaAlkhathran) |
 | **Ghala Alotaibi** | [@ghalaotb1](https://github.com/ghalaotb1) |
 | **Lena Aldokhayel** | [@Lena-dk](https://github.com/Lena-dk) |
 
