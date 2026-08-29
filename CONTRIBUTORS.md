@@ -12,5 +12,7 @@ there; the credit is shared equally.
 | **Ghala Alotaibi** | [@ghalaotb1](https://github.com/ghalaotb1) |
 | **Lena Aldokhayel** | [@Lena-dk](https://github.com/Lena-dk) |
 
+Photos and Arabic names are in the team section of the [README](README.md#credits).
+
 The model is trained on **AWID3** (University of the Aegean). See
 [`LICENSE`](LICENSE) for terms.
