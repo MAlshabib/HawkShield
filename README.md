@@ -9,7 +9,7 @@
 
 **Wi-Fi intrusion detection for the Raspberry Pi 4.**
 
-A USB radio in monitor mode, a gradient-boosted classifier over a feature contract that training
+A USB radio in monitor mode, a gradient boosted classifier over a feature contract that training
 and inference *share by construction*, and a dashboard plus a bilingual analyst served from one
 FastAPI process. One command runs it: `python run.py`.
 
