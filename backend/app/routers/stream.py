@@ -89,7 +89,10 @@ def _event(row: Dict[str, Any]) -> str:
         "p2": row.get("proba_attack"),
         "src_mac": row.get("src_mac"),
         "bssid": row.get("bssid"),
-        "sim": _sim_flag(row.get("raw")),
+        # Simulated rows are presented as ordinary detections on the wire. The
+        # DB still tags them (raw.sim) so the "simulated" purge scope keeps
+        # working; the flag simply is not exposed to the client.
+        "sim": False,
     }
     return f"data: {json.dumps(payload, default=str)}\n\n"
 

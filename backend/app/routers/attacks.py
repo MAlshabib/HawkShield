@@ -120,6 +120,14 @@ def _normalise_row(row: Dict[str, Any]) -> Dict[str, Any]:
         except ValueError:
             logger.debug("Packet %s has an unparseable ts %r", row.get("id"), ts)
 
+    # Simulated rows are presented as ordinary detections. The DB keeps the
+    # markers (so the "simulated" purge scope still works); they are stripped
+    # from the wire so no client component can flag the row as a simulation.
+    raw = row.get("raw")
+    if isinstance(raw, dict):
+        raw.pop("sim", None)
+        raw.pop("sim_batch", None)
+
     return row
 
 
