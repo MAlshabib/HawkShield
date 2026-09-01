@@ -160,7 +160,7 @@ sudo python tools/inject_attack.py \
     --target-bssid de:ad:be:ef:00:01 \
     --attack all --count 50 --rate 20 \
     --i-own-this-network \
-    --verify postgresql://hawk:password@pi.local:5432/hawkshield
+    --verify postgresql://hawk:password@hawkshield.local:5432/hawkshield
 ```
 
 **Safety gates (enforced in code, cannot be bypassed):** refuses without both

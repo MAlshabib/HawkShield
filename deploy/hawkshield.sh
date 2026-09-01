@@ -12,6 +12,9 @@
 #   hawkshield channel 6    or name one explicitly
 #   hawkshield wifi SSID    join a network on wlan0 (prompts for the password)
 #   hawkshield hotspot      serve a network from wlan0 when the venue has none
+#   hawkshield uplink       show which interface is carrying the internet
+#   hawkshield uplink venue stop eth0 claiming the default route
+#   hawkshield uplink home  give eth0 the default route back
 #   hawkshield reset        re-bind the adapter when the radio goes silent
 #   hawkshield restart      restart both services
 #   hawkshield logs         follow the detector
@@ -192,13 +195,60 @@ start_hotspot(){
   printf '%sSet the capture channel by hand now -- channel auto follows wlan0, which is the hotspot.%s\n' "$dim" "$off"
 }
 
+# Which interface carries the internet is the one thing that differs between the
+# bench and the venue. At home eth0 has a real uplink. At the venue eth0 lands on
+# a network with no way out, but DHCP still hands over a default route -- so Saqr's
+# LLM calls leave over eth0 and die there, even though the phone hotspot on wlan0
+# is working fine. `never-default` tells NetworkManager to take the subnet route
+# (so SSH over eth0 keeps working) and skip the default route and the DNS servers.
+#
+# This is a toggle, not a permanent setting: at home you want eth0 to carry the
+# internet so the demo does not eat phone data. NetworkManager renders eth0 from
+# netplan into /run, so a reboot resets this -- re-run it after powering up at the
+# venue. `status` will tell you which mode is live.
+eth_conn(){ nmcli -t -f NAME,DEVICE connection show --active | awk -F: '$2=="eth0"{print $1; exit}'; }
+
+uplink(){
+  local mode="${1:-show}" conn
+  conn=$(eth_conn)
+
+  if [ "$mode" = show ]; then
+    head_ 'Uplink'
+    local def
+    def=$(ip route show default | awk '{print $5}' | paste -sd' ' -)
+    if [ -z "$def" ]; then bad 'no default route at all -- nothing can reach the internet'
+    else ok "default route via: $def"; fi
+    if [ -n "$conn" ]; then
+      case "$(nmcli -g ipv4.never-default connection show "$conn" 2>/dev/null)" in
+        yes) ok  "venue mode: eth0 will not claim the default route" ;;
+        *)   warn "home mode: eth0 claims the default route (metric 100)" ;;
+      esac
+    else warn 'eth0 has no active connection'; fi
+    printf '  %sswitch with: hawkshield uplink venue | hawkshield uplink home%s
+' "$dim" "$off"
+    return 0
+  fi
+
+  if [ -z "$conn" ]; then echo 'eth0 has no active connection to modify' >&2; return 2; fi
+
+  case "$mode" in
+    venue) sudo nmcli connection modify "$conn" ipv4.never-default yes ipv4.ignore-auto-dns yes ;;
+    home)  sudo nmcli connection modify "$conn" ipv4.never-default no  ipv4.ignore-auto-dns no  ;;
+    *)     echo "usage: hawkshield uplink [venue|home]" >&2; return 2 ;;
+  esac
+  sudo nmcli connection up "$conn" >/dev/null 2>&1
+  sleep 3
+  uplink show
+}
+
 case "${1:-status}" in
   status|'')  status ;;
   reset)      reset_radio ;;
   hotspot)    start_hotspot "${2:-}" ;;
+  uplink)     uplink "${2:-show}" ;;
   channel)    set_channel "${2:?usage: hawkshield channel <number>}" ;;
   wifi)       join_wifi "${2:?usage: hawkshield wifi <ssid>}" ;;
   restart)    sudo systemctl restart hawkshield-api hawkshield-detector; sleep 12; status ;;
   logs)       journalctl -u hawkshield-detector -f --no-pager ;;
-  *)          sed -n '3,17p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *)          sed -n '3,20p' "$0" | sed 's/^# \{0,1\}//' ;;
 esac

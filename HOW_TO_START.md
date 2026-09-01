@@ -43,7 +43,7 @@
 | **3** | `hawkshield channel auto` | **The step everyone forgets.** Aim the radio at that network's channel. |
 | **4** | `hawkshield` | Confirm every line is green, then open the dashboard. |
 
-**Then open → [`http://pi.local:8000`](http://pi.local:8000)**
+**Then open → [`http://hawkshield.local:8000`](http://hawkshield.local:8000)**
 
 </div>
 
@@ -57,11 +57,11 @@ tells you what to do when a light goes red.
 Everything is driven from one place: an SSH session to the Pi.
 
 ```bash
-ssh pi@pi.local
+ssh pi@hawkshield.local
 ```
 
 The moment you connect, the Pi greets you with the same cheat-sheet that's on this page — so you
-never have to remember it. If `pi.local` doesn't resolve on a locked-down network, the Pi's numeric
+never have to remember it. If `hawkshield.local` doesn't resolve on a locked-down network, the Pi's numeric
 address works too; `hawkshield` prints it.
 
 ---
@@ -97,7 +97,7 @@ hawkshield
     ✓ operator tools enabled
 
   Open the dashboard
-    http://pi.local:8000   (works even when the IP changes)
+    http://hawkshield.local:8000   (works even when the IP changes)
 ```
 
 Read it top to bottom. **Green is good.** The three lines that decide whether a demo goes well:
@@ -158,7 +158,7 @@ All green? Open the dashboard on the projector:
 
 <div align="center">
 
-### → [`http://pi.local:8000`](http://pi.local:8000) ←
+### → [`http://hawkshield.local:8000`](http://hawkshield.local:8000) ←
 
 </div>
 

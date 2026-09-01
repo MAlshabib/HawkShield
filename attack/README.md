@@ -44,7 +44,7 @@ Positional arguments: **class**, **count** (default 30), **rate** in frames/sec
 `krack`, or `all`.
 
 It prints the target, the radio and a link to the dashboard, then transmits.
-Open **http://pi.local:8000/dashboard** and watch the live tape.
+Open **http://hawkshield.local:8000/dashboard** and watch the live tape.
 
 ### Overrides (rarely needed)
 

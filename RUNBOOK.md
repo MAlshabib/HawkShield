@@ -16,7 +16,7 @@ telling it which network to watch, and checking it is healthy.
 
 From any device on the same network:
 
-> **http://pi.local:8000**
+> **http://hawkshield.local:8000**
 
 That address works even when the Pi's IP changes, so it is the one to trust.
 (If `.local` ever fails on a locked-down network, the numeric `http://<ip>:8000`
@@ -30,7 +30,7 @@ Pages: `/` overview · `/dashboard` live detections · `/threats` the log ·
 
 ## The one command: `hawkshield`
 
-SSH into the Pi (`ssh pi@pi.local`) and the login banner reminds you of these.
+SSH into the Pi (`ssh pi@hawkshield.local`) and the login banner reminds you of these.
 
 | Command | What it does |
 |---|---|
@@ -56,7 +56,7 @@ SSH into the Pi (`ssh pi@pi.local`) and the login banner reminds you of these.
    channel. *This is the step people forget, and without it the sensor hears
    nothing while looking perfectly healthy.*
 4. **`hawkshield`** — confirm every line is green.
-5. Open **http://pi.local:8000** on the projector.
+5. Open **http://hawkshield.local:8000** on the projector.
 
 If you already know the channel, skip step 2 and just run
 `hawkshield channel 6`.

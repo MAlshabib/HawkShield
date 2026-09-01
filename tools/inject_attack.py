@@ -118,7 +118,7 @@ def build_parser() -> argparse.ArgumentParser:
             "Example:\n"
             "  sudo python tools/inject_attack.py --iface wlan1mon "
             "--target-bssid de:ad:be:ef:00:01 --attack all --count 50 --rate 20 "
-            "--i-own-this-network --verify postgresql://hawk:pw@pi.local:5432/hawkshield\n"
+            "--i-own-this-network --verify postgresql://hawk:pw@hawkshield.local:5432/hawkshield\n"
         ),
         formatter_class=argparse.RawDescriptionHelpFormatter,
     )

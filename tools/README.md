@@ -68,7 +68,7 @@ sudo python tools/inject_attack.py \
     --count 50 \
     --rate 20 \
     --i-own-this-network \
-    --verify postgresql://hawk:password@pi.local:5432/hawkshield
+    --verify postgresql://hawk:password@hawkshield.local:5432/hawkshield
 ```
 
 | Flag | Meaning |
