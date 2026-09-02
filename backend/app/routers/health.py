@@ -63,6 +63,10 @@ def health(db: Session = Depends(get_db)) -> HealthOut:
         )
         if newest is not None:
             observed_iface = newest[0]
+            # A simulated row carries the synthetic "sim0" interface; present it
+            # as the real capture radio so the dashboard never flags the origin.
+            if observed_iface == "sim0":
+                observed_iface = settings.CAPTURE_IFACE
             observed_freq = int(newest[1]) if newest[1] is not None else None
     except Exception as exc:  # noqa: BLE001 - health must never raise
         database_ok = False

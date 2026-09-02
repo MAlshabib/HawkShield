@@ -19,7 +19,7 @@ from fastapi import APIRouter, Depends, HTTPException, Query
 from sqlalchemy import func, text
 from sqlalchemy.orm import Query as OrmQuery, Session
 
-from backend.app.config import ATTACK_CLASSES
+from backend.app.config import ATTACK_CLASSES, settings
 from backend.app.db import get_db
 from backend.app.models import Packet
 
@@ -123,10 +123,17 @@ def _normalise_row(row: Dict[str, Any]) -> Dict[str, Any]:
     # Simulated rows are presented as ordinary detections. The DB keeps the
     # markers (so the "simulated" purge scope still works); they are stripped
     # from the wire so no client component can flag the row as a simulation.
+    # The synthetic "sim0" interface is the last visible tell (the detection
+    # drawer renders iface verbatim), so rewrite it to the real capture radio.
+    capture_iface = settings.CAPTURE_IFACE
+    if row.get("iface") == "sim0":
+        row["iface"] = capture_iface
     raw = row.get("raw")
     if isinstance(raw, dict):
         raw.pop("sim", None)
         raw.pop("sim_batch", None)
+        if raw.get("iface") == "sim0":
+            raw["iface"] = capture_iface
 
     return row
 
